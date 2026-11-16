@@ -137,8 +137,7 @@ test("schema and argv preserve optional defaults, flags, and argument boundaries
 });
 
 test("Pi validates the conditional show schema and normal required arguments", async () => {
-	const version = (await readFile(new URL("../../install/current-version", import.meta.url), "utf8")).trim();
-	const validation = await import(new URL(`../../install/releases/${version}/node_modules/@earendil-works/pi-ai/dist/utils/validation.js`, import.meta.url).href);
+	const validation = await import("@earendil-works/pi-ai/utils/validation");
 	const definition = { name: "just_build", parameters: schemaFor(recipe([parameter("target")])) };
 	const validate = (args: unknown) => validation.validateToolArguments(definition, { name: definition.name, arguments: args });
 	assert.deepEqual(validate({ target: "release" }), { target: "release" });
@@ -155,7 +154,7 @@ test("Pi validates the conditional show schema and normal required arguments", a
 	for (const tail of [1.5, Number.MIN_SAFE_INTEGER - 1, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.throws(() => validate({ target: "release", just_options: { tail } }), /Validation failed/);
 	}
-	const google = await import(new URL(`../../install/releases/${version}/node_modules/@earendil-works/pi-ai/dist/api/google-shared.js`, import.meta.url).href);
+	const google = await import("@earendil-works/pi-ai/api/google-shared");
 	const sent = google.convertTools([definition])[0].functionDeclarations[0].parametersJsonSchema;
 	assert.deepEqual(sent.anyOf[1].properties.just_options.properties.show.enum, [true]);
 	assert.equal(sent.properties.just_options.properties.tail.minimum, Number.MIN_SAFE_INTEGER);

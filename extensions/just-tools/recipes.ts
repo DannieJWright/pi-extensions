@@ -1,4 +1,4 @@
-import { parseJsonc } from "../permission-mode-generator/jsonc.ts";
+import { parseJsonc } from "../../lib/jsonc.ts";
 
 export interface RecipeParameter {
 	name: string;

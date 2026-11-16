@@ -1,0 +1,16 @@
+{
+  "name": "pi-extensions",
+  "version": "1.0.0",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": [
+      "extensions/just-tools/index.ts",
+      "extensions/provider-prompt-rules/index.ts",
+      "extensions/permission-mode-generator/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.2"
+  }
+}

@@ -3,9 +3,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { parseJsonc } from "./jsonc.ts";
+import { parseJsonc } from "../../lib/jsonc.ts";
 import { buildConfig, type JsonObject } from "./merge.ts";
 
 export interface Paths {
@@ -30,7 +31,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
 export const defaultPaths: Paths = {
 	src: path.join(scriptDir, "permission-mode.src.jsonc"),
-	out: path.resolve(scriptDir, "..", "..", "permission-mode", "permission-mode.json"),
+	out: path.join(homedir(), ".pi", "agent", "permission-mode", "permission-mode.json"),
 	state: path.join(scriptDir, ".last-generated.json"),
 };
 

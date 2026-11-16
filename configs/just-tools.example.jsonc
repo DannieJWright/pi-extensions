@@ -1,0 +1,3 @@
+{
+  // No include list: every public recipe is available by default. Use "exclude" to hide specific ones.
+}

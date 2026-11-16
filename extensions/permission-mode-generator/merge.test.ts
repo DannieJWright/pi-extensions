@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { buildConfig } from "./merge.ts";
-import { parseJsonc, stripJsonc } from "./jsonc.ts";
+import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
 
 function build(source: Record<string, unknown>): Record<string, unknown> {
 	return buildConfig(source);

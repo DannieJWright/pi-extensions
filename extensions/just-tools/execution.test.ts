@@ -40,7 +40,7 @@ repeated item:
 });
 
 test("project just-tools recipe exposes the validated test action", async () => {
-	const file = fileURLToPath(new URL("../../../justfile", import.meta.url));
+	const file = fileURLToPath(new URL("../../justfile", import.meta.url));
 	const json = JSON.parse((await exec("just", ["--justfile", file, "--json"])).stdout);
 	const recipe = collectRecipes(json, new Set(["just-tools"]))[0];
 	assert.equal(recipe.path, "just-tools");

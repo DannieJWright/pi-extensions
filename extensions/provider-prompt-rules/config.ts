@@ -1,7 +1,7 @@
 // Config parsing, rule resolution, and report formatting for provider-prompt-rules.
 // The extension reads this file; the just recipe `provider-rules check` runs the same code.
 
-import { parseJsonc } from "../permission-mode-generator/jsonc.ts";
+import { parseJsonc } from "../../lib/jsonc.ts";
 
 export type RuleName = "sequentialSubagents";
 
