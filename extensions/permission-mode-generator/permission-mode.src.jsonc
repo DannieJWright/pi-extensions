@@ -1,0 +1,258 @@
+// Source for ~/.pi/agent/permission-mode/permission-mode.json.
+// Edit this file, then run `just perm-gen` in ~/.pi. See README.md for the merge rules.
+//
+// Pattern maps (path, external_directory, write, bash, tool, ...): the LAST matching key wins,
+// so "*" must come first. When a mode overrides an inherited key, the key keeps its position;
+// new keys are appended at the end. Use "$replace": true to write a full map in your own order.
+{
+  "output": {
+    "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
+    "defaultMode": "default",
+    "cycleOrder": ["default", "plan", "build", "plan-local", "build-local", "build-yolo", "yolo"]
+  },
+
+  "fragments": {
+    // Shared by every mode, YOLO included.
+    "pathGate": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        }
+      }
+    },
+
+    // Shared by all sandboxed modes.
+    "common": {
+      "extends": ["pathGate"],
+      "sandbox": {
+        "enabled": true,
+        "writable": true,
+        "allowWrite": [".", "/tmp/pi"],
+        "denyWrite": [],
+        "denyRead": [
+          "~/.ssh",
+          "~/.aws",
+          "~/.gnupg",
+          "~/.netrc",
+          "~/.git-credentials",
+          "~/.pypirc",
+          "~/.gem/credentials",
+          "~/.vault-token",
+          "~/.password-store",
+          "~/.pi/agent/auth.json",
+          "~/.pi/agent/oauth.json",
+          "~/.pi/agent/rehydra/records/records.sqlite",
+          "~/.pi/agent/secrets-protection/records.sqlite"
+        ],
+        // Bash: paths under these roots are not "escapes" (no prompt, runs sandboxed, read-only).
+        "insideRoots": [
+          "/home/nhbody/.agents/skills",
+          "~/.pi/agent/skills", 
+          "~/.pi/agent/npm/node_modules",
+          "/tmp/acp-delegate",
+          "/tmp/just-tools/outputs",
+          "/run/user/1000/just"
+        ],
+        "network": {
+          "allowedDomains": [
+            "npmjs.org",
+            "*.npmjs.org",
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "pypi.org",
+            "*.pypi.org",
+            "github.com",
+            "*.github.com",
+            "api.github.com",
+            "raw.githubusercontent.com"
+          ],
+          "deniedDomains": []
+        }
+      },
+      "permission": {
+        // File tools outside the project. Local modes override only "*".
+        "external_directory": {
+          "*": "ask",
+          "~/.agent/skills": "allow",
+          "~/.agent/skills/*": "allow",
+          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.pi/agent/skills": "allow",
+          "~/.pi/agent/skills/*": "allow",
+          "~/.pi/agent/npm/node_modules": "allow",
+          "~/.pi/agent/npm/node_modules/*": "allow",
+          "/var/folders": "allow",
+          "/var/folders/*": "allow",
+          "/private/var/folders": "allow",
+          "/private/var/folders/*": "allow",
+          "/tmp/acp-delegate/*": "allow",
+          "/tmp/just-tools/outputs/*": "allow"
+        },
+        "read": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        // Modes override only "*"; the guards after it stay in force.
+        "write": {
+          "*": "ask",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "*": "ask",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "ask"
+        },
+        "web_search": "allow",
+        "tool": {
+          "*": "ask",
+          "acp_delegate": "allow",
+          "acp_delegate_wait": "allow",
+          "acp_status": "allow",
+          "acp_read_original_image": "allow",
+          "compress": "allow",
+          "decompress": "allow",
+          "web_enable": "allow",
+          "fetch_content": "allow",
+          "get_search_content": "allow",
+          "source_check": "allow",
+          "search_context": "allow",
+          "acp_delegate_cancel": "allow",
+          "just_test": "allow"
+          // "": "allow",
+          // "": "allow",
+        },
+        "skill": "allow"
+      }
+    },
+
+    // Local modes: deny file-tool access outside the project, except the allows in common.
+    // Bash escapes still prompt (the extension cannot deny them by config).
+    "local": {
+      "permission": {
+        "external_directory": {
+          "*": "deny"
+        }
+      }
+    }
+  },
+
+  "modes": {
+    "default": {
+      "extends": ["common"],
+      "label": "Default",
+      "color": "muted"
+    },
+
+    "plan": {
+      "extends": ["common"],
+      "label": "Plan Mode",
+      "color": "mdLink",
+      // A custom prompt avoids the @plan approval UI. show_plan still displays files.
+      "systemPrompt": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions.",
+      "sandbox": {
+        "writable": false
+      },
+      "permission": {
+        "write": {
+          "$replace": true,
+          "*": "deny",
+          "*.md": "ask",
+          "*.markdown": "ask",
+          "plan/*.md": "allow",
+          "*/plan/*.md": "allow",
+          "plans/*.md": "allow",
+          "*/plans/*.md": "allow",
+          // Guards last, so a plan/ folder inside them does not get "allow".
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "$replace": true,
+          "*": "deny",
+          "*.md": "ask",
+          "*.markdown": "ask",
+          "plan/*.md": "allow",
+          "*/plan/*.md": "allow",
+          "plans/*.md": "allow",
+          "*/plans/*.md": "allow",
+          // Guards last, so a plan/ folder inside them does not get "allow".
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "allow"
+        }
+      }
+    },
+
+    "build": {
+      "extends": ["common"],
+      "label": "Build",
+      "color": "accent",
+      "systemPrompt": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks.",
+      "permission": {
+        "write": { "*": "allow" },
+        "edit": { "*": "allow" },
+        "bash": { "*": "allow" }
+      }
+    },
+
+    "plan-local": {
+      "extends": ["plan", "local"],
+      "label": "Plan (local)"
+    },
+
+    "build-local": {
+      "extends": ["build", "local"],
+      "label": "Build (local)"
+    },
+
+    "build-yolo": {
+      "extends": ["build", "local"],
+      "label": "Build (yolo)",
+      "color": "error",
+      "sandbox": { "enabled": false }
+    },
+
+    "yolo": {
+      "extends": ["pathGate"],
+      "label": "YOLO",
+      "color": "error",
+      "sandbox": {
+        "enabled": false,
+        "writable": true
+      },
+      "bypassProtectedPaths": true,
+      "permission": {
+        "external_directory": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "bash": { "*": "allow" },
+        "web_search": "allow",
+        "tool": "allow",
+        "skill": "allow"
+      }
+    }
+  }
+}
