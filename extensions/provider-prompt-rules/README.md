@@ -81,4 +81,4 @@ process-global, so it applies to every provider in the session, not only the lis
 - `check.ts` — command-line report for the just recipe.
 - `provider-prompt-rules.test.ts` — tests.
 
-The JSONC reader is shared with `../permission-mode-generator/jsonc.ts`.
+The JSONC reader is shared in `../../lib/jsonc.ts`.

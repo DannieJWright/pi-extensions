@@ -62,7 +62,7 @@ overwrite. Move the change into the source, or run `just perm gen --force`.
 ## Files
 
 - `permission-mode.src.jsonc` — the source. The only file you edit.
-- `jsonc.ts` — comment and trailing-comma handling.
+^- `../../lib/jsonc.ts` — comment and trailing-comma handling (shared with the other extensions).
 - `merge.ts` — merge rules, no fs and no pi imports.
 - `generate.ts` — `run()` plus the CLI entry.
 - `index.ts` — the pi extension: run at startup and `/reload`, report at `session_start`.
