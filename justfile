@@ -7,7 +7,7 @@ REPO := justfile_directory()
 _list-recipes:
     just --list
 
-# Run the permission-mode generator check, the just-tools tests, and the provider prompt rules check.
+# Run the permission-mode generator check, the just-tools tests, and the provider rules check.
 [group('test')]
 test:
     just -f "{{ REPO }}/justfile" perm check
@@ -76,14 +76,14 @@ perm action="gen" force="false" *args="":
             ;;
     esac
 
-# Check or test the provider prompt rules config. Actions: check, or test. Pass Node options after `--` (for example `just provider-rules test -- --test-name-pattern=resolve`).
+# Check or test the provider rules config (prompt rules and truncation recovery). Actions: check, or test. Pass Node options after `--` (for example `just provider-rules test -- --test-name-pattern=resolve`).
 [arg('action', pattern='check|test', help='check, or test')]
 [group('test')]
 provider-rules action="check" *args="":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    ext_dir="{{ REPO }}/extensions/provider-prompt-rules"
+    ext_dir="{{ REPO }}/extensions/provider-rules"
     action="$1"
     shift; # Shift for `action`
 

@@ -3,7 +3,7 @@
 Three Pi extensions as one package:
 
 - `extensions/just-tools/` — exposes the justfile recipes as tools. See its README.
-- `extensions/provider-prompt-rules/` — injects per-provider/model prompt rules. See its README.
+- `extensions/provider-rules/` — injects per-provider/model prompt rules, and recovers when a local model's response is truncated by thinking. See its README.
 - `extensions/permission-mode-generator/` — generates the permission-mode config from `permission-mode.src.jsonc`. See its README.
 
 ## Setup on a new machine
@@ -20,7 +20,7 @@ Three Pi extensions as one package:
    ```sh
    mkdir -p ~/.pi ~/.pi/agent
    cp configs/just-tools.example.jsonc ~/.pi/just-tools.jsonc
-   cp configs/provider-prompt-rules.example.jsonc ~/.pi/agent/provider-prompt-rules.jsonc
+   cp configs/provider-rules.example.jsonc ~/.pi/agent/provider-rules.jsonc
    ```
 
 3. Requirements: `just` on PATH, and Node 22.6+ (type stripping) to run the `.ts` entry points and `node --test`. Run `npm install` once for the test devDependency (`@earendil-works/pi-ai`).
@@ -39,6 +39,6 @@ Do not keep duplicate copies of these extension files under `~/.pi/agent/extensi
 
 ```sh
 just test                    # perm check, just-tools tests, provider-rules check
-just provider-rules test     # provider prompt rules tests
+just provider-rules test     # provider rules tests
 just perm test               # permission-mode merge tests
 ```

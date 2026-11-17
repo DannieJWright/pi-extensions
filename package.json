@@ -6,7 +6,7 @@
   "pi": {
     "extensions": [
       "extensions/just-tools/index.ts",
-      "extensions/provider-prompt-rules/index.ts",
+      "extensions/provider-rules/index.ts",
       "extensions/permission-mode-generator/index.ts"
     ]
   },
