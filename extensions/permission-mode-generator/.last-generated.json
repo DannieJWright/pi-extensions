@@ -33,7 +33,9 @@
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
           "/tmp/acp-delegate/*": "allow",
-          "/tmp/just-tools/outputs/*": "allow"
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
@@ -106,7 +108,9 @@
           "~/.pi/agent/npm/node_modules",
           "/tmp/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just"
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
         ],
         "network": {
           "allowedDomains": [
@@ -148,7 +152,9 @@
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
           "/tmp/acp-delegate/*": "allow",
-          "/tmp/just-tools/outputs/*": "allow"
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
@@ -233,7 +239,9 @@
           "~/.pi/agent/npm/node_modules",
           "/tmp/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just"
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
         ],
         "network": {
           "allowedDomains": [
@@ -276,7 +284,9 @@
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
           "/tmp/acp-delegate/*": "allow",
-          "/tmp/just-tools/outputs/*": "allow"
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
@@ -349,7 +359,9 @@
           "~/.pi/agent/npm/node_modules",
           "/tmp/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just"
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
         ],
         "network": {
           "allowedDomains": [
@@ -392,7 +404,9 @@
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
           "/tmp/acp-delegate/*": "allow",
-          "/tmp/just-tools/outputs/*": "allow"
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
@@ -477,7 +491,9 @@
           "~/.pi/agent/npm/node_modules",
           "/tmp/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just"
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
         ],
         "network": {
           "allowedDomains": [
@@ -520,7 +536,9 @@
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
           "/tmp/acp-delegate/*": "allow",
-          "/tmp/just-tools/outputs/*": "allow"
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
@@ -593,7 +611,9 @@
           "~/.pi/agent/npm/node_modules",
           "/tmp/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just"
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
         ],
         "network": {
           "allowedDomains": [
@@ -636,7 +656,9 @@
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
           "/tmp/acp-delegate/*": "allow",
-          "/tmp/just-tools/outputs/*": "allow"
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
@@ -709,7 +731,9 @@
           "~/.pi/agent/npm/node_modules",
           "/tmp/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just"
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
         ],
         "network": {
           "allowedDomains": [
