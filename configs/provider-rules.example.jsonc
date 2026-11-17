@@ -1,7 +1,19 @@
-// Provider-scoped prompt rules. Read by the provider-prompt-rules extension at session start
-// and by `just provider-rules check`. Unknown keys and bad values are dropped and reported.
+// Provider-scoped prompt rules and behaviour. Read by the provider-rules extension at session
+// start and by `just provider-rules check`. Unknown keys and bad values are dropped and reported.
 
 {
+  // Providers whose models are self-hosted. Recovery (see below) only runs for these.
+  // Provider ids come from Pi's model info, e.g. "local-llama", not from a URL guess.
+  "localProviders": ["strata"],
+
+  // Defaults for recovery. A provider entry can override them; a model entry overrides that.
+  "recovery": {
+    "prompt": "Work through the task one at a time.",
+    "maxAttempts": 3,
+    "thinkingLevel": "low",
+    "display": true
+  },
+
   "providers": {
     "strata": {
       "sequentialSubagents": true,
@@ -22,7 +34,10 @@
 
   // Deepest defined level wins: model > provider.
   "modelOverrides": {
-    "local-llama/qwen-3.6-27B-tc-262k": { "sequentialSubagents": false }
+    "local-llama/qwen-3.6-27B-tc-262k": { "sequentialSubagents": false },
+    "strata/qwen3.8-flash-next-iq2_xs": {
+      "recovery": { "thinkingLevel": "low" }
+    }
   },
 
   // Default wording for a rule when an entry does not set its own text.

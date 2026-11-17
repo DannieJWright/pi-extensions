@@ -1,7 +1,14 @@
-// Config parsing, rule resolution, and report formatting for provider-prompt-rules.
+// Config parsing, rule resolution, recovery settings, and report formatting for provider-rules.
 // The extension reads this file; the just recipe `provider-rules check` runs the same code.
 
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { parseJsonc } from "../../lib/jsonc.ts";
+
+export const CONFIG_NAME = "provider-rules.jsonc";
+/** The old name is still read as a fallback, and the report says which file was used. */
+export const LEGACY_CONFIG_NAME = "provider-prompt-rules.jsonc";
 
 export type RuleName = "sequentialSubagents";
 
@@ -29,10 +36,42 @@ export const RULES: Record<RuleName, Rule> = {
 
 export type RuleText = Partial<Record<RuleName, string>>;
 
-/** One config entry: rule values, and the wording for those rules at this level. */
+/** Thinking levels the extension API accepts (`pi.setThinkingLevel`). `off` is not one of them. */
+export type ThinkingLevelName = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export const THINKING_LEVELS: readonly ThinkingLevelName[] = [
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
+
+/** What the extension does when a response is truncated by thinking. */
+export interface RecoverySettings {
+	/** Text injected as a user-role message before the retry. */
+	prompt: string;
+	/** Consecutive recovery attempts per session, then stop and notify. */
+	maxAttempts: number;
+	/** Level used for the recovery request. Null leaves the level unchanged. */
+	thinkingLevel: ThinkingLevelName | null;
+	/** Whether the injected message is shown in the transcript UI. */
+	display: boolean;
+}
+
+export const DEFAULT_RECOVERY: RecoverySettings = {
+	prompt: "Work through the task one at a time.",
+	maxAttempts: 3,
+	thinkingLevel: "low",
+	display: true,
+};
+
+/** One config entry: rule values, the wording for those rules, and recovery settings. */
 export interface Entry {
 	rules: Partial<Record<RuleName, boolean>>;
 	text: RuleText;
+	recovery: Partial<RecoverySettings>;
 }
 
 export interface Config {
@@ -42,6 +81,10 @@ export interface Config {
 	modelOverrides: Record<string, Entry>;
 	/** Default wording per rule, used when no entry sets one. */
 	text: RuleText;
+	/** Providers the recovery behavior applies to. */
+	localProviders: string[];
+	/** Default recovery settings, used when no entry sets a field. */
+	recovery: Partial<RecoverySettings>;
 }
 
 export interface Problem {
@@ -70,11 +113,29 @@ export interface ActiveRule {
 }
 
 export function emptyConfig(): Config {
-	return { providers: {}, modelOverrides: {}, text: {} };
+	return { providers: {}, modelOverrides: {}, text: {}, localProviders: [], recovery: {} };
 }
 
 function emptyEntry(): Entry {
-	return { rules: {}, text: {} };
+	return { rules: {}, text: {}, recovery: {} };
+}
+
+export function defaultConfigPath(): string {
+	return join(homedir(), ".pi", "agent", CONFIG_NAME);
+}
+
+export function legacyConfigPath(): string {
+	return join(homedir(), ".pi", "agent", LEGACY_CONFIG_NAME);
+}
+
+/** Prefer the new path; fall back to the legacy name so an existing config keeps working. */
+export function pickConfigPath(preferred?: string): { path: string; legacy: boolean } {
+	if (preferred) return { path: resolve(preferred), legacy: false };
+	const primary = defaultConfigPath();
+	if (existsSync(primary)) return { path: primary, legacy: false };
+	const legacy = legacyConfigPath();
+	if (existsSync(legacy)) return { path: legacy, legacy: true };
+	return { path: primary, legacy: false };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -83,6 +144,17 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isRuleName(value: string): value is RuleName {
 	return Object.keys(RULES).includes(value);
+}
+
+function isThinkingLevel(value: unknown): value is ThinkingLevelName {
+	return typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevelName);
+}
+
+/** Join a string or an array of lines into one string. */
+function readTextValue(value: unknown, path: string, problems: Problem[]): string | undefined {
+	const lines = Array.isArray(value) ? value : [value];
+	if (lines.some((line) => typeof line !== "string" || !line.trim())) return undefined;
+	return lines.join("\n");
 }
 
 /** Parse the config. Bad entries are dropped and reported; they never clobber a good value. */
@@ -106,6 +178,18 @@ export function parseConfig(text: string, sourceName: string): ParseResult {
 			readTextMap(value, "text", config.text, problems);
 			continue;
 		}
+		if (key === "localProviders") {
+			if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry.trim())) {
+				problems.push({ path: key, message: "must be an array of provider ids." });
+				continue;
+			}
+			config.localProviders = value.map((entry) => String(entry).trim());
+			continue;
+		}
+		if (key === "recovery") {
+			readRecovery(value, "recovery", config.recovery, problems);
+			continue;
+		}
 		problems.push({ path: key, message: `unknown key "${key}".` });
 	}
 
@@ -123,12 +207,64 @@ function readTextMap(value: unknown, path: string, target: RuleText, problems: P
 			continue;
 		}
 		// A string, or an array of lines joined with a newline.
-		const lines = Array.isArray(wording) ? wording : [wording];
-		if (lines.some((line) => typeof line !== "string" || !line.trim())) {
+		const text = readTextValue(wording, `${path}.${rule}`, problems);
+		if (text === undefined) {
 			problems.push({ path: `${path}.${rule}`, message: "must be a non-empty string, or an array of non-empty lines." });
 			continue;
 		}
-		target[rule] = lines.join("\n");
+		target[rule] = text;
+	}
+}
+
+const RECOVERY_FIELD_PROBLEMS: Record<keyof RecoverySettings, string> = {
+	prompt: "must be a non-empty string, or an array of non-empty lines.",
+	maxAttempts: "must be a positive integer.",
+	thinkingLevel: `must be one of ${THINKING_LEVELS.join(", ")}, or null to leave the level unchanged.`,
+	display: "must be true or false.",
+};
+
+/** Read one recovery block. Bad fields are dropped and reported; good fields survive. */
+function readRecovery(value: unknown, path: string, target: Partial<RecoverySettings>, problems: Problem[]): void {
+	if (!isObject(value)) {
+		problems.push({ path, message: "must be an object of recovery settings." });
+		return;
+	}
+	for (const [field, item] of Object.entries(value)) {
+		const fieldPath = `${path}.${field}`;
+		if (!(field in RECOVERY_FIELD_PROBLEMS)) {
+			problems.push({ path: fieldPath, message: `unknown recovery field "${field}".` });
+			continue;
+		}
+		if (field === "prompt") {
+			const text = readTextValue(item, fieldPath, problems);
+			if (text === undefined) {
+				problems.push({ path: fieldPath, message: RECOVERY_FIELD_PROBLEMS.prompt });
+				continue;
+			}
+			target.prompt = text;
+			continue;
+		}
+		if (field === "maxAttempts") {
+			if (typeof item !== "number" || !Number.isInteger(item) || item < 1) {
+				problems.push({ path: fieldPath, message: RECOVERY_FIELD_PROBLEMS.maxAttempts });
+				continue;
+			}
+			target.maxAttempts = item;
+			continue;
+		}
+		if (field === "thinkingLevel") {
+			if (item !== null && !isThinkingLevel(item)) {
+				problems.push({ path: fieldPath, message: RECOVERY_FIELD_PROBLEMS.thinkingLevel });
+				continue;
+			}
+			target.thinkingLevel = item;
+			continue;
+		}
+		if (typeof item !== "boolean") {
+			problems.push({ path: fieldPath, message: RECOVERY_FIELD_PROBLEMS.display });
+			continue;
+		}
+		target.display = item;
 	}
 }
 
@@ -150,7 +286,7 @@ function readEntries(
 			problems.push({ path: entryPath, message: "key must be provider/modelId." });
 		}
 		if (!isObject(entry)) {
-			problems.push({ path: entryPath, message: "must be an object of rule booleans and optional text." });
+			problems.push({ path: entryPath, message: "must be an object of rule booleans, optional text, and optional recovery." });
 			continue;
 		}
 
@@ -158,6 +294,10 @@ function readEntries(
 		for (const [name, item] of Object.entries(entry)) {
 			if (name === "text") {
 				readTextMap(item, `${entryPath}.text`, target.text, problems);
+				continue;
+			}
+			if (name === "recovery") {
+				readRecovery(item, `${entryPath}.recovery`, target.recovery, problems);
 				continue;
 			}
 			if (!isRuleName(name)) {
@@ -170,7 +310,7 @@ function readEntries(
 			}
 			target.rules[name] = item;
 		}
-		if (Object.keys(target.rules).length > 0 || Object.keys(target.text).length > 0) out[key] = target;
+		if (Object.keys(target.rules).length > 0 || Object.keys(target.text).length > 0 || Object.keys(target.recovery).length > 0) out[key] = target;
 	}
 
 	return out;
@@ -211,6 +351,43 @@ export function defaultText(config: Config, rule: RuleName): string {
 	return config.text[rule] ?? RULES[rule].text;
 }
 
+export interface ActiveRecovery {
+	settings: RecoverySettings;
+	/** Where each field came from, for reporting. */
+	sources: Record<keyof RecoverySettings, string>;
+	/** Whether this model's provider is in `localProviders`. */
+	allowed: boolean;
+}
+
+const RECOVERY_FIELDS: (keyof RecoverySettings)[] = ["prompt", "maxAttempts", "thinkingLevel", "display"];
+
+/** Per field, deepest defined level wins: model entry > provider entry > top-level default > built-in. */
+export function resolveRecovery(config: Config, model: ModelRef): ActiveRecovery {
+	const key = `${model.provider}/${model.id}`;
+	const modelEntry = config.modelOverrides[key];
+	const providerEntry = config.providers[model.provider];
+
+	const settings = { ...DEFAULT_RECOVERY };
+	const sources: Record<keyof RecoverySettings, string> = {};
+
+	for (const field of RECOVERY_FIELDS) {
+		const modelValue = modelEntry?.recovery[field];
+		const providerValue = providerEntry?.recovery[field];
+		const defaultValue = config.recovery[field];
+		// An explicit null is a value (it means "leave the level unchanged"), so check for
+		// undefined rather than using ??.
+		const explicit = modelValue !== undefined ? modelValue : providerValue !== undefined ? providerValue : defaultValue;
+		const value = explicit !== undefined ? explicit : DEFAULT_RECOVERY[field];
+		settings[field] = value as RecoverySettings[field];
+		if (modelValue !== undefined) sources[field] = `modelOverrides["${key}"].recovery.${field}`;
+		else if (providerValue !== undefined) sources[field] = `providers["${model.provider}"].recovery.${field}`;
+		else if (defaultValue !== undefined) sources[field] = `recovery.${field}`;
+		else sources[field] = "built-in";
+	}
+
+	return { settings, sources, allowed: config.localProviders.includes(model.provider) };
+}
+
 /** Apply the rules for `model` to the mutable system prompt sections. */
 export function applySections(config: Config, model: ModelRef, sections: Record<string, string>): ActiveRule[] {
 	const active = resolveRules(config, model);
@@ -227,11 +404,14 @@ export interface ReportInput {
 	configPath: string;
 	result: ParseResult;
 	model?: ModelRef;
+	/** Set when the legacy config path was the one read. */
+	legacy?: boolean;
 }
 
 /** Plain-text report for `just provider-rules check` and the `/provider-rules` command. */
 export function formatReport(input: ReportInput): string {
-	const lines = [`provider-prompt-rules: ${input.configPath}`];
+	const lines = [`provider-rules: ${input.configPath}`];
+	if (input.legacy) lines.push("note: read from the legacy path; rename it to provider-rules.jsonc.");
 
 	if (input.model) {
 		const key = `${input.model.provider}/${input.model.id}`;
@@ -244,6 +424,16 @@ export function formatReport(input: ReportInput): string {
 			for (const hit of active) {
 				lines.push(`  ${hit.rule} -> <${RULES[hit.rule].section}> (${hit.source}, text from ${hit.textSource})`);
 			}
+		}
+
+		const recovery = resolveRecovery(input.result.config, input.model);
+		const gate = recovery.allowed
+			? `provider "${input.model.provider}" is in localProviders`
+			: `provider "${input.model.provider}" is not in localProviders`;
+		lines.push(`recovery: ${recovery.allowed ? "allowed" : "not allowed"} (${gate})`);
+		for (const field of RECOVERY_FIELDS) {
+			const value = field === "prompt" ? JSON.stringify(recovery.settings[field]) : String(recovery.settings[field]);
+			lines.push(`  ${field} = ${value} (${recovery.sources[field]})`);
 		}
 	} else {
 		lines.push("model: not known");
@@ -261,6 +451,9 @@ export function formatReport(input: ReportInput): string {
 			}
 			for (const [rule, wording] of Object.entries(entry.text)) {
 				lines.push(`  ${path}.text.${rule} = ${wording}`);
+			}
+			for (const [field, value] of Object.entries(entry.recovery)) {
+				lines.push(`  ${path}.recovery.${field} = ${JSON.stringify(value)}`);
 			}
 		}
 	}
