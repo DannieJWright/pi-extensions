@@ -38,7 +38,7 @@ just-tools action="test" *args="":
             ;;
     esac
 
-# Generate, check, or test the permission-mode config from permission-mode.src.jsonc. Actions: gen, check, or test. Use --force with gen to overwrite a drifted output. Pass-through flags go after `--` (for example `just perm test -- --only merge`).
+# Generate, check, or test the permission-mode config from ~/.pi/agent/permission-mode/permission-mode.src.jsonc. Actions: gen, check, or test. Use --force with gen to overwrite a drifted output. Pass-through flags go after `--` (for example `just perm test -- --only merge`).
 [arg('action', pattern='gen|check|test', help='gen, check, or test')]
 [arg('force', long='force', value='true', help='Specify --force with gen to overwrite a drifted output')]
 [group('perm')]

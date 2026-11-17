@@ -168,7 +168,7 @@ test("comments inside strings are kept", () => {
 });
 
 test("configured prompts follow mode inheritance without enabling plan approval", () => {
-	const path = new URL("./permission-mode.src.jsonc", import.meta.url);
+	const path = new URL("../../configs/permission-mode.example.src.jsonc", import.meta.url);
 	const config = build(parseJsonc(readFileSync(path, "utf8"), path.pathname) as Record<string, unknown>);
 	const planPrompt = mode(config, "plan").systemPrompt;
 	const buildPrompt = mode(config, "build").systemPrompt;

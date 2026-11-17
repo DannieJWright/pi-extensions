@@ -1,7 +1,9 @@
 # permission-mode generator
 
-Writes `~/.pi/agent/permission-mode/permission-mode.json` from `permission-mode.src.jsonc`.
-You edit the source; the output is generated. Do not hand-edit the output.
+Reads `~/.pi/agent/permission-mode/permission-mode.src.jsonc` and writes
+`~/.pi/agent/permission-mode/permission-mode.json`. You edit the source; the output is generated.
+Do not hand-edit the output. The source, the output, and the drift baseline live in the same
+directory; the repo keeps only `configs/permission-mode.example.src.jsonc` as the starting point.
 
 ## Use
 
@@ -54,15 +56,16 @@ Permissions and the sandbox change when the mode switches. The active mode's pro
 
 ## Drift
 
-`.last-generated.json` holds the last result the generator wrote. If `permission-mode.json`
+`.last-generated.json` (in `~/.pi/agent/permission-mode/`) holds the last result the generator wrote. If `permission-mode.json`
 differs from it, something else changed the file — a hand edit, or an "Allow forever" approval.
 The generator prints each differing key path as `last generated` versus `file` and does not
 overwrite. Move the change into the source, or run `just perm gen --force`.
 
 ## Files
 
-- `permission-mode.src.jsonc` — the source. The only file you edit.
-^- `../../lib/jsonc.ts` — comment and trailing-comma handling (shared with the other extensions).
+- `configs/permission-mode.example.src.jsonc` — the committed example source. Copy it to
+  `~/.pi/agent/permission-mode/permission-mode.src.jsonc`; that live file is the only thing you edit.
+- `../../lib/jsonc.ts` — comment and trailing-comma handling (shared with the other extensions).
 - `merge.ts` — merge rules, no fs and no pi imports.
 - `generate.ts` — `run()` plus the CLI entry.
 - `index.ts` — the pi extension: run at startup and `/reload`, report at `session_start`.
