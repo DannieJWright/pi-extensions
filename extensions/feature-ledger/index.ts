@@ -90,7 +90,10 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	async function locate(ctx: ExtensionContext): Promise<{ repoRoot: string; branch: string }> {
 		const root = (await exec("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).stdout.trim();
 		if (!root) throw new Error("not inside a git repository");
-		const branch = (await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)).stdout.trim();
+		// symbolic-ref gives the real branch name before the first commit; rev-parse gives HEAD there.
+		// Keep rev-parse as the fallback for a detached HEAD, where symbolic-ref fails.
+		const symbolic = await exec("git", ["symbolic-ref", "--short", "HEAD"], root);
+		const branch = symbolic.stdout.trim() || (await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)).stdout.trim();
 		if (!branch) throw new Error("cannot read the current branch");
 		return { repoRoot: root, branch };
 	}

@@ -1,6 +1,8 @@
 import { test } from "node:test";
+import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkLedger, ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem } from "./ledger.ts";
@@ -408,4 +410,35 @@ test("a bullet that parses as a mapping is reported as a problem line", () => {
 	const { ledger } = parseLedger(mapping);
 	assert.deepEqual(listItems(ledger!).items[0].short_goal, "Do the thing.");
 	assert.deepEqual(nextItem(ledger!).next!.short_goal, "Do the thing.");
+});
+
+test("an unborn branch reports the configured init.defaultBranch name", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "feature-ledger-"));
+	try {
+		await exec("git", ["-c", "init.defaultBranch=feature-x", "init", "-q"], dir);
+		// The ledger file must exist for the check to read it; the branch name comes from the symbolic ref.
+		await ensureParent(ledgerPath(dir, "feature-x"));
+		await writeFile(ledgerPath(dir, "feature-x"), "ledger:\n  branch: feature-x\n  features: []\n");
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir))).content[0].text);
+		assert.match(result.path, /\/plan\/feature-x\/ledger\.yaml$/);
+		assert.ok(result.ok);
+	} finally { await rm(dir, { recursive: true }); }
+});
+
+test("a detached HEAD resolves through the fallback", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	try {
+		await execFile("git", ["checkout", "--detach", "-q"], { cwd: dir });
+		// The default target is now plan/HEAD/, so the file must be readable there for the
+		// location line to be produced.
+		await ensureParent(ledgerPath(dir, "HEAD"));
+		await writeFile(ledgerPath(dir, "HEAD"), await readFile(ledgerPath(dir, branch), "utf8"));
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir))).content[0].text);
+		assert.match(result.path, /\/plan\/HEAD\/ledger\.yaml$/);
+		assert.ok(result.ok);
+	} finally { await cleanup(); }
 });
