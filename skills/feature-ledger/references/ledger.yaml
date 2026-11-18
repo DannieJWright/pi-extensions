@@ -4,7 +4,7 @@ ledger:
   workspace: .worktrees/chat-ui
   branch: chat-ui
   validation_scripts:
-    - just test all
+    - node --test tests/
 
   features:
     - id: search-result-labels
@@ -21,6 +21,7 @@ ledger:
         - Keep the accessible names the page objects depend on.
         - No new dependencies.
       # validation_scripts omitted: the base list at the ledger level applies.
+      # Plain commands, not project recipe names.
       # An item that needs a different set writes its own list, which replaces the base.
       files:
         in:
