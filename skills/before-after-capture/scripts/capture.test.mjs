@@ -28,7 +28,7 @@ steps:
     value: atomically
   - press: ArrowDown
   - assert: '[data-testid=search-results] li[data-current]'
-  - screenshot: out/after.png
+  - screenshot: build/after.png
 `;
 
 function fakeDriver(log, { failAssert = false, url = "http://127.0.0.1:9000/agent" } = {}) {
@@ -61,7 +61,7 @@ test("parseSpec reads the spec fields and normalizes steps", () => {
 });
 
 test("parseSpec rejects a missing required field and an unknown verb", () => {
-	assert.throws(() => parseSpec("feature: x\nsubphase: 1\nphase: after\nsteps:\n  - screenshot: out/a.png"), /missing description/);
+	assert.throws(() => parseSpec("feature: x\nsubphase: 1\nphase: after\nsteps:\n  - screenshot: build/a.png"), /missing description/);
 	assert.throws(() => parseSpec("feature: x\nsubphase: 1\nphase: after\ndescription: d\nsteps:\n  - dance: x"), /expected one of/);
 });
 
@@ -103,7 +103,7 @@ test("runCli exits nonzero on a failed assert and zero on a clean run", async ()
 	const dir = await mkdtemp(join(tmpdir(), "capture-cli-"));
 	try {
 		const specPath = join(dir, "capture.yaml");
-		await writeFile(specPath, SPEC.replace("out/after.png", join(dir, "after.png")));
+		await writeFile(specPath, SPEC.replace("build/after.png", join(dir, "after.png")));
 		const failCode = await runCli([specPath], () => fakeDriver([], { failAssert: true }));
 		assert.equal(failCode, 1);
 		const okCode = await runCli([specPath, "--build", "deadbeef"], () => fakeDriver([]));

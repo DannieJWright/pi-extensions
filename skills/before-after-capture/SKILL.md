@@ -137,6 +137,6 @@ Artifacts are committed on the feature branch so a reviewer can see them. They m
 
 Fill this in for the current project; the rules above stay unchanged.
 
-- Artifacts path: `artifacts/` at the repo root, tracked (the repo `.gitignore` un-ignores it so feature-branch images can be committed).
+- Artifacts path: `artifacts/` at the repo root, tracked (the repo `.gitignore` does not ignore it, so feature-branch images can be committed). Scratch output goes to `build/`, which the repo `.gitignore` ignores.
 - Start command: the project's own dev server command, one server per feature.
 - Fixture clock: `2026-11-14T10:00:00.000Z`, locale `en`, theme `dark` — the values the fixtures pin.
