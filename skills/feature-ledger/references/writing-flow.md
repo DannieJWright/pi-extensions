@@ -21,8 +21,12 @@ Read this when turning a plan into a ledger. Field rules and the shared conventi
 
 ## Before handing the ledger to an agent
 
+Run the check script from the repo root:
+
 ```sh
-just feature-ledger check <path>
+node extensions/feature-ledger/check.ts <path>
 ```
 
 This reports a missing `id`, a bad status, or a missing `short_goal`. Fix those before the first `ledger_start`.
+
+Do not write project recipe commands (a `just` recipe, an npm script) into `validation_scripts`. A real agent runs the commands as given, from the repo root, and the recipes of a given repo are not available to it. Write the command itself, for example `node --test tests/`.
