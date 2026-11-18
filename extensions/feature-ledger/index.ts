@@ -6,9 +6,10 @@
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
 import { readFile } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { ledgerPath, listItems, nextItem, parseLedger, startItem, submitItem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
+import { checkLedger, ledgerPath, listItems, nextItem, parseLedger, startItem, submitItem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
 
 const EMPTY_PARAMS = {
 	type: "object",
@@ -23,6 +24,15 @@ const START_PARAMS = {
 		id: { type: "string", description: "Feature id in plan/<branch>/ledger.yaml" },
 	},
 	required: ["id"],
+	additionalProperties: false,
+} as unknown as TSchema;
+
+const CHECK_PARAMS = {
+	type: "object",
+	properties: {
+		path: { type: "string", description: "Ledger file to check. Default plan/<branch>/ledger.yaml for the current branch. Use a path for a draft ledger not yet under plan/." },
+	},
+	required: [],
 	additionalProperties: false,
 } as unknown as TSchema;
 
@@ -114,6 +124,37 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_next: ${message(error)}` }], details: {}, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "ledger_check",
+		label: "Ledger check",
+		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Default target is plan/<branch>/ledger.yaml for the current branch; an optional path checks a draft ledger. Output is JSON { path, ok, problems }, isError when problems exist. A path that is not plan/<branch>/ledger.yaml for the current branch is reported as a problem.",
+		parameters: CHECK_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				// git may be unavailable for a draft ledger outside a repo: check the file and skip the location line.
+				let repoRoot = "";
+				let branch = "";
+				try {
+					const located = await locate(ctx);
+					repoRoot = located.repoRoot;
+					branch = located.branch;
+				} catch (error) {
+					if (!params.path) throw error;
+				}
+				const given = params.path;
+				const path = given ? (isAbsolute(given) ? given : resolve(ctx.cwd, given)) : ledgerPath(repoRoot, branch);
+				const problems = checkLedger(await readFile(path, "utf8"));
+				if (given && branch && path !== ledgerPath(repoRoot, branch)) {
+					problems.push(`path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`);
+				}
+				const result = { path, ok: problems.length === 0, problems };
+				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {}, isError: problems.length > 0 };
+			} catch (error) {
+				return { content: [{ type: "text", text: `ledger_check: ${message(error)}` }], details: {}, isError: true };
 			}
 		},
 	});
