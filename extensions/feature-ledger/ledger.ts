@@ -76,28 +76,54 @@ export function problemTarget(n: number, id: string, field: string): string {
 	return `features[${n}] (${id}): ${field}`;
 }
 
-// git add can only take regular files, symbolic links, or git-directories. The sandbox view shows
-// project-root dotfiles as character devices, so `git add -A` fails on them with exit 128. Build the
-// pathspec from the entries of those three types and skip every other entry type. The same filter
-// answers whether the working tree has changes, so sandbox noise alone does not pass that check.
+// git add can record a removal or a rename, so a D or R entry is addable without the path on disk.
+// Every other entry needs the path to exist and be a regular file, a symbolic link, or a
+// git-directory. The sandbox view shows project-root dotfiles as character devices, so `git add -A`
+// fails on them with exit 128; those entries are skipped. The same filter answers whether the working
+// tree has changes, so sandbox noise alone does not pass that check.
+// Entries are read with `--porcelain -z`: records are NUL-separated and paths are not quoted, so a
+// path with a space parses correctly. For a rename git reports "source -> destination"; the
+// destination is the path that exists. Git 2.2 or later is assumed (this repository runs git 2.53).
 export type EntryStat = (path: string) => Promise<Pick<Stats, "isFile" | "isSymbolicLink" | "isDirectory">>;
 
-export function isAddableEntry(info: Pick<Stats, "isFile" | "isSymbolicLink" | "isDirectory">): boolean {
+export function isAddableEntry(info: Pick<Stats, "isFile", "isSymbolicLink", "isDirectory">): boolean {
 	return info.isFile() || info.isSymbolicLink() || info.isDirectory();
+}
+
+// The status field is the two-letter column of a porcelain record. Either letter being D or R means
+// git can record the change.
+export function isAddableStatus(field: string): boolean {
+	return field.includes("D") || field.includes("R");
+}
+
+export interface PorcelainEntry {
+	status: string;
+	path: string;
+}
+
+export function parsePorcelain(porcelain: string): PorcelainEntry[] {
+	const entries: PorcelainEntry[] = [];
+	for (const record of porcelain.split("\0")) {
+		if (record.length < 4) continue;
+		const rest = record.slice(3);
+		// A rename names the destination, the path that exists.
+		const arrow = rest.indexOf(" -> ");
+		entries.push({ status: record.slice(0, 2), path: arrow === -1 ? rest : rest.slice(arrow + 4) });
+	}
+	return entries;
 }
 
 export async function addablePaths(porcelain: string, repoRoot: string, stat: EntryStat = lstat): Promise<string[]> {
 	const paths: string[] = [];
-	for (const line of porcelain.split("\n")) {
-		if (line.length < 4) continue;
-		const entry = line.slice(3).split(" -> ")[0];
+	for (const entry of parsePorcelain(porcelain)) {
+		if (isAddableStatus(entry.status)) { paths.push(entry.path); continue; }
 		let info;
 		try {
-			info = await stat(join(repoRoot, entry));
+			info = await stat(join(repoRoot, entry.path));
 		} catch {
 			continue; // the entry is no longer there
 		}
-		if (isAddableEntry(info)) paths.push(entry);
+		if (isAddableEntry(info)) paths.push(entry.path);
 	}
 	return paths;
 }
@@ -337,7 +363,7 @@ export async function submitItem(opts: {
 	const head = (await opts.exec("git", ["rev-parse", "HEAD"], opts.repoRoot)).stdout.trim();
 	const startFull = (await opts.exec("git", ["rev-parse", item.commits.start], opts.repoRoot)).stdout.trim();
 	if (head !== startFull) throw new Error(`HEAD moved during the work (${item.commits.start} is not HEAD); the item must be one commit`);
-	const status = await opts.exec("git", ["status", "--porcelain"], opts.repoRoot);
+	const status = await opts.exec("git", ["status", "--porcelain", "-z"], opts.repoRoot);
 	const paths = await addablePaths(status.stdout, opts.repoRoot, opts.stat ?? lstat);
 	if (paths.length === 0) throw new Error("the working tree has no changes");
 
@@ -354,7 +380,8 @@ export async function submitItem(opts: {
 		}
 	}
 
-	const staged = await opts.exec("git", ["add", "--", ...paths], opts.repoRoot);
+	// -A so a removal inside the pathspec is recorded, not only the added files.
+	const staged = await opts.exec("git", ["add", "-A", "--", ...paths], opts.repoRoot);
 	if (staged.code !== 0) throw new Error(`git add failed: ${staged.stderr || staged.stdout}`);
 	const commit = await opts.exec("git", ["commit", "-m", opts.commitMessage], opts.repoRoot);
 	if (commit.code !== 0) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`);

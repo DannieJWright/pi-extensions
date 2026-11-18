@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, ensureParent, isAddableEntry, ledgerPath, listItems, locationProblem, missingPlanProblem, nextItem, parseLedger, planReference, problemTarget, resolveCheckTarget, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, ledgerPath, listItems, locationProblem, missingPlanProblem, nextItem, parseLedger, parsePorcelain, planReference, problemTarget, resolveCheckTarget, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -179,6 +179,12 @@ test("the entry filter keeps regular files, symbolic links, and directories", ()
 	assert.ok(!isAddableEntry(entry("character device")));
 	assert.ok(!isAddableEntry(entry("block device")));
 	assert.ok(!isAddableEntry(entry("socket")));
+	// A removal or a rename is recorded by git, so those entries are addable without a path on disk.
+	assert.ok(isAddableStatus(" D"));
+	assert.ok(isAddableStatus("D "));
+	assert.ok(isAddableStatus("R "));
+	assert.ok(!isAddableStatus("??"));
+	assert.ok(!isAddableStatus(" M"));
 });
 
 test("the pathspec is built from the addable entries only", async () => {
@@ -187,7 +193,7 @@ test("the pathspec is built from the addable entries only", async () => {
 		"src/a.ts": "file",
 		"docs/link.md": "symlink",
 		"artifacts": "directory",
-		"src/b.ts": "file",
+		"src/renamed.ts": "file",
 	};
 	const fakeStat = async (path: string) => {
 		const kind = kinds[path.slice("/repo/".length)];
@@ -197,11 +203,24 @@ test("the pathspec is built from the addable entries only", async () => {
 			isDirectory: () => kind === "directory",
 		};
 	};
-	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", "R  src/b.ts -> src/a.ts", ""].join("\n");
-	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["src/a.ts", "docs/link.md", "artifacts", "src/b.ts"]);
+	// A D entry has no path on disk, so it is kept by its status letter. A rename names the
+	// destination, the path that exists; the source is gone.
+	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", " D deleted.txt", "R  src/old.ts -> src/renamed.ts"].join("\0");
+	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["src/a.ts", "docs/link.md", "artifacts", "deleted.txt", "src/renamed.ts"]);
 });
 
-test("a device entry is skipped and only the real file is staged", async () => {
+test("a path with a space is kept through the -z parse", async () => {
+	// With -z the records are NUL-separated and the paths are not quoted.
+	const porcelain = ["?? notes with a space.md", " D old name.txt"].join("\0");
+	assert.deepEqual(parsePorcelain(porcelain), [
+		{ status: "??", path: "notes with a space.md" },
+		{ status: " D", path: "old name.txt" },
+	]);
+	const fakeStat = async () => ({ isFile: () => true, isSymbolicLink: () => false, isDirectory: () => false });
+	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["notes with a space.md", "old name.txt"]);
+});
+
+test("a device entry is skipped and a deletion next to it is staged", async () => {
 	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
 	// The sandbox view shows a project-root dotfile as a character device, which git add cannot
 	// take. The stat is injected because the sandbox cannot create a device.
@@ -214,9 +233,12 @@ test("a device entry is skipped and only the real file is staged", async () => {
 		await startItem({ repoRoot: dir, branch, id: "alpha", exec });
 		await ensureParent(join(dir, "src/a.ts"));
 		await writeFile(join(dir, "src/a.ts"), "changed\n");
+		// A tracked file removed in the working tree has no inode, so it is kept by its status letter.
+		await rm(join(dir, "README.md"));
+		const status = ["?? .pi-dotfile", " D README.md", "?? src/a.ts"].join("\0");
 		const addArgs: string[][] = [];
 		const recordingExec = async (command: string, args: string[], cwd: string) => {
-			if (command === "git" && args[0] === "status") return { code: 0, stdout: "?? .pi-dotfile\n?? src/a.ts\n", stderr: "" };
+			if (command === "git" && args[0] === "status") return { code: 0, stdout: status, stderr: "" };
 			if (command === "git" && args[0] === "add") addArgs.push(args);
 			return exec(command, args, cwd);
 		};
@@ -225,9 +247,9 @@ test("a device entry is skipped and only the real file is staged", async () => {
 			summary: "Did the thing.", limitations: [], exec: recordingExec, logDir: dir, stat: fakeStat,
 		});
 		assert.ok(!result.rejected);
-		assert.deepEqual(addArgs[0], ["add", "--", "src/a.ts"]);
-		// files.out still comes from the commit diff, so the skipped entry is not in it.
-		assert.deepEqual(result.filesOut, ["src/a.ts"]);
+		assert.deepEqual(addArgs[0], ["add", "-A", "--", "README.md", "src/a.ts"]);
+		// files.out still comes from the commit diff, so the skipped device is not in it.
+		assert.deepEqual(result.filesOut, ["README.md", "src/a.ts"]);
 	} finally {
 		await cleanup();
 	}
@@ -239,7 +261,7 @@ test("a tree with only a device entry reports no changes", async () => {
 	try {
 		await startItem({ repoRoot: dir, branch, id: "alpha", exec });
 		const noiseOnly = async (command: string, args: string[], cwd: string) => {
-			if (command === "git" && args[0] === "status") return { code: 0, stdout: "?? .pi-dotfile\n", stderr: "" };
+			if (command === "git" && args[0] === "status") return { code: 0, stdout: "?? .pi-dotfile", stderr: "" };
 			return exec(command, args, cwd);
 		};
 		const error = await submitItem({
