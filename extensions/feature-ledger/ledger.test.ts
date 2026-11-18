@@ -610,9 +610,9 @@ test("parseLedger returns the file position of each parsed item", () => {
 		"      short_goal: Second item.",
 	].join("\n");
 	const { problems, indexes } = parseLedger(skipped);
-	// Item 0 is parsed with an empty id, item 2 is skipped, so item 3 is parsed as index 2
-	// and its file position is 3.
-	assert.deepEqual(indexes, [0, 1, 3]);
+	// Item 0 has no id and item 2 is not an item, so neither is in the parsed list.
+	// The parsed items are the ones at file positions 1 and 3, so indexes holds those two.
+	assert.deepEqual(indexes, [1, 3]);
 	assert.deepEqual(problems, [
 		"features[0]: missing id",
 		"features[2] is not an item",
@@ -621,6 +621,32 @@ test("parseLedger returns the file position of each parsed item", () => {
 	assert.deepEqual(checkLedger(skipped), [
 		"features[0]: missing id",
 		"features[2] is not an item",
+	]);
+});
+
+test("a duplicate id names the file position when an earlier item is skipped for a missing id", () => {
+	const skipped = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: ''",
+		"      status: todo",
+		"      short_goal: No id.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item with the id.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: Second item with the same id.",
+	].join("\n");
+	const { problems, indexes } = parseLedger(skipped);
+	// The item with no id is not in the parsed list, so the two items with the id are parsed at
+	// index 0 and 1, and their file positions are 1 and 2.
+	assert.deepEqual(indexes, [1, 2]);
+	assert.deepEqual(problems, ["features[0]: missing id"]);
+	assert.deepEqual(checkLedger(skipped), [
+		"features[0]: missing id",
+		"features[2] (first): duplicate id",
 	]);
 });
 

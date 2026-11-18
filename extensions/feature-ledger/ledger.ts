@@ -115,8 +115,10 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 	for (const [n, feature] of features.entries()) {
 		if (!feature || typeof feature !== "object" || Array.isArray(feature)) { problems.push(`features[${n}] is not an item`); continue; }
 		const item = feature as Record<string, unknown>;
-		indexes.push(n);
 		if (typeof item.id !== "string" || item.id === "") { problems.push(`features[${n}]: missing id`); continue; }
+		// One index per parsed item, so indexes[i] is the file position of features[i].
+		// An item skipped here is not in the parsed list, so it must not be in indexes.
+		indexes.push(n);
 		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
 		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
 		const at = (field: string) => problemTarget(n, item.id, field);
