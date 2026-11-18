@@ -1,0 +1,123 @@
+#!/usr/bin/env node
+// Pi extension for the feature-ledger workflow. The workflow lives in
+// skills/feature-ledger/SKILL.md; these tools cover the two steps an agent cannot
+// do reliably by hand: the status transition and the validation-gated commit.
+// Core logic is in ledger.ts so it is testable without a Pi session.
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
+import { startItem, submitItem, type Exec, type ExecResult, type LedgerItem } from "./ledger.ts";
+
+const START_PARAMS = {
+	type: "object",
+	properties: {
+		id: { type: "string", description: "Feature id in plan/<branch>/ledger.yaml" },
+	},
+	required: ["id"],
+	additionalProperties: false,
+} as unknown as TSchema;
+
+const SUBMIT_PARAMS = {
+	type: "object",
+	properties: {
+		id: { type: "string", description: "Feature id in plan/<branch>/ledger.yaml" },
+		commit_message: { type: "string", description: "Commit message for the single commit this item produces" },
+		summary: { type: "string", description: "What was done, in past tense" },
+		limitations: { type: "array", items: { type: "string" }, description: "Known limitations to append to the item" },
+	},
+	required: ["id", "commit_message", "summary"],
+	additionalProperties: false,
+} as unknown as TSchema;
+
+function message(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function briefText(item: LedgerItem, brief: { validation_scripts: string[] }): string {
+	const lines = [
+		`ledger_start: ${item.id} is in-progress (commit ${item.commits.start})`,
+		"",
+		`Goal: ${brief.goal}`,
+		"",
+		"Acceptance criteria:",
+		...brief.acceptance_criteria.map((criterion) => `- ${criterion}`),
+		"",
+		"Constraints:",
+		...brief.constraints.map((constraint) => `- ${constraint}`),
+		"",
+		"Files in:",
+		...brief.files_in.map((file) => `- ${file}`),
+		"",
+		"Tests:",
+		...brief.tests.map((testLine) => `- ${testLine}`),
+		"",
+		`Validation scripts (run by ledger_submit from the repo root): ${brief.validation_scripts.join(", ")}`,
+	];
+	return lines.join("\n");
+}
+
+export default function featureLedger(pi: ExtensionAPI): void {
+	const exec: Exec = async (command, args, cwd): Promise<ExecResult> => {
+		const result = await pi.exec(command, args, { cwd });
+		return { code: result.code ?? 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+	};
+
+	async function locate(ctx: ExtensionContext): Promise<{ repoRoot: string; branch: string }> {
+		const root = (await exec("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).stdout.trim();
+		if (!root) throw new Error("not inside a git repository");
+		const branch = (await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)).stdout.trim();
+		if (!branch) throw new Error("cannot read the current branch");
+		return { repoRoot: root, branch };
+	}
+
+	pi.registerTool({
+		name: "ledger_start",
+		label: "Ledger start",
+		description: "Read a feature ledger item and mark it in-progress. Returns the item brief: goal, acceptance criteria, constraints, files.in, tests. Refuses when the item is not todo.",
+		parameters: START_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const { repoRoot, branch } = await locate(ctx);
+				const { item, brief } = await startItem({ repoRoot, branch, id: params.id, exec });
+				return { content: [{ type: "text", text: briefText(item, brief) }], details: {} };
+			} catch (error) {
+				return { content: [{ type: "text", text: `ledger_start: ${message(error)}` }], details: {}, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "ledger_submit",
+		label: "Ledger submit",
+		description: "Validate and commit a ledger item. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done.",
+		parameters: SUBMIT_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const { repoRoot, branch } = await locate(ctx);
+				const result = await submitItem({
+					repoRoot,
+					branch,
+					id: params.id,
+					commitMessage: params.commit_message,
+					summary: params.summary,
+					limitations: params.limitations ?? [],
+					exec,
+					logDir: process.env.TMPDIR || "/tmp",
+				});
+				if (result.rejected) {
+					return {
+						content: [{ type: "text", text: `ledger_submit: rejected by ${result.script} (exit ${result.exit})\nFull output: ${result.logPath}\nLast output:\n${result.lastOutput}` }],
+						details: {},
+						isError: true,
+					};
+				}
+				return {
+					content: [{ type: "text", text: `ledger_submit: ${params.id} is done (commit ${result.commit})\nfiles.out:\n${result.filesOut.map((file) => `- ${file}`).join("\n")}` }],
+					details: {},
+				};
+			} catch (error) {
+				return { content: [{ type: "text", text: `ledger_submit: ${message(error)}` }], details: {}, isError: true };
+			}
+		},
+	});
+}
