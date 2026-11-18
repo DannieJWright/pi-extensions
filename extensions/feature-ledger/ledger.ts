@@ -2,6 +2,7 @@
 // The tools in index.ts call these; the logic is kept here so it is testable
 // without a Pi session.
 
+import { lstat, type Stats } from "node:fs/promises";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
@@ -54,6 +55,32 @@ export function resolveCheckTarget(cwd: string, path?: string, defaultTarget?: s
 export function locationProblem(path: string, repoRoot: string, branch: string): string | null {
 	if (!branch || path === ledgerPath(repoRoot, branch)) return null;
 	return `path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`;
+}
+
+// git add can only take regular files, symbolic links, or git-directories. The sandbox view shows
+// project-root dotfiles as character devices, so `git add -A` fails on them with exit 128. Build the
+// pathspec from the entries of those three types and skip every other entry type. The same filter
+// answers whether the working tree has changes, so sandbox noise alone does not pass that check.
+export type EntryStat = (path: string) => Promise<Pick<Stats, "isFile" | "isSymbolicLink" | "isDirectory">>;
+
+export function isAddableEntry(info: Pick<Stats, "isFile" | "isSymbolicLink" | "isDirectory">): boolean {
+	return info.isFile() || info.isSymbolicLink() || info.isDirectory();
+}
+
+export async function addablePaths(porcelain: string, repoRoot: string, stat: EntryStat = lstat): Promise<string[]> {
+	const paths: string[] = [];
+	for (const line of porcelain.split("\n")) {
+		if (line.length < 4) continue;
+		const entry = line.slice(3).split(" -> ")[0];
+		let info;
+		try {
+			info = await stat(join(repoRoot, entry));
+		} catch {
+			continue; // the entry is no longer there
+		}
+		if (isAddableEntry(info)) paths.push(entry);
+	}
+	return paths;
 }
 
 export function parseLedger(text: string): { ledger: Ledger | null; problems: string[]; indexes: number[] } {
@@ -271,6 +298,7 @@ export async function submitItem(opts: {
 	limitations: string[];
 	exec: Exec;
 	logDir?: string;
+	stat?: EntryStat;
 }): Promise<SubmitResult> {
 	const path = ledgerPath(opts.repoRoot, opts.branch);
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
@@ -283,8 +311,9 @@ export async function submitItem(opts: {
 	const head = (await opts.exec("git", ["rev-parse", "HEAD"], opts.repoRoot)).stdout.trim();
 	const startFull = (await opts.exec("git", ["rev-parse", item.commits.start], opts.repoRoot)).stdout.trim();
 	if (head !== startFull) throw new Error(`HEAD moved during the work (${item.commits.start} is not HEAD); the item must be one commit`);
-	const dirty = (await opts.exec("git", ["status", "--porcelain"], opts.repoRoot)).stdout.trim();
-	if (!dirty) throw new Error("the working tree has no changes");
+	const status = await opts.exec("git", ["status", "--porcelain"], opts.repoRoot);
+	const paths = await addablePaths(status.stdout, opts.repoRoot, opts.stat ?? lstat);
+	if (paths.length === 0) throw new Error("the working tree has no changes");
 
 	const scripts = item.validation_scripts ?? ledger.validation_scripts;
 	for (const script of scripts) {
@@ -299,7 +328,7 @@ export async function submitItem(opts: {
 		}
 	}
 
-	const staged = await opts.exec("git", ["add", "-A"], opts.repoRoot);
+	const staged = await opts.exec("git", ["add", "--", ...paths], opts.repoRoot);
 	if (staged.code !== 0) throw new Error(`git add failed: ${staged.stderr || staged.stdout}`);
 	const commit = await opts.exec("git", ["commit", "-m", opts.commitMessage], opts.repoRoot);
 	if (commit.code !== 0) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`);

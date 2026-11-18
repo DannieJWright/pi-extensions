@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, ensureParent, ledgerPath, listItems, locationProblem, nextItem, parseLedger, resolveCheckTarget, serializeLedger, startItem, submitItem } from "./ledger.ts";
+import { addablePaths, checkLedger, ensureParent, isAddableEntry, ledgerPath, listItems, locationProblem, nextItem, parseLedger, resolveCheckTarget, serializeLedger, startItem, submitItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -161,6 +161,90 @@ test("submit refuses a clean tree and a moved HEAD", async () => {
 		const moved = await submitItem({ repoRoot: dir, branch, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec, logDir: dir }).catch((error) => error as Error);
 		assert.match(moved.message, /HEAD moved/);
 	} finally { await cleanup(); }
+});
+
+test("the entry filter keeps regular files, symbolic links, and directories", () => {
+	const entry = (kind: string) => ({
+		isFile: () => kind === "file",
+		isSymbolicLink: () => kind === "symlink",
+		isDirectory: () => kind === "directory",
+	});
+	assert.ok(isAddableEntry(entry("file")));
+	assert.ok(isAddableEntry(entry("symlink")));
+	assert.ok(isAddableEntry(entry("directory")));
+	assert.ok(!isAddableEntry(entry("character device")));
+	assert.ok(!isAddableEntry(entry("block device")));
+	assert.ok(!isAddableEntry(entry("socket")));
+});
+
+test("the pathspec is built from the addable entries only", async () => {
+	const kinds: Record<string, string> = {
+		".pi-dotfile": "character device",
+		"src/a.ts": "file",
+		"docs/link.md": "symlink",
+		"artifacts": "directory",
+		"src/b.ts": "file",
+	};
+	const fakeStat = async (path: string) => {
+		const kind = kinds[path.slice("/repo/".length)];
+		return {
+			isFile: () => kind === "file",
+			isSymbolicLink: () => kind === "symlink",
+			isDirectory: () => kind === "directory",
+		};
+	};
+	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", "R  src/b.ts -> src/a.ts", ""].join("\n");
+	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["src/a.ts", "docs/link.md", "artifacts", "src/b.ts"]);
+});
+
+test("a device entry is skipped and only the real file is staged", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	// The sandbox view shows a project-root dotfile as a character device, which git add cannot
+	// take. The stat is injected because the sandbox cannot create a device.
+	const fakeStat = async (path: string) => ({
+		isFile: () => path.endsWith("src/a.ts"),
+		isSymbolicLink: () => false,
+		isDirectory: () => false,
+	});
+	try {
+		await startItem({ repoRoot: dir, branch, id: "alpha", exec });
+		await ensureParent(join(dir, "src/a.ts"));
+		await writeFile(join(dir, "src/a.ts"), "changed\n");
+		const addArgs: string[][] = [];
+		const recordingExec = async (command: string, args: string[], cwd: string) => {
+			if (command === "git" && args[0] === "status") return { code: 0, stdout: "?? .pi-dotfile\n?? src/a.ts\n", stderr: "" };
+			if (command === "git" && args[0] === "add") addArgs.push(args);
+			return exec(command, args, cwd);
+		};
+		const result = await submitItem({
+			repoRoot: dir, branch, id: "alpha", commitMessage: "feat: alpha",
+			summary: "Did the thing.", limitations: [], exec: recordingExec, logDir: dir, stat: fakeStat,
+		});
+		assert.ok(!result.rejected);
+		assert.deepEqual(addArgs[0], ["add", "--", "src/a.ts"]);
+		// files.out still comes from the commit diff, so the skipped entry is not in it.
+		assert.deepEqual(result.filesOut, ["src/a.ts"]);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("a tree with only a device entry reports no changes", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	const fakeStat = async () => ({ isFile: () => false, isSymbolicLink: () => false, isDirectory: () => false });
+	try {
+		await startItem({ repoRoot: dir, branch, id: "alpha", exec });
+		const noiseOnly = async (command: string, args: string[], cwd: string) => {
+			if (command === "git" && args[0] === "status") return { code: 0, stdout: "?? .pi-dotfile\n", stderr: "" };
+			return exec(command, args, cwd);
+		};
+		const error = await submitItem({
+			repoRoot: dir, branch, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec: noiseOnly, logDir: dir, stat: fakeStat,
+		}).catch((error) => error as Error);
+		assert.match(error.message, /no changes/);
+	} finally {
+		await cleanup();
+	}
 });
 
 test("a missing short_goal is reported as a problem", () => {
