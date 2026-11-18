@@ -9,6 +9,8 @@ description: >-
 
 # Before/After Capture
 
+Use this skill only for UI changes. A change with no visible surface has no pair: verify it with tests and command output instead. If the change cannot be seen in a frame, it is not a capture task.
+
 Capture a pair of images that proves a feature change. One key — the feature id — links the spec, the artifact folder, and the commit message.
 
 The rules below are generic. Project values (artifact path, start command, fixture clock) live in the Project note at the end, not in the rules.
