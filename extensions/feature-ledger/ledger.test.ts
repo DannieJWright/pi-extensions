@@ -242,6 +242,21 @@ test("nextItem takes the in-progress item before an unstarted one", () => {
 	assert.deepEqual(nextItem(ledger!), { next: { id: "third", status: "in-progress", short_goal: "Third item." }, status: "in-progress" });
 });
 
+test("nextItem reports in-progress for a mixed ledger (some done, some todo)", () => {
+	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: done\n      short_goal: First item.\n    - id: second\n      status: todo\n      short_goal: Second item.\n");
+	assert.deepEqual(nextItem(ledger!), { next: { id: "second", status: "todo", short_goal: "Second item." }, status: "in-progress" });
+});
+
+test("listItems errors on an item with no short_goal value", () => {
+	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: todo\n      goal: Do the thing.\n");
+	assert.throws(() => listItems(ledger!), /item first has no short_goal/);
+});
+
+test("nextItem errors on the selected item with no short_goal value", () => {
+	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: in-progress\n");
+	assert.throws(() => nextItem(ledger!), /item first has no short_goal/);
+});
+
 test("nextItem reports the first todo when nothing is started", () => {
 	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: todo\n      short_goal: First item.\n    - id: second\n      status: todo\n      short_goal: Second item.\n");
 	assert.deepEqual(nextItem(ledger!), { next: { id: "first", status: "todo", short_goal: "First item." }, status: "todo" });
