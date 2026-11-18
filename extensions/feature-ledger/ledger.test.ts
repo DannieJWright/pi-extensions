@@ -370,3 +370,42 @@ test("a submit call with no id names the missing field", async () => {
 		assert.equal(partial.content[0].text, "ledger_submit: commit_message: missing, summary: missing");
 	} finally { await cleanup(); }
 });
+
+test("a bullet that parses as a mapping is reported as a problem line", () => {
+	const mapping = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: alpha",
+		"      status: todo",
+		"      short_goal: Do the thing.",
+		"      constraints:",
+		"        - Read-only: the tool never writes the ledger.",
+	].join("\n");
+	assert.deepEqual(parseLedger(mapping).problems, [
+		'features[0] (alpha): constraints[0] is not a string (a bullet that starts with "key: value" reads as a mapping)',
+	]);
+	assert.deepEqual(checkLedger(mapping), [
+		'features[0] (alpha): constraints[0] is not a string (a bullet that starts with "key: value" reads as a mapping)',
+	]);
+
+	// A quoted bullet is a string: no problem.
+	const quoted = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: alpha",
+		"      status: todo",
+		"      short_goal: Do the thing.",
+		"      constraints:",
+		'        - "Read-only: the tool never writes the ledger."',
+	].join("\n");
+	assert.deepEqual(parseLedger(quoted).problems, []);
+	assert.deepEqual(checkLedger(quoted), []);
+	assert.deepEqual(parseLedger(quoted).ledger!.features[0].constraints, ["Read-only: the tool never writes the ledger."]);
+
+	// Read tools keep their behavior: the mapping entry still reaches the reader as [object Object].
+	const { ledger } = parseLedger(mapping);
+	assert.deepEqual(listItems(ledger!).items[0].short_goal, "Do the thing.");
+	assert.deepEqual(nextItem(ledger!).next!.short_goal, "Do the thing.");
+});

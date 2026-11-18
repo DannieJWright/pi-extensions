@@ -10,6 +10,7 @@ Read this when turning a plan into a ledger. Field rules and the shared conventi
 - `short_goal` is required and is the overview sentence — one sentence, no detail. `goal` carries the detail. Write both at authoring time; do not derive one from the other.
 - `acceptance_criteria` must be checkable by reading the result or running a test. A criterion that cannot be checked is not a criterion.
 - `constraints` records what must be kept, including "no new dependencies" when it applies.
+- Write a list entry as a plain string. A bullet that starts with `key: value` reads as a mapping, so quote the whole line: `- "Read-only: the tool never writes the ledger."`.
 - `validation_scripts` is written once at the ledger level as the base list. An item writes its own list only when it needs a different set.
 - `files.in` is seeded before any work starts. This is what a fresh agent reads first.
 - `tests` names the tests the item is expected to create or change.

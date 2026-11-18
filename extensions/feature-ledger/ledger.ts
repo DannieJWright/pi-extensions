@@ -58,17 +58,18 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 		if (typeof item.id !== "string" || item.id === "") { problems.push(`features[${n}]: missing id`); continue; }
 		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
 		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
+		const at = (field: string) => `features[${n}] (${item.id}): ${field}`;
 		items.push({
 			id: item.id,
 			status: (STATUSES.includes(item.status as ItemStatus) ? item.status : "todo") as ItemStatus,
 			goal: typeof item.goal === "string" ? item.goal : "",
 			short_goal: typeof item.short_goal === "string" ? item.short_goal : "",
-			acceptance_criteria: list(item.acceptance_criteria),
-			constraints: list(item.constraints),
-			...(Array.isArray(item.validation_scripts) ? { validation_scripts: list(item.validation_scripts) } : {}),
-			files: { in: list((item.files as Record<string, unknown>)?.in), out: list((item.files as Record<string, unknown>)?.out) },
-			tests: list(item.tests),
-			limitations: list(item.limitations),
+			acceptance_criteria: list(item.acceptance_criteria, at("acceptance_criteria"), problems),
+			constraints: list(item.constraints, at("constraints"), problems),
+			...(Array.isArray(item.validation_scripts) ? { validation_scripts: list(item.validation_scripts, at("validation_scripts"), problems) } : {}),
+			files: { in: list((item.files as Record<string, unknown>)?.in, at("files.in"), problems), out: list((item.files as Record<string, unknown>)?.out, at("files.out"), problems) },
+			tests: list(item.tests, at("tests"), problems),
+			limitations: list(item.limitations, at("limitations"), problems),
 			summary: typeof item.summary === "string" ? item.summary : "",
 			commits: Object.fromEntries(
 				Object.entries((item.commits as Record<string, unknown>) ?? {}).map(([key, value]) => [key, value === null || value === undefined ? value : String(value)]),
@@ -80,15 +81,22 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			description: typeof ledger.description === "string" ? ledger.description : "",
 			workspace: typeof ledger.workspace === "string" ? ledger.workspace : "",
 			branch: typeof ledger.branch === "string" ? ledger.branch : "",
-			validation_scripts: list(ledger.validation_scripts),
+			validation_scripts: list(ledger.validation_scripts, "ledger.validation_scripts", problems),
 			features: items,
 		},
 		problems,
 	};
 }
 
-function list(value: unknown): string[] {
-	return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
+function list(value: unknown, field: string, problems: string[]): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.map((entry, index) => {
+		if (typeof entry === "string") return entry;
+		// A bullet such as "- Read-only: the tool never writes the ledger." parses as a mapping,
+		// so it reaches a reader as [object Object]. Writers must quote such a line.
+		problems.push(`${field}[${index}] is not a string (a bullet that starts with "key: value" reads as a mapping)`);
+		return String(entry);
+	});
 }
 
 // The check: parseLedger problems plus duplicate id detection. One flat problem list,
