@@ -4,6 +4,7 @@
   "type": "module",
   "keywords": ["pi-package"],
   "pi": {
+    "skills": ["skills"],
     "extensions": [
       "extensions/just-tools/index.ts",
       "extensions/provider-rules/index.ts",
