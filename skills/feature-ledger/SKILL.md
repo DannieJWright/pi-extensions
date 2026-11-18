@@ -29,7 +29,7 @@ Field rules:
 - `id` — unique string. It is the key for the capture spec, the artifact folder, and the commit.
 - `status` — `todo`, `in-progress`, `done`. Set by the tools, never by hand.
 - `goal` — the work to be completed. Includes the option reference when the item came from a plan.
-- `short_goal` — one sentence: the overview of the item. Required. This is what a reader or a script sees first; `goal` carries the detail. Write it at authoring time, do not derive it from `goal`. The check reports a missing value, and the read tools error on an item without one.
+- `short_goal` — one sentence: the overview of the item. Required. This is what a reader or a script sees first; `goal` carries the detail. Write it at authoring time, do not derive it from `goal`. The `ledger_check` tool reports a missing value, and the read tools error on an item without one.
 - `acceptance_criteria` — bullet points. The key is one word with an underscore so a tool can read it without a quoting rule.
 - `constraints` — what must be kept in mind while working.
 - `validation_scripts` — commands that run the full suite, taken from the project the work happens in: its own defined recipes or scripts, or the agent tools available there (for example `just_test`). Do not write a recipe from another project. Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the repo root) before it accepts a submission. Each command must exit 0.
