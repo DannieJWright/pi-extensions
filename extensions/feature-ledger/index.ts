@@ -1,12 +1,21 @@
 #!/usr/bin/env node
 // Pi extension for the feature-ledger workflow. The workflow lives in
-// skills/feature-ledger/SKILL.md; these tools cover the two steps an agent cannot
-// do reliably by hand: the status transition and the validation-gated commit.
+// skills/feature-ledger/SKILL.md; these tools cover the steps an agent cannot
+// do reliably by hand: reading where a feature stands, the status transition, and
+// the validation-gated commit. The read tools (ledger_list, ledger_next) never write.
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
+import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { startItem, submitItem, type Exec, type ExecResult, type LedgerItem } from "./ledger.ts";
+import { ledgerPath, listItems, nextItem, parseLedger, startItem, submitItem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
+
+const EMPTY_PARAMS = {
+	type: "object",
+	properties: {},
+	required: [],
+	additionalProperties: false,
+} as unknown as TSchema;
 
 const START_PARAMS = {
 	type: "object",
@@ -69,6 +78,45 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		if (!branch) throw new Error("cannot read the current branch");
 		return { repoRoot: root, branch };
 	}
+
+	async function readLedger(ctx: ExtensionContext): Promise<Ledger> {
+		const { repoRoot, branch } = await locate(ctx);
+		const path = ledgerPath(repoRoot, branch);
+		const text = await readFile(path, "utf8");
+		const { ledger, problems } = parseLedger(text);
+		if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
+		return ledger;
+	}
+
+	pi.registerTool({
+		name: "ledger_list",
+		label: "Ledger list",
+		description: "Read every ledger item in file order. Returns JSON: branch, and for each item id, status, short_goal, and commits (start is null for a todo item, end is null for an in-progress item). Read-only.",
+		parameters: EMPTY_PARAMS,
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			try {
+				const result = listItems(await readLedger(ctx));
+				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
+			} catch (error) {
+				return { content: [{ type: "text", text: `ledger_list: ${message(error)}` }], details: {}, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "ledger_next",
+		label: "Ledger next",
+		description: "Read the next item to work on: the first in-progress item, else the first todo. Returns JSON { next: { id, status, short_goal }, status } where status is the ledger state (todo when nothing is started, in-progress when at least one item is in-progress or done, done when all are done and next is null). Read-only.",
+		parameters: EMPTY_PARAMS,
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			try {
+				const result = nextItem(await readLedger(ctx));
+				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
+			} catch (error) {
+				return { content: [{ type: "text", text: `ledger_next: ${message(error)}` }], details: {}, isError: true };
+			}
+		},
+	});
 
 	pi.registerTool({
 		name: "ledger_start",
