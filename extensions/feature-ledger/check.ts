@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // CLI: validate a feature ledger file. Used by `just feature-ledger check`.
-// Default target is the reference example schema/ledger.yaml. Exits 1 on problems.
+// The check logic is for real ledgers; the default target is the reference example
+// under the skill. Exits 1 on problems.
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -9,7 +10,7 @@ import { parseLedger } from "./ledger.ts";
 
 const USAGE = `usage: node check.ts [path]
 
-  path  ledger file (default the reference example schema/ledger.yaml)
+  path  ledger file (default the reference example skills/feature-ledger/references/ledger.yaml)
   -h, --help  show this text
 `;
 
@@ -18,7 +19,7 @@ export async function run(argv: string[]): Promise<number> {
 		console.log(USAGE);
 		return 0;
 	}
-	const path = argv[0] ?? resolve(fileURLToPath(new URL("../../schema/ledger.yaml", import.meta.url)));
+	const path = argv[0] ?? resolve(fileURLToPath(new URL("../../skills/feature-ledger/references/ledger.yaml", import.meta.url)));
 	let text: string;
 	try {
 		text = await readFile(path, "utf8");

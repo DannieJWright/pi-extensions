@@ -65,7 +65,7 @@ const FIXTURE = `ledger:
 `;
 
 test("the reference example parses with folded blocks and arrays", async () => {
-	const path = fileURLToPath(new URL("../../schema/ledger.yaml", import.meta.url));
+	const path = fileURLToPath(new URL("../../skills/feature-ledger/references/ledger.yaml", import.meta.url));
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
 	assert.deepEqual(problems, []);
 	assert.equal(ledger!.branch, "chat-ui");
@@ -87,10 +87,17 @@ test("the reference example parses with folded blocks and arrays", async () => {
 });
 
 test("serialize then parse round-trips", async () => {
-	const path = fileURLToPath(new URL("../../schema/ledger.yaml", import.meta.url));
+	const path = fileURLToPath(new URL("../../skills/feature-ledger/references/ledger.yaml", import.meta.url));
 	const first = parseLedger(await readFile(path, "utf8")).ledger!;
 	const again = parseLedger(serializeLedger(first)).ledger!;
 	assert.deepEqual(again, first);
+});
+
+test("commit hashes that look numeric stay strings", () => {
+	const { ledger, problems } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: done\n      commits:\n        start: 6576964\n        end: 1048321\n");
+	assert.deepEqual(problems, []);
+	assert.equal(ledger!.features[0].commits.start, "6576964");
+	assert.equal(ledger!.features[0].commits.end, "1048321");
 });
 
 test("start marks the item in-progress and records the start commit", async () => {

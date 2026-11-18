@@ -67,7 +67,9 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			tests: list(item.tests),
 			limitations: list(item.limitations),
 			summary: typeof item.summary === "string" ? item.summary : "",
-			commits: { ...(item.commits as Record<string, unknown> ?? {}) } as LedgerItem["commits"],
+			commits: Object.fromEntries(
+				Object.entries((item.commits as Record<string, unknown>) ?? {}).map(([key, value]) => [key, value === null || value === undefined ? value : String(value)]),
+			) as LedgerItem["commits"],
 		});
 	}
 	return {

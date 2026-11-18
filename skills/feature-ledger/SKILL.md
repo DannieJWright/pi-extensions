@@ -17,7 +17,7 @@ Two parts: the ledger file, and two tools (`ledger_start`, `ledger_submit`) that
 
 `plan/<branch>/ledger.yaml`. One file per feature branch; every item lives in it, in order.
 
-YAML. Multiline text uses `>` blocks. Arrays for every list. Keys are exact. The reference example is `schema/ledger.yaml` in this repo; it parses with the tools below.
+YAML. Multiline text uses `>` blocks. Arrays for every list. Keys are exact. The reference example is `references/ledger.yaml` in this skill; it parses with the tools below.
 
 Field rules:
 
