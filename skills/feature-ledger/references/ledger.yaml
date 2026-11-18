@@ -1,0 +1,65 @@
+ledger:
+  description: >
+    Three agent workflows for feature work: capture, test hooks, and the ledger.
+  workspace: .worktrees/chat-ui
+  branch: chat-ui
+  validation_scripts:
+    # The project's own recipe, as the agent working the item would run it.
+    - just test all
+
+  features:
+    - id: search-result-labels
+      status: done
+      goal: >
+        Live search with readable result rows. Option 4.a of
+        plan/chat-ui/agent-improvement-ideas-1.md.
+      short_goal: Live search with readable result rows.
+      acceptance_criteria:
+        - The field searches as the reader types.
+        - Each row names its source and its time.
+        - The count, prev/next, and the arrow keys move through results.
+      constraints:
+        - Keep the accessible names the page objects depend on.
+        - No new dependencies.
+      # validation_scripts omitted: the base list at the ledger level applies.
+      # An item that needs a different set writes its own list, which replaces the base.
+      files:
+        in:
+          - packages/web/src/features/agent/components/transcript/TranscriptSearch.tsx
+        out:
+          - packages/web/src/features/agent/components/transcript/TranscriptSearch.tsx
+          - packages/web/src/features/agent/lib/format.ts
+      tests:
+        - tests/unit/agent/behaviour.test.tsx
+        - tests/unit/agent/format.test.ts
+      limitations:
+        - Search is fixture-only; there is no real API search route, so the labels come from
+          the transport's own data.
+        - The current row is marked with a background only; there is no focus ring on the list.
+      summary: >
+        Debounced search, shared result state, relative times, prev/next, and arrow keys.
+        Pair check passed: the marked row is visible in the after frame
+        (artifacts/search-result-labels/1/after.png).
+      commits:
+        start: 6be88a3
+        end: 7d02b8e
+
+    - id: copy-block-actions
+      status: todo
+      goal: >
+        Show copy actions on result blocks when the row is hovered.
+      short_goal: Copy actions on result blocks on hover.
+      acceptance_criteria:
+        - The actions appear on hover and on keyboard focus.
+        - Each action is reachable by role with its own name.
+      constraints:
+        - Test ids follow the stable-test-hooks skill.
+      files:
+        in:
+          - packages/web/src/features/agent/components/transcript/ResultBlock.tsx
+        out: []
+      tests:
+        - tests/unit/agent/block-actions.test.tsx
+      limitations: []
+      summary: ''
+      commits: {}

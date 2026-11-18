@@ -7,12 +7,15 @@ REPO := justfile_directory()
 _list-recipes:
     just --list
 
-# Run the permission-mode generator check, the just-tools tests, and the provider rules check.
+# Run the permission-mode generator check, the just-tools tests, the provider rules check, the feature-ledger check and tests, and the skill script tests.
 [group('test')]
 test:
     just -f "{{ REPO }}/justfile" perm check
     just -f "{{ REPO }}/justfile" just-tools test
     just -f "{{ REPO }}/justfile" provider-rules check
+    just -f "{{ REPO }}/justfile" feature-ledger check
+    just -f "{{ REPO }}/justfile" feature-ledger test
+    just -f "{{ REPO }}/justfile" skills test
 
 # Run the just-tools and permission-mode merge tests. Pass Node options after `--` (for example `just just-tools test -- --test-name-pattern=grep`).
 [arg('action', pattern='test', help='test')]
@@ -99,6 +102,71 @@ provider-rules action="check" *args="":
             ;;
         test)
             node --test "${ext_dir}"/*.test.ts ${extra[@]+"${extra[@]}"}
+            ;;
+        *)
+            echo "unknown action: ${action}" >&2
+            exit 2
+            ;;
+    esac
+
+# Check or test the feature-ledger extension. Actions: check, or test. Check defaults to the reference ledger and accepts a real-ledger path. Pass Node options after `--` (for example `just feature-ledger test -- --test-name-pattern=round-trip`).
+[arg('action', pattern='check|test', help='check, or test')]
+[group('test')]
+feature-ledger action="check" *args="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ext_dir="{{ REPO }}/extensions/feature-ledger"
+    action="$1"
+    shift; # Shift for `action`
+
+    # `just` passes an empty default for *args, so drop empty entries before forwarding them.
+    extra=()
+    for arg in "$@"; do
+        if [ -n "${arg}" ]; then extra+=("${arg}"); fi
+    done
+
+    case "${action}" in
+        check)
+            node "${ext_dir}/check.ts" ${extra[@]+"${extra[@]}"}
+            ;;
+        test)
+            node --test "${ext_dir}"/*.test.ts ${extra[@]+"${extra[@]}"}
+            ;;
+        *)
+            echo "unknown action: ${action}" >&2
+            exit 2
+            ;;
+    esac
+
+# Run the skill script tests. Actions: test. Use --skill <name> to limit the run to one skill. Pass Node options after `--` (for example `just skills test -- --test-name-pattern=flow`).
+[arg('action', pattern='test', help='test')]
+[arg('skill', long='skill', value='', help='Specify --skill <name> to limit the run to one skill')]
+[group('test')]
+skills action="test" skill="" *args="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    action="$1"
+    skill="$2"
+    shift; # Shift for `action`
+    shift; # Shift for `skill`
+
+    # `just` passes an empty default for *args, so drop empty entries before forwarding them.
+    extra=()
+    for arg in "$@"; do
+        if [ -n "${arg}" ]; then extra+=("${arg}"); fi
+    done
+
+    case "${action}" in
+        test)
+            files=()
+            for f in $(find "{{ REPO }}/skills${skill:+/${skill}}" -name '*.test.mjs'); do files+=("${f}"); done
+            if [ ${#files[@]} -eq 0 ]; then
+                echo "no skill test files found${skill:+ in skills/${skill}}" >&2
+                exit 1
+            fi
+            node --test ${files[@]+"${files[@]}"} ${extra[@]+"${extra[@]}"}
             ;;
         *)
             echo "unknown action: ${action}" >&2
