@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem, type Exec } from "./ledger.ts";
+import { checkLedger, ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem, type Exec } from "./ledger.ts";
 
 const run = promisify(execFile);
 
@@ -192,6 +192,87 @@ test("a missing short_goal is reported as a problem", () => {
 	assert.deepEqual(problems, ["features[0] (alpha): missing short_goal"]);
 	const empty = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      short_goal: ''\n");
 	assert.deepEqual(empty.problems, ["features[0] (alpha): missing short_goal"]);
+});
+
+test("checkLedger reports no problems for a clean ledger", () => {
+	const clean = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - id: second",
+		"      status: done",
+		"      short_goal: Second item.",
+	].join("\n");
+	assert.deepEqual(checkLedger(clean), []);
+});
+
+test("checkLedger reports no problems for the reference example", async () => {
+	const path = fileURLToPath(new URL("../../skills/feature-ledger/references/ledger.yaml", import.meta.url));
+	assert.deepEqual(checkLedger(await readFile(path, "utf8")), []);
+});
+
+test("checkLedger reports duplicate ids for the second and later occurrence", () => {
+	const two = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: Second item with the same id.",
+	].join("\n");
+	assert.deepEqual(checkLedger(two), ["features[1] (first): duplicate id"]);
+
+	const three = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - id: first",
+		"      status: done",
+		"      short_goal: Second item with the same id.",
+		"    - id: first",
+		"      status: done",
+		"      short_goal: Third item with the same id.",
+	].join("\n");
+	assert.deepEqual(checkLedger(three), ["features[1] (first): duplicate id", "features[2] (first): duplicate id"]);
+});
+
+test("checkLedger names the file position when an item is skipped", () => {
+	const skipped = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: ''",
+		"      status: todo",
+		"      short_goal: No id.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: Second item with the same id.",
+	].join("\n");
+	assert.deepEqual(checkLedger(skipped), ["features[0]: missing id", "features[2] (first): duplicate id"]);
+});
+
+test("checkLedger keeps the existing missing short_goal problems", () => {
+	const missing = "ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      goal: Do the thing.\n";
+	assert.deepEqual(checkLedger(missing), ["features[0] (alpha): missing short_goal"]);
+	const duplicate = "ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      short_goal: Do the thing.\n    - id: alpha\n      status: todo\n";
+	assert.deepEqual(checkLedger(duplicate), ["features[1] (alpha): missing short_goal", "features[1] (alpha): duplicate id"]);
+});
+
+test("parseLedger does not report duplicate ids: read tools keep their behavior", () => {
+	const { problems } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      short_goal: First item.\n    - id: alpha\n      status: todo\n      short_goal: Second item with the same id.\n");
+	assert.deepEqual(problems, []);
 });
 
 test("listItems keeps file order and reports unset commits as null", () => {

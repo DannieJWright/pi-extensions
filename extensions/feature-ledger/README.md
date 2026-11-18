@@ -14,6 +14,9 @@ just feature-ledger check path/to/ledger.yaml   # validate a real ledger
 just feature-ledger test                        # run the parser and write-path tests
 ```
 
+The CLI is the human and CI path. In a session, an agent uses the `ledger_check` tool, which runs the same
+check (`checkLedger` in `ledger.ts`) over the current branch ledger or a path it is given.
+
 The reference example is `skills/feature-ledger/references/ledger.yaml`. It carries `short_goal`, the
 required one-sentence overview of an item, which the read tools return.
 
@@ -30,6 +33,12 @@ Read-only:
   when all items are done and `next` is null. A script or a delegate calls it and hands the item to the
   next agent, who calls `ledger_start`. Errors when an item has no `short_goal` value, same as
   `ledger_list`.
+- `ledger_check` — validate a ledger. Default target `plan/<branch>/ledger.yaml` for the current branch;
+  an optional `path` checks a draft ledger not yet under `plan/`, resolved against the session cwd. Returns
+  JSON `{ "path", "ok", "problems" }` and `isError` when problems exist. Reports a missing `id`, a duplicate
+  `id`, a bad status, a missing `short_goal`, and a path that is not `plan/<branch>/ledger.yaml` for the
+  current branch. When git is unavailable and a path was given, the file is still checked and the location
+  line is skipped. `check.ts` is the same check for humans and CI.
 
 Writing:
 

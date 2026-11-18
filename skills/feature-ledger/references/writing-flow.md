@@ -21,12 +21,11 @@ Read this when turning a plan into a ledger. Field rules and the shared conventi
 
 ## Before handing the ledger to an agent
 
-Run the check script from the repo root:
+Run the `ledger_check` tool. It checks the ledger for the current branch, or a draft ledger you name with
+`path` before it is under `plan/`. This is the only path you have: the check lives in the extension, and an
+agent working a ledger has no access to the extension's own scripts or recipes.
 
-```sh
-node extensions/feature-ledger/check.ts <path>
-```
-
-This reports a missing `id`, a bad status, or a missing `short_goal`. Fix those before the first `ledger_start`.
+The check reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, and a path that is
+not `plan/<branch>/ledger.yaml` for the current branch. Fix those before the first `ledger_start`.
 
 `validation_scripts` names what the project being worked on defines: its own recipes or scripts, or the agent tools available to an agent there (for example `just_test`). Do not copy a recipe from another project — the agent working the item only has the tools of its own project.
