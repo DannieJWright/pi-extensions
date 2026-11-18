@@ -21,3 +21,7 @@ repository.
 
 Run `just feature-ledger check` and `just test` through the just tools exposed to you. These are your own
 commands in this repository; the rule above is about what a skill file tells another agent to run.
+
+`plan/` is gitignored in this repository, so `git ls-files plan/` is always empty here and the tracked-plan
+problem in `ledger_check` cannot fire. That check applies to projects that track `plan/`, which is what the
+skill states for agents working in another project.
