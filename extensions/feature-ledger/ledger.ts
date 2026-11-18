@@ -3,7 +3,7 @@
 // without a Pi session.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
@@ -41,6 +41,19 @@ export function ensureParent(path: string): Promise<void> {
 
 export function ledgerPath(repoRoot: string, branch: string): string {
 	return join(repoRoot, "plan", branch, "ledger.yaml");
+}
+
+// Pure wiring helpers for the check: no git and no filesystem access, the caller supplies
+// the repo root, the branch, and the file read. The CLI and the tool share them.
+
+export function resolveCheckTarget(cwd: string, path?: string, defaultTarget?: string): string {
+	if (!path) return defaultTarget ?? cwd;
+	return isAbsolute(path) ? path : resolve(cwd, path);
+}
+
+export function locationProblem(path: string, repoRoot: string, branch: string): string | null {
+	if (!branch || path === ledgerPath(repoRoot, branch)) return null;
+	return `path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`;
 }
 
 export function parseLedger(text: string): { ledger: Ledger | null; problems: string[] } {

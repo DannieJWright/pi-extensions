@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem } from "./ledger.ts";
+import { checkLedger, ensureParent, ledgerPath, listItems, locationProblem, nextItem, parseLedger, resolveCheckTarget, serializeLedger, startItem, submitItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -441,4 +441,20 @@ test("a detached HEAD resolves through the fallback", async () => {
 		assert.match(result.path, /\/plan\/HEAD\/ledger\.yaml$/);
 		assert.ok(result.ok);
 	} finally { await cleanup(); }
+});
+
+test("resolveCheckTarget resolves a relative path against cwd and uses an absolute path as given", () => {
+	assert.equal(resolveCheckTarget("/repo"), "/repo");
+	assert.equal(resolveCheckTarget("/repo/work", "draft/ledger.yaml"), "/repo/work/draft/ledger.yaml");
+	assert.equal(resolveCheckTarget("/repo/work", "/tmp/draft.yaml"), "/tmp/draft.yaml");
+	// With no path, the caller-supplied default target is used.
+	assert.equal(resolveCheckTarget("/repo/work", undefined, ledgerPath("/repo", "feature-x")), "/repo/plan/feature-x/ledger.yaml");
+});
+
+test("locationProblem names the location line only for a path outside plan/<branch>/", () => {
+	assert.equal(locationProblem(ledgerPath("/repo", "feature-x"), "/repo", "feature-x"), null);
+	assert.equal(locationProblem("/repo/plan/other/ledger.yaml", "/repo", "feature-x"),
+		"path is not plan/feature-x/ledger.yaml for branch feature-x (ledger_list will not find it)");
+	// No branch (a draft ledger outside a repo): no location line.
+	assert.equal(locationProblem("/tmp/draft.yaml", "", ""), null);
 });

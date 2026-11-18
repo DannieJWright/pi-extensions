@@ -6,10 +6,9 @@
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
 import { readFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkLedger, ledgerPath, listItems, nextItem, parseLedger, startItem, submitItem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
+import { checkLedger, ledgerPath, listItems, locationProblem, nextItem, parseLedger, resolveCheckTarget, startItem, submitItem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
 
 const EMPTY_PARAMS = {
 	type: "object",
@@ -154,12 +153,10 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				} catch (error) {
 					if (!params.path) throw error;
 				}
-				const given = params.path;
-				const path = given ? (isAbsolute(given) ? given : resolve(ctx.cwd, given)) : ledgerPath(repoRoot, branch);
+				const path = resolveCheckTarget(ctx.cwd, params.path, branch ? ledgerPath(repoRoot, branch) : undefined);
 				const problems = checkLedger(await readFile(path, "utf8"));
-				if (given && branch && path !== ledgerPath(repoRoot, branch)) {
-					problems.push(`path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`);
-				}
+				const location = locationProblem(path, repoRoot, branch);
+				if (location) problems.push(location);
 				const result = { path, ok: problems.length === 0, problems };
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {}, isError: problems.length > 0 };
 			} catch (error) {
