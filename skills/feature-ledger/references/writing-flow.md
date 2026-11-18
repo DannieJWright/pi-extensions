@@ -29,4 +29,4 @@ node extensions/feature-ledger/check.ts <path>
 
 This reports a missing `id`, a bad status, or a missing `short_goal`. Fix those before the first `ledger_start`.
 
-Do not write project recipe commands (a `just` recipe, an npm script) into `validation_scripts`. A real agent runs the commands as given, from the repo root, and the recipes of a given repo are not available to it. Write the command itself, for example `node --test tests/`.
+`validation_scripts` names what the project being worked on defines: its own recipes or scripts, or the agent tools available to an agent there (for example `just_test`). Do not copy a recipe from another project — the agent working the item only has the tools of its own project.

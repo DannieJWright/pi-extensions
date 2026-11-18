@@ -32,7 +32,7 @@ Field rules:
 - `short_goal` — one sentence: the overview of the item. Required. This is what a reader or a script sees first; `goal` carries the detail. Write it at authoring time, do not derive it from `goal`. The check reports a missing value, and the read tools error on an item without one.
 - `acceptance_criteria` — bullet points. The key is one word with an underscore so a tool can read it without a quoting rule.
 - `constraints` — what must be kept in mind while working.
-- `validation_scripts` — commands that run the full suite, written as plain commands the shell can run, not project recipe names (a `just` recipe or an npm script is not available to an agent working in a clone). Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the repo root) before it accepts a submission. Each command must exit 0.
+- `validation_scripts` — commands that run the full suite, taken from the project the work happens in: its own defined recipes or scripts, or the agent tools available there (for example `just_test`). Do not write a recipe from another project. Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the repo root) before it accepts a submission. Each command must exit 0.
 - `files.in` — known relevant files, written before the work starts. This is what a fresh agent reads first.
 - `files.out` — files edited during the work. Written by the submit tool from the commit diff.
 - `tests` — tests created or modified.

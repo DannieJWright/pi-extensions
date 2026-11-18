@@ -70,7 +70,7 @@ test("the reference example parses with folded blocks and arrays", async () => {
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
 	assert.deepEqual(problems, []);
 	assert.equal(ledger!.branch, "chat-ui");
-	assert.deepEqual(ledger!.validation_scripts, ["node --test tests/"]);
+	assert.deepEqual(ledger!.validation_scripts, ["just test all"]);
 	assert.equal(ledger!.features.length, 2);
 	const item = ledger!.features[0];
 	assert.equal(item.id, "search-result-labels");
