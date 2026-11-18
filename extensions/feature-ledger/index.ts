@@ -91,7 +91,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_list",
 		label: "Ledger list",
-		description: "Read every ledger item in file order. Returns JSON: branch, and for each item id, status, short_goal, and commits (start is null for a todo item, end is null for an in-progress item). Read-only.",
+		description: "Read every ledger item in file order. Returns JSON: branch, and for each item id, status, short_goal, and commits (start is null for a todo item, end is null for an in-progress item). Errors when an item has no short_goal value. Read-only.",
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			try {
@@ -106,7 +106,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_next",
 		label: "Ledger next",
-		description: "Read the next item to work on: the first in-progress item, else the first todo. Returns JSON { next: { id, status, short_goal }, status } where status is the ledger state (todo when nothing is started, in-progress when at least one item is in-progress or done, done when all are done and next is null). Read-only.",
+		description: "Read the next item to work on: the first in-progress item, else the first todo. Returns JSON { next: { id, status, short_goal }, status } where status is the ledger state (todo when nothing is started, in-progress when at least one item is in-progress or done, done when all are done and next is null). Errors when the selected item has no short_goal value. Read-only.",
 		parameters: EMPTY_PARAMS,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			try {

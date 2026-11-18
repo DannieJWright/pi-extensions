@@ -9,13 +9,13 @@ Four tools. Two read, two write.
 `ledger_list()`
 
 - Returns JSON: `branch`, and for each item in file order `id`, `status`, `short_goal`, `commits` (`start` null for a `todo` item, `end` null for an `in-progress` item).
-- Read-only. Use it to see where a feature stands.
+- Read-only. Use it to see where a feature stands. Errors when an item has no `short_goal` value, so a reader never gets an empty overview.
 
 `ledger_next()`
 
 - Returns JSON `{ "next": { "id", "status", "short_goal" }, "status" }`. `next` is the first `in-progress` item, else the first `todo`.
 - The root `status` is the ledger state: `todo` when nothing is started, `in-progress` when at least one item is in-progress or done, `done` when all items are done and `next` is null.
-- Read-only. A script or a delegate calls it and hands the item to the next agent, who calls `ledger_start`.
+- Read-only. A script or a delegate calls it and hands the item to the next agent, who calls `ledger_start`. Errors when the selected item has no `short_goal` value.
 
 `ledger_start(id)`
 

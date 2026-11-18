@@ -118,6 +118,13 @@ export interface LedgerNextResult {
 
 // Read-only views. Order is file order; nothing here writes the ledger.
 // commits.start is null for a todo item, commits.end is null for an in-progress item.
+// An item with no short_goal value is an error here: parseLedger reports it as a problem but
+// still parses the item, so a read view must not hand a reader an empty overview.
+
+function requireShortGoal(item: LedgerItem): string {
+	if (item.short_goal === "") throw new Error(`item ${item.id} has no short_goal`);
+	return item.short_goal;
+}
 
 export function listItems(ledger: Ledger): LedgerListResult {
 	return {
@@ -125,7 +132,7 @@ export function listItems(ledger: Ledger): LedgerListResult {
 		items: ledger.features.map((item) => ({
 			id: item.id,
 			status: item.status,
-			short_goal: item.short_goal,
+			short_goal: requireShortGoal(item),
 			commits: { start: item.commits.start ?? null, end: item.commits.end ?? null },
 		})),
 	};
@@ -144,7 +151,7 @@ export function nextItem(ledger: Ledger): LedgerNextResult {
 			: "in-progress";
 	const item = ledger.features.find((feature) => feature.status === "in-progress") ?? ledger.features.find((feature) => feature.status === "todo") ?? null;
 	return {
-		next: item ? { id: item.id, status: item.status, short_goal: item.short_goal } : null,
+		next: item ? { id: item.id, status: item.status, short_goal: requireShortGoal(item) } : null,
 		status: state,
 	};
 }
