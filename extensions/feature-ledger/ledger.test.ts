@@ -351,3 +351,22 @@ test("the harness runs a tool against a temporary repository with no Pi session"
 		assert.equal(failed.stdout, "");
 	} finally { await cleanup(); }
 });
+
+test("a submit call with no id names the missing field", async () => {
+	const { dir, cleanup } = await setupRepo(FIXTURE);
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		// id stays first in the schema and in the required list.
+		assert.equal((api.tools.ledger_submit.parameters as { required: string[] }).required[0], "id");
+		assert.match(api.tools.ledger_submit.description, /Pass id first/);
+
+		const result = await api.tools.ledger_submit.execute(null, {}, null, null, createFakeContext(dir));
+		assert.ok(result.isError);
+		assert.match(result.content[0].text, /^ledger_submit: id: missing/);
+
+		const partial = await api.tools.ledger_submit.execute(null, { id: "alpha" }, null, null, createFakeContext(dir));
+		assert.ok(partial.isError);
+		assert.equal(partial.content[0].text, "ledger_submit: commit_message: missing, summary: missing");
+	} finally { await cleanup(); }
+});

@@ -52,6 +52,12 @@ function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+// Names each required field that is missing, in the order of the required list.
+// The tool wrapper reports it as "id: missing" rather than only the arguments received.
+function missingRequired(params: Record<string, unknown>, required: string[]): string[] {
+	return required.filter((field) => params[field] === undefined || params[field] === "");
+}
+
 function briefText(item: LedgerItem, brief: { validation_scripts: string[] }): string {
 	const lines = [
 		`ledger_start: ${item.id} is in-progress (commit ${item.commits.start})`,
@@ -178,10 +184,12 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_submit",
 		label: "Ledger submit",
-		description: "Validate and commit a ledger item. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done.",
+		description: "Validate and commit a ledger item. Pass id first. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done.",
 		parameters: SUBMIT_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
+				const missing = missingRequired(params, SUBMIT_PARAMS.required as string[]);
+				if (missing.length > 0) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
 				const { repoRoot, branch } = await locate(ctx);
 				const result = await submitItem({
 					repoRoot,
