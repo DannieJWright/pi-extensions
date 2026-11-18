@@ -140,7 +140,8 @@ function scalar(text: string): Value {
 		return map;
 	}
 	if ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"'))) return text.slice(1, -1);
-	if (/^-?\d+$/.test(text)) return Number(text);
+	// A value with a leading zero is not read as a number: a commit hash such as 0092502 must keep its zeros.
+	if (/^-?0$/.test(text) || /^-?[1-9]\d*$/.test(text)) return Number(text);
 	return text;
 }
 

@@ -76,6 +76,10 @@ test("commit hashes that look numeric stay strings", () => {
 	assert.deepEqual(problems, []);
 	assert.equal(ledger!.features[0].commits.start, "6576964");
 	assert.equal(ledger!.features[0].commits.end, "1048321");
+	// A hash with leading zeros keeps them: a value with a leading zero is not read as a number.
+	const zeros = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: done\n      short_goal: Do the thing.\n      commits:\n        start: 0092502\n        end: 1048321\n");
+	assert.deepEqual(zeros.problems, []);
+	assert.equal(zeros.ledger!.features[0].commits.start, "0092502");
 });
 
 test("start marks the item in-progress and records the start commit", async () => {

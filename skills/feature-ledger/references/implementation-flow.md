@@ -38,6 +38,15 @@ Refuses when the item is not `in-progress`, when the tree has no changes, or whe
 
 All tools write and read the same file, so a parent agent, a subagent, and a new session see the same state.
 
+## Reading state
+
+Read state through `ledger_list`, `ledger_next`, or `ledger_start`, never with the read tool on `plan/<branch>/ledger.yaml`. The file carries every item, so a direct read pulls state the agent does not need.
+
+Two exceptions:
+
+- The writing flow authors the file, so it may read what it wrote.
+- `ledger_check` reads the file internally, which is allowed.
+
 ## Work order for an item
 
 1. `ledger_start(id)` — read the item. For a UI item, capture the before frame (before-after-capture skill).

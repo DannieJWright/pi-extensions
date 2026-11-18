@@ -47,6 +47,15 @@ Agents must not change statuses by hand. `todo` → `in-progress` → `done` is 
 
 The writing flow may only create items as `todo`.
 
+## Read state through the tools
+
+An agent working an item reads state through `ledger_list`, `ledger_next`, or `ledger_start`. It does not read `plan/<branch>/ledger.yaml` with the read tool. The file carries every item, so a direct read pulls state the agent does not need.
+
+Two exceptions:
+
+- The writing flow authors the file, so it may read what it wrote.
+- `ledger_check` reads the file internally, which is allowed.
+
 ## Known limitation: concurrent writers
 
 The tools write one shared file. For now we assume concurrent work: a parent agent, a subagent, or a new session may hold different items in progress at the same time. There is no lock, so the last write wins and a read can be stale. The read tools can report a state that changed after the read.
