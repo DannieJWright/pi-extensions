@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { addablePaths, checkLedger, ensureParent, isAddableEntry, ledgerPath, listItems, locationProblem, nextItem, parseLedger, resolveCheckTarget, serializeLedger, startItem, submitItem } from "./ledger.ts";
+import { checkLedger, ensureParent, isAddableEntry, ledgerPath, listItems, locationProblem, missingPlanProblem, nextItem, parseLedger, planReference, problemTarget, resolveCheckTarget, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -539,6 +539,54 @@ test("locationProblem names the location line only for a path outside plan/<bran
 		"path is not plan/feature-x/ledger.yaml for branch feature-x (ledger_list will not find it)");
 	// No branch (a draft ledger outside a repo): no location line.
 	assert.equal(locationProblem("/tmp/draft.yaml", "", ""), null);
+});
+
+const GOAL_WITH_PLAN = FIXTURE.replace(
+	"      goal: >\n        Do the thing.",
+	"      goal: Option 9 of plan/2026-11-18_missing-plan.md. Do the thing.",
+);
+
+test("planReference reads the plan path out of a goal", () => {
+	assert.equal(planReference("Option 4.a of plan/chat-ui/agent-improvement-ideas-1.md. Live search."), "plan/chat-ui/agent-improvement-ideas-1.md");
+	assert.equal(planReference("Do the thing."), null);
+});
+
+test("the two new lines follow the location line in wording", () => {
+	assert.equal(missingPlanProblem(problemTarget(0, "alpha", "goal"), "plan/x.md"),
+		"features[0] (alpha): goal names a plan file that does not exist (plan/x.md)");
+	assert.equal(trackedPlanProblem(["plan/feature-x/ledger.yaml"]),
+		"git ls-files plan/ is not empty: plan/feature-x/ledger.yaml (the plan and the ledger are removed before the PR is opened)");
+});
+
+test("checkLedger stays free of the git and filesystem checks", () => {
+	assert.deepEqual(checkLedger(GOAL_WITH_PLAN.replace("{BRANCH}", "feature-x")), []);
+});
+
+test("ledger_check reports a goal that names a plan file that does not exist", async () => {
+	const { dir, branch, cleanup } = await setupRepo(GOAL_WITH_PLAN);
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir));
+		assert.ok(result.isError);
+		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
+			"features[0] (alpha): goal names a plan file that does not exist (plan/2026-11-18_missing-plan.md)",
+		]);
+	} finally { await cleanup(); }
+});
+
+test("ledger_check reports tracked files under plan/", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	try {
+		await exec("git", ["add", "-f", `plan/${branch}/ledger.yaml`], dir);
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir));
+		assert.ok(result.isError);
+		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
+			`git ls-files plan/ is not empty: plan/${branch}/ledger.yaml (the plan and the ledger are removed before the PR is opened)`,
+		]);
+	} finally { await cleanup(); }
 });
 
 test("parseLedger returns the file position of each parsed item", () => {

@@ -28,7 +28,7 @@ Field rules:
 
 - `id` — unique string. It is the key for the capture spec, the artifact folder, and the commit.
 - `status` — `todo`, `in-progress`, `done`. Set by the tools, never by hand.
-- `goal` — the work to be completed. Includes the option reference when the item came from a plan.
+- `goal` — the work to be completed. Includes the option reference when the item came from a plan. Name the plan file by its path under `plan/`; `ledger_check` reports a goal that names a plan file that does not exist.
 - `short_goal` — one sentence: the overview of the item. Required. This is what a reader or a script sees first; `goal` carries the detail. Write it at authoring time, do not derive it from `goal`. The `ledger_check` tool reports a missing value, and the read tools error on an item without one.
 - `acceptance_criteria` — bullet points. The key is one word with an underscore so a tool can read it without a quoting rule.
 - `constraints` — what must be kept in mind while working.
@@ -60,5 +60,7 @@ The ledger lives in `plan/<branch>/` and is removed with the plan before merge. 
 ```sh
 git ls-files plan/
 ```
+
+`ledger_check` reports a repository where this is not empty, so the state is checked before the PR is opened, not assumed.
 
 The reviewer sees the closed items through the merged branch history or the squash, not through the file.

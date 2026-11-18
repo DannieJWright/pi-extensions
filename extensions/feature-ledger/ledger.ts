@@ -57,6 +57,25 @@ export function locationProblem(path: string, repoRoot: string, branch: string):
 	return `path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`;
 }
 
+// Two checks the tool wrapper runs because they need the filesystem or git. The wording follows the
+// location line: the fact, then the consequence in parentheses.
+export function planReference(goal: string): string | null {
+	const match = goal.match(/plan\/[^\s,;:"']+\.md/);
+	return match ? match[0] : null;
+}
+
+export function missingPlanProblem(at: string, ref: string): string {
+	return `${at} names a plan file that does not exist (${ref})`;
+}
+
+export function trackedPlanProblem(paths: string[]): string {
+	return `git ls-files plan/ is not empty: ${paths.join(", ")} (the plan and the ledger are removed before the PR is opened)`;
+}
+
+export function problemTarget(n: number, id: string, field: string): string {
+	return `features[${n}] (${id}): ${field}`;
+}
+
 // git add can only take regular files, symbolic links, or git-directories. The sandbox view shows
 // project-root dotfiles as character devices, so `git add -A` fails on them with exit 128. Build the
 // pathspec from the entries of those three types and skip every other entry type. The same filter
@@ -100,7 +119,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 		if (typeof item.id !== "string" || item.id === "") { problems.push(`features[${n}]: missing id`); continue; }
 		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
 		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
-		const at = (field: string) => `features[${n}] (${item.id}): ${field}`;
+		const at = (field: string) => problemTarget(n, item.id, field);
 		items.push({
 			id: item.id,
 			status: (STATUSES.includes(item.status as ItemStatus) ? item.status : "todo") as ItemStatus,
@@ -150,7 +169,12 @@ function list(value: unknown, field: string, problems: string[]): string[] {
 // parseLedger returns, so a skipped item does not shift the numbering.
 
 export function checkLedger(text: string): string[] {
-	const { ledger, problems, indexes } = parseLedger(text);
+	return checkParsed(parseLedger(text));
+}
+
+// Split so the tool wrapper parses once and can read the items for the checks it runs itself.
+export function checkParsed(parsed: { ledger: Ledger | null; problems: string[]; indexes: number[] }): string[] {
+	const { ledger, problems, indexes } = parsed;
 	if (!ledger) return problems;
 	const seen = new Set<string>();
 	for (const [i, item] of ledger.features.entries()) {
