@@ -154,6 +154,9 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				} catch (error) {
 					if (!params.path) throw error;
 				}
+				// Unreachable through the normal path: locate() throws when the branch is empty. This
+				// branch is kept for the draft-ledger-outside-a-repo case above, where locate() fails and
+				// the given path is used, so there is no default target to name.
 				const path = resolveCheckTarget(ctx.cwd, params.path, branch ? ledgerPath(repoRoot, branch) : undefined);
 				const parsed = parseLedger(await readFile(path, "utf8"));
 				const problems = checkParsed(parsed);
