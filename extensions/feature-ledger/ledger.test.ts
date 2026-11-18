@@ -1,40 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { checkLedger, ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem, type Exec } from "./ledger.ts";
+import { checkLedger, ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem } from "./ledger.ts";
+import featureLedger from "./index.ts";
+import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
-const run = promisify(execFile);
-
-const exec: Exec = async (command, args, cwd) => {
-	try {
-		const { stdout, stderr } = await run(command, args, { cwd });
-		return { code: 0, stdout, stderr };
-	} catch (error) {
-		const failure = error as { code?: number; stdout?: string; stderr?: string };
-		return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
-	}
-};
-
-async function setupRepo(ledgerText: string): Promise<{ dir: string; branch: string; cleanup: () => Promise<void> }> {
-	const dir = await mkdtemp(join(tmpdir(), "feature-ledger-"));
-	await exec("git", ["-c", "init.defaultBranch=feature-x", "init", "-q"], dir);
-	await exec("git", ["config", "user.email", "test@example.com"], dir);
-	await exec("git", ["config", "user.name", "Ledger Test"], dir);
-	// The ledger lives under plan/, which the repo gitignores; mirror that here.
-	await writeFile(join(dir, ".gitignore"), "plan/\n");
-	const branch = (await exec("git", ["symbolic-ref", "--short", "HEAD"], dir)).stdout.trim();
-	await writeFile(join(dir, "README.md"), "seed\n");
-	await exec("git", ["add", "-A"], dir);
-	await exec("git", ["commit", "-q", "-m", "seed"], dir);
-	await ensureParent(ledgerPath(dir, branch));
-	await writeFile(ledgerPath(dir, branch), ledgerText.replace("{BRANCH}", branch));
-	return { dir, branch, cleanup: () => rm(dir, { recursive: true }) };
-}
+// The harness provides exec and setupRepo. The ledger lives under plan/, which the
+// repo gitignores; setupRepo mirrors that here.
 
 const FIXTURE = `ledger:
   description: Test fixture.
@@ -351,4 +325,29 @@ test("nextItem reports all items complete", () => {
 test("nextItem on an empty ledger reports todo with no next", () => {
 	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features: []\n");
 	assert.deepEqual(nextItem(ledger!), { next: null, status: "todo" });
+});
+
+test("the harness runs a tool against a temporary repository with no Pi session", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		assert.ok(Object.keys(api.tools).sort().join(",") === "ledger_check,ledger_list,ledger_next,ledger_start,ledger_submit");
+
+		const ctx = createFakeContext(dir);
+		const list = await api.tools.ledger_list.execute(null, {}, null, null, ctx);
+		assert.ok(!list.isError);
+		const result = JSON.parse(list.content[0].text);
+		assert.equal(result.branch, branch);
+		assert.deepEqual(result.items, [{ id: "alpha", status: "todo", short_goal: "Do the thing.", commits: { start: null, end: null } }]);
+
+		const next = await api.tools.ledger_next.execute(null, {}, null, null, ctx);
+		assert.ok(!next.isError);
+		assert.equal(JSON.parse(next.content[0].text).next.id, "alpha");
+
+		// exec wraps child_process.execFile and returns { code, stdout, stderr }.
+		const failed = await api.exec("git", ["symbolic-ref", "refs/not-a-ref"], dir);
+		assert.notEqual(failed.code, 0);
+		assert.equal(failed.stdout, "");
+	} finally { await cleanup(); }
 });
