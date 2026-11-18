@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ensureParent, ledgerPath, parseLedger, serializeLedger, startItem, submitItem, type Exec } from "./ledger.ts";
+import { ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem, type Exec } from "./ledger.ts";
 
 const run = promisify(execFile);
 
@@ -48,6 +48,7 @@ const FIXTURE = `ledger:
       status: todo
       goal: >
         Do the thing.
+      short_goal: Do the thing.
       acceptance_criteria:
         - The thing is done.
       constraints:
@@ -75,6 +76,7 @@ test("the reference example parses with folded blocks and arrays", async () => {
 	assert.equal(item.id, "search-result-labels");
 	assert.equal(item.status, "done");
 	assert.match(item.goal, /Option 4\.a of plan\/chat-ui\/agent-improvement-ideas-1\.md/);
+	assert.equal(item.short_goal, "Live search with readable result rows.");
 	assert.equal(item.acceptance_criteria.length, 3);
 	assert.deepEqual(item.files.out, [
 		"packages/web/src/features/agent/components/transcript/TranscriptSearch.tsx",
@@ -94,7 +96,7 @@ test("serialize then parse round-trips", async () => {
 });
 
 test("commit hashes that look numeric stay strings", () => {
-	const { ledger, problems } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: done\n      commits:\n        start: 6576964\n        end: 1048321\n");
+	const { ledger, problems } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: done\n      short_goal: Do the thing.\n      commits:\n        start: 6576964\n        end: 1048321\n");
 	assert.deepEqual(problems, []);
 	assert.equal(ledger!.features[0].commits.start, "6576964");
 	assert.equal(ledger!.features[0].commits.end, "1048321");
@@ -183,4 +185,74 @@ test("submit refuses a clean tree and a moved HEAD", async () => {
 		const moved = await submitItem({ repoRoot: dir, branch, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec, logDir: dir }).catch((error) => error as Error);
 		assert.match(moved.message, /HEAD moved/);
 	} finally { await cleanup(); }
+});
+
+test("a missing short_goal is reported as a problem", () => {
+	const { problems } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      goal: Do the thing.\n");
+	assert.deepEqual(problems, ["features[0] (alpha): missing short_goal"]);
+	const empty = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      short_goal: ''\n");
+	assert.deepEqual(empty.problems, ["features[0] (alpha): missing short_goal"]);
+});
+
+test("listItems keeps file order and reports unset commits as null", () => {
+	const { ledger } = parseLedger([
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - id: second",
+		"      status: in-progress",
+		"      short_goal: Second item.",
+		"      commits:",
+		"        start: 6be88a3",
+		"    - id: third",
+		"      status: done",
+		"      short_goal: Third item.",
+		"      commits:",
+		"        start: 1111111",
+		"        end: 2222222",
+	].join("\n"));
+	assert.deepEqual(listItems(ledger!), {
+		branch: "alpha",
+		items: [
+			{ id: "first", status: "todo", short_goal: "First item.", commits: { start: null, end: null } },
+			{ id: "second", status: "in-progress", short_goal: "Second item.", commits: { start: "6be88a3", end: null } },
+			{ id: "third", status: "done", short_goal: "Third item.", commits: { start: "1111111", end: "2222222" } },
+		],
+	});
+});
+
+test("nextItem takes the in-progress item before an unstarted one", () => {
+	const { ledger } = parseLedger([
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: first",
+		"      status: done",
+		"      short_goal: First item.",
+		"    - id: second",
+		"      status: todo",
+		"      short_goal: Second item.",
+		"    - id: third",
+		"      status: in-progress",
+		"      short_goal: Third item.",
+	].join("\n"));
+	assert.deepEqual(nextItem(ledger!), { next: { id: "third", status: "in-progress", short_goal: "Third item." }, status: "in-progress" });
+});
+
+test("nextItem reports the first todo when nothing is started", () => {
+	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: todo\n      short_goal: First item.\n    - id: second\n      status: todo\n      short_goal: Second item.\n");
+	assert.deepEqual(nextItem(ledger!), { next: { id: "first", status: "todo", short_goal: "First item." }, status: "todo" });
+});
+
+test("nextItem reports all items complete", () => {
+	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: done\n      short_goal: First item.\n");
+	assert.deepEqual(nextItem(ledger!), { next: null, status: "done" });
+});
+
+test("nextItem on an empty ledger reports todo with no next", () => {
+	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features: []\n");
+	assert.deepEqual(nextItem(ledger!), { next: null, status: "todo" });
 });

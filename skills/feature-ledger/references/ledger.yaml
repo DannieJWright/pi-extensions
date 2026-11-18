@@ -12,6 +12,7 @@ ledger:
       goal: >
         Live search with readable result rows. Option 4.a of
         plan/chat-ui/agent-improvement-ideas-1.md.
+      short_goal: Live search with readable result rows.
       acceptance_criteria:
         - The field searches as the reader types.
         - Each row names its source and its time.
@@ -46,6 +47,7 @@ ledger:
       status: todo
       goal: >
         Show copy actions on result blocks when the row is hovered.
+      short_goal: Copy actions on result blocks on hover.
       acceptance_criteria:
         - The actions appear on hover and on keyboard focus.
         - Each action is reachable by role with its own name.

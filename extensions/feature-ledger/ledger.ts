@@ -16,6 +16,7 @@ export interface LedgerItem {
 	id: string;
 	status: ItemStatus;
 	goal: string;
+	short_goal: string;
 	acceptance_criteria: string[];
 	constraints: string[];
 	validation_scripts?: string[];
@@ -56,10 +57,12 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 		const item = feature as Record<string, unknown>;
 		if (typeof item.id !== "string" || item.id === "") { problems.push(`features[${n}]: missing id`); continue; }
 		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
+		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
 		items.push({
 			id: item.id,
 			status: (STATUSES.includes(item.status as ItemStatus) ? item.status : "todo") as ItemStatus,
 			goal: typeof item.goal === "string" ? item.goal : "",
+			short_goal: typeof item.short_goal === "string" ? item.short_goal : "",
 			acceptance_criteria: list(item.acceptance_criteria),
 			constraints: list(item.constraints),
 			...(Array.isArray(item.validation_scripts) ? { validation_scripts: list(item.validation_scripts) } : {}),
@@ -88,7 +91,65 @@ function list(value: unknown): string[] {
 	return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
 }
 
-const ITEM_KEYS = ["id", "status", "goal", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
+export interface LedgerListEntry {
+	id: string;
+	status: ItemStatus;
+	short_goal: string;
+	commits: { start: string | null; end: string | null };
+}
+
+export interface LedgerListResult {
+	branch: string;
+	items: LedgerListEntry[];
+}
+
+export type LedgerState = "todo" | "in-progress" | "done";
+
+export interface LedgerNextEntry {
+	id: string;
+	status: ItemStatus;
+	short_goal: string;
+}
+
+export interface LedgerNextResult {
+	next: LedgerNextEntry | null;
+	status: LedgerState;
+}
+
+// Read-only views. Order is file order; nothing here writes the ledger.
+// commits.start is null for a todo item, commits.end is null for an in-progress item.
+
+export function listItems(ledger: Ledger): LedgerListResult {
+	return {
+		branch: ledger.branch,
+		items: ledger.features.map((item) => ({
+			id: item.id,
+			status: item.status,
+			short_goal: item.short_goal,
+			commits: { start: item.commits.start ?? null, end: item.commits.end ?? null },
+		})),
+	};
+}
+
+// The next item is the first in-progress one, else the first todo.
+// Root status: todo when nothing is started, done when everything is done,
+// otherwise in-progress (at least one item is in-progress or done).
+
+export function nextItem(ledger: Ledger): LedgerNextResult {
+	const statuses = ledger.features.map((item) => item.status);
+	const state: LedgerState = statuses.length === 0 || statuses.every((status) => status === "todo")
+		? "todo"
+		: statuses.every((status) => status === "done")
+			? "done"
+			: "in-progress";
+	const item = ledger.features.find((feature) => feature.status === "in-progress") ?? ledger.features.find((feature) => feature.status === "todo") ?? null;
+	return {
+		next: item ? { id: item.id, status: item.status, short_goal: item.short_goal } : null,
+		status: state,
+	};
+}
+
+const ITEM_KEYS = ["id", "status", "goal", "short_goal", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
 
 export function serializeLedger(ledger: Ledger): string {
 	const ordered: Record<string, unknown> = {
