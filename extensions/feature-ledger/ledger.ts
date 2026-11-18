@@ -91,6 +91,30 @@ function list(value: unknown): string[] {
 	return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
 }
 
+// The check: parseLedger problems plus duplicate id detection. One flat problem list,
+// no severity levels. parseLedger itself is unchanged: read tools do not error on
+// duplicate ids, so a duplicate is a check-time finding only.
+// The location line is added by the caller (the CLI or the tool), not here, so both
+// share this core. Indices name the feature position in the file, matching the lines
+// parseLedger reports.
+
+export function checkLedger(text: string): string[] {
+	const { ledger, problems } = parseLedger(text);
+	if (!ledger) return problems;
+	const doc = parseYaml(text) as Record<string, unknown>;
+	const features = (doc.ledger as Record<string, unknown>)?.features;
+	if (!Array.isArray(features)) return problems;
+	const seen = new Set<string>();
+	for (const [n, feature] of features.entries()) {
+		if (!feature || typeof feature !== "object" || Array.isArray(feature)) continue;
+		const id = (feature as Record<string, unknown>).id;
+		if (typeof id !== "string" || id === "") continue;
+		if (seen.has(id)) problems.push(`features[${n}] (${id}): duplicate id`);
+		else seen.add(id);
+	}
+	return problems;
+}
+
 export interface LedgerListEntry {
 	id: string;
 	status: ItemStatus;
