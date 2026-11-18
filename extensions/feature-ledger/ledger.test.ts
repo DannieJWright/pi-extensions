@@ -226,9 +226,7 @@ test("checkLedger names the file position when an item is skipped", () => {
 		"ledger:",
 		"  branch: alpha",
 		"  features:",
-		"    - id: ''",
-		"      status: todo",
-		"      short_goal: No id.",
+		"    - \"not an item\"",
 		"    - id: first",
 		"      status: todo",
 		"      short_goal: First item.",
@@ -236,7 +234,7 @@ test("checkLedger names the file position when an item is skipped", () => {
 		"      status: todo",
 		"      short_goal: Second item with the same id.",
 	].join("\n");
-	assert.deepEqual(checkLedger(skipped), ["features[0]: missing id", "features[2] (first): duplicate id"]);
+	assert.deepEqual(checkLedger(skipped), ["features[0] is not an item", "features[2] (first): duplicate id"]);
 });
 
 test("checkLedger keeps the existing missing short_goal problems", () => {
@@ -457,4 +455,57 @@ test("locationProblem names the location line only for a path outside plan/<bran
 		"path is not plan/feature-x/ledger.yaml for branch feature-x (ledger_list will not find it)");
 	// No branch (a draft ledger outside a repo): no location line.
 	assert.equal(locationProblem("/tmp/draft.yaml", "", ""), null);
+});
+
+test("parseLedger returns the file position of each parsed item", () => {
+	const skipped = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: ''",
+		"      status: todo",
+		"      short_goal: No id.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - not an item",
+		"    - id: second",
+		"      status: todo",
+		"      short_goal: Second item.",
+	].join("\n");
+	const { problems, indexes } = parseLedger(skipped);
+	// Item 0 is parsed with an empty id, item 2 is skipped, so item 3 is parsed as index 2
+	// and its file position is 3.
+	assert.deepEqual(indexes, [0, 1, 3]);
+	assert.deepEqual(problems, [
+		"features[0]: missing id",
+		"features[2] is not an item",
+	]);
+	// The duplicate line names the position in the file, not the index in the parsed list.
+	assert.deepEqual(checkLedger(skipped), [
+		"features[0]: missing id",
+		"features[2] is not an item",
+	]);
+});
+
+test("a duplicate id names the file position when an item is skipped", () => {
+	const skipped = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - \"not an item\"",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: Second item with the same id.",
+	].join("\n");
+	const { indexes } = parseLedger(skipped);
+	// The skipped item is not in the parsed list, so parsed index 1 and 2 name file positions 1 and 2.
+	assert.deepEqual(indexes, [1, 2]);
+	assert.deepEqual(checkLedger(skipped), [
+		"features[0] is not an item",
+		"features[2] (first): duplicate id",
+	]);
 });

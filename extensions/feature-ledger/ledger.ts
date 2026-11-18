@@ -56,11 +56,12 @@ export function locationProblem(path: string, repoRoot: string, branch: string):
 	return `path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`;
 }
 
-export function parseLedger(text: string): { ledger: Ledger | null; problems: string[] } {
+export function parseLedger(text: string): { ledger: Ledger | null; problems: string[]; indexes: number[] } {
 	const problems: string[] = [];
+	const indexes: number[] = [];
 	const doc = parseYaml(text) as Record<string, unknown>;
 	const raw = doc.ledger;
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ledger: null, problems: ["no ledger block"] };
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ledger: null, problems: ["no ledger block"], indexes };
 	const ledger = raw as Record<string, unknown>;
 	if (!Array.isArray(ledger.features)) problems.push("ledger.features is not a list");
 	const features = (Array.isArray(ledger.features) ? ledger.features : []) as Record<string, unknown>[];
@@ -68,6 +69,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 	for (const [n, feature] of features.entries()) {
 		if (!feature || typeof feature !== "object" || Array.isArray(feature)) { problems.push(`features[${n}] is not an item`); continue; }
 		const item = feature as Record<string, unknown>;
+		indexes.push(n);
 		if (typeof item.id !== "string" || item.id === "") { problems.push(`features[${n}]: missing id`); continue; }
 		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
 		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
@@ -98,6 +100,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			features: items,
 		},
 		problems,
+		indexes,
 	};
 }
 
@@ -116,22 +119,17 @@ function list(value: unknown, field: string, problems: string[]): string[] {
 // no severity levels. parseLedger itself is unchanged: read tools do not error on
 // duplicate ids, so a duplicate is a check-time finding only.
 // The location line is added by the caller (the CLI or the tool), not here, so both
-// share this core. Indices name the feature position in the file, matching the lines
-// parseLedger reports.
+// share this core. Problem lines name the position in the file, taken from the indexes
+// parseLedger returns, so a skipped item does not shift the numbering.
 
 export function checkLedger(text: string): string[] {
-	const { ledger, problems } = parseLedger(text);
+	const { ledger, problems, indexes } = parseLedger(text);
 	if (!ledger) return problems;
-	const doc = parseYaml(text) as Record<string, unknown>;
-	const features = (doc.ledger as Record<string, unknown>)?.features;
-	if (!Array.isArray(features)) return problems;
 	const seen = new Set<string>();
-	for (const [n, feature] of features.entries()) {
-		if (!feature || typeof feature !== "object" || Array.isArray(feature)) continue;
-		const id = (feature as Record<string, unknown>).id;
-		if (typeof id !== "string" || id === "") continue;
-		if (seen.has(id)) problems.push(`features[${n}] (${id}): duplicate id`);
-		else seen.add(id);
+	for (const [i, item] of ledger.features.entries()) {
+		if (item.id === "") continue;
+		if (seen.has(item.id)) problems.push(`features[${indexes[i]}] (${item.id}): duplicate id`);
+		else seen.add(item.id);
 	}
 	return problems;
 }
