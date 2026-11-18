@@ -27,6 +27,9 @@ test:
         # Keep the full output on stdout so the log file holds it as before.
         printf '%s\n' "$out"
 
+        # The counts come from the Node test runner's summary lines, "ℹ pass" and "ℹ fail". If that
+        # format changes, no line matches and the group falls back to one result by exit status, the
+        # same way a check group is counted here.
         pass=""
         fail=""
         if line=$(printf '%s\n' "$out" | grep '^ℹ pass ' | head -1); then pass=${line#ℹ pass }; fi
