@@ -4,7 +4,7 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { parseYaml, serializeYaml } from "./yaml.ts";
+import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type Exec = (command: string, args: string[], cwd: string) => Promise<ExecResult>;

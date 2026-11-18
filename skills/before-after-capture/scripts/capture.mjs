@@ -8,7 +8,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { parseYaml } from "./yaml.mjs";
+import { parseYaml } from "../../../lib/yaml.ts";
 
 const exec = promisify(execFile);
 

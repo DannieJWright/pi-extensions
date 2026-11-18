@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseYaml, serializeYaml } from "./yaml.mjs";
+import { parseYaml, serializeYaml } from "../../../lib/yaml.ts";
 
 test("parses mappings, folded blocks, flow arrays, and integers", () => {
 	const doc = parseYaml(`
@@ -75,5 +75,28 @@ ledger:
 
 test("values that need quoting survive the round trip", () => {
 	const doc = { conditions: { base_url: "http://127.0.0.1:<port>", entry: "/agent", clock: "2026-11-14T10:00:00.000Z" } };
+	assert.deepEqual(parseYaml(serializeYaml(doc)), doc);
+});
+
+test("a wrapped list item is joined back into one value", () => {
+	const doc = parseYaml(`
+acceptance_criteria:
+  - The field searches as the reader types, matching the fixture rows exactly
+    without waiting for the debounce timer to fire.
+`);
+	assert.deepEqual(doc.acceptance_criteria, [
+		"The field searches as the reader types, matching the fixture rows exactly without waiting for the debounce timer to fire.",
+	]);
+});
+
+test("empty flow arrays and empty flow maps parse and round-trip", () => {
+	const doc = parseYaml(`
+conditions: []
+commits: {}
+permissions: [clipboard-write]
+`);
+	assert.deepEqual(doc.conditions, []);
+	assert.deepEqual(doc.commits, {});
+	assert.deepEqual(doc.permissions, ["clipboard-write"]);
 	assert.deepEqual(parseYaml(serializeYaml(doc)), doc);
 });

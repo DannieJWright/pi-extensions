@@ -1,13 +1,16 @@
-// Minimal YAML subset for capture specs. Supports: nested mappings, folded block
-// scalars (>), lists of scalars and objects, flow arrays ([a, b]), comments,
-// plain and quoted scalars. Mirrors extensions/feature-ledger/yaml.ts; keep the
-// two in step. This copy lives with the skill so the skill stays self-contained.
+// Minimal YAML subset shared by the feature-ledger extension and the capture skill.
+// Supports: nested mappings, folded block scalars (>), lists of scalars and objects,
+// flow arrays ([a, b]), flow maps ({a: b}), comments, plain and quoted scalars.
+// Runs under plain node through native type stripping (Node >= 23; .mise.toml pins node 24).
 
 const KEY = /^([A-Za-z_][\w.-]*):\s*(.*)$/;
 
-export function parseYaml(text) {
+type Entry = { indent: number; text: string; lineNo: number };
+type Value = unknown;
+
+export function parseYaml(text: string): Record<string, Value> {
 	const rawLines = text.split("\n");
-	const entries = [];
+	const entries: Entry[] = [];
 	for (let i = 0; i < rawLines.length; i++) {
 		const line = rawLines[i];
 		const trimmed = line.trim();
@@ -16,16 +19,16 @@ export function parseYaml(text) {
 	}
 	if (entries.length === 0) return {};
 	const [value] = parseNode(entries, rawLines, 0, entries[0].indent);
-	return value;
+	return value as Record<string, Value>;
 }
 
-function parseNode(entries, rawLines, i, indent) {
+function parseNode(entries: Entry[], rawLines: string[], i: number, indent: number): [Value, number] {
 	if (entries[i].text.startsWith("- ")) return parseList(entries, rawLines, i, indent);
 	return parseMap(entries, rawLines, i, indent);
 }
 
-function parseMap(entries, rawLines, i, indent) {
-	const map = {};
+function parseMap(entries: Entry[], rawLines: string[], i: number, indent: number): [Record<string, Value>, number] {
+	const map: Record<string, Value> = {};
 	while (i < entries.length && entries[i].indent === indent && !entries[i].text.startsWith("- ")) {
 		const match = KEY.exec(entries[i].text);
 		if (!match) throw new Error(`bad line ${entries[i].lineNo + 1}: ${entries[i].text}`);
@@ -59,8 +62,8 @@ function parseMap(entries, rawLines, i, indent) {
 	return [map, i];
 }
 
-function parseList(entries, rawLines, i, indent) {
-	const list = [];
+function parseList(entries: Entry[], rawLines: string[], i: number, indent: number): [Value[], number] {
+	const list: Value[] = [];
 	while (i < entries.length && entries[i].indent === indent && entries[i].text.startsWith("- ")) {
 		const content = entries[i].text.slice(2).trim();
 		if (content === "") {
@@ -71,8 +74,8 @@ function parseList(entries, rawLines, i, indent) {
 		}
 		const match = KEY.exec(content);
 		if (match) {
-			const item = {};
-			if (match[2] !== "") item[match[1]] = scalar(match[2]);
+			const item: Record<string, Value> = {};
+			if (match[2] !== "") item[match[1]] = unquote(scalar(match[2]));
 			i += 1;
 			const [rest, next] = parseMap(entries, rawLines, i, indent + 2);
 			Object.assign(item, rest);
@@ -80,15 +83,21 @@ function parseList(entries, rawLines, i, indent) {
 			i = next;
 			continue;
 		}
-		list.push(scalar(content));
+		let value = unquote(scalar(content));
 		i += 1;
+		// A wrapped list item continues on deeper-indented lines; join them back.
+		while (i < entries.length && entries[i].indent > indent && !KEY.test(entries[i].text)) {
+			if (typeof value === "string") value = `${value} ${entries[i].text}`;
+			i += 1;
+		}
+		list.push(value);
 	}
 	return [list, i];
 }
 
-function readFoldedBlock(entries, rawLines, entryIndex, parentIndent) {
+function readFoldedBlock(entries: Entry[], rawLines: string[], entryIndex: number, parentIndent: number): [string, number] {
 	const lineNo = entries[entryIndex].lineNo;
-	const lines = [];
+	const lines: string[] = [];
 	let j = lineNo + 1;
 	while (j < rawLines.length) {
 		const line = rawLines[j];
@@ -109,37 +118,48 @@ function readFoldedBlock(entries, rawLines, entryIndex, parentIndent) {
 	return [folded, next];
 }
 
-function scalar(text) {
+function scalar(text: string): Value {
 	if (!text.startsWith("'") && !text.startsWith('"')) {
 		const comment = text.indexOf(" #");
 		if (comment >= 0) text = text.slice(0, comment).trim();
-		if (text === "#") return "";
 	}
 	if (text.startsWith("[") && text.endsWith("]")) {
 		const inner = text.slice(1, -1).trim();
 		if (inner === "") return [];
 		return inner.split(",").map((part) => scalar(part.trim()));
 	}
+	if (text.startsWith("{") && text.endsWith("}")) {
+		const inner = text.slice(1, -1).trim();
+		if (inner === "") return {};
+		const map: Record<string, Value> = {};
+		for (const part of inner.split(",")) {
+			const separator = part.indexOf(":");
+			if (separator < 0) throw new Error(`bad flow map entry: ${part}`);
+			map[part.slice(0, separator).trim()] = scalar(part.slice(separator + 1).trim());
+		}
+		return map;
+	}
 	if ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"'))) return text.slice(1, -1);
 	if (/^-?\d+$/.test(text)) return Number(text);
 	return text;
 }
 
-export function serializeYaml(data) {
-	const out = [];
+export function serializeYaml(data: Record<string, Value> | Value[]): string {
+	const out: string[] = [];
 	emitValue(out, data, 0);
 	return `${out.join("\n")}\n`;
 }
 
-function emitValue(out, value, indent) {
+function emitValue(out: string[], value: Value, indent: number): void {
 	if (Array.isArray(value)) {
 		for (const item of value) {
 			if (item && typeof item === "object" && !Array.isArray(item)) {
-				const keys = Object.keys(item);
+				const record = item as Record<string, Value>;
+				const keys = Object.keys(record);
 				const first = keys[0];
-				out.push(`${" ".repeat(indent)}- ${first}: ${formatScalar(item[first])}`);
-				const rest = {};
-				for (const key of keys.slice(1)) rest[key] = item[key];
+				out.push(`${" ".repeat(indent)}- ${first}: ${formatScalar(record[first])}`);
+				const rest: Record<string, Value> = {};
+				for (const key of keys.slice(1)) rest[key] = record[key];
 				emitValue(out, rest, indent + 2);
 			} else {
 				out.push(`${" ".repeat(indent)}- ${formatScalar(item)}`);
@@ -147,25 +167,27 @@ function emitValue(out, value, indent) {
 		}
 		return;
 	}
-	for (const [key, value2] of Object.entries(value)) {
-		if (value2 === null || value2 === undefined) continue;
-		if (typeof value2 === "string") {
-			if (value2.includes("\n") || value2.length > 70) {
+	for (const [key, item] of Object.entries(value as Record<string, Value>)) {
+		if (item === null || item === undefined) continue;
+		if (typeof item === "string") {
+			if (item.includes("\n") || item.length > 70) {
 				out.push(`${" ".repeat(indent)}${key}: >`);
-				for (const line of wrap(value2)) out.push(`${" ".repeat(indent + 2)}${line}`);
+				for (const line of wrap(item)) out.push(`${" ".repeat(indent + 2)}${line}`);
 			} else {
-				out.push(`${" ".repeat(indent)}${key}: ${formatScalar(value2)}`);
+				out.push(`${" ".repeat(indent)}${key}: ${formatScalar(item)}`);
 			}
-		} else if (Array.isArray(value2) || (typeof value2 === "object")) {
+		} else if (Array.isArray(item) || typeof item === "object") {
+			if (Array.isArray(item) && item.length === 0) { out.push(`${" ".repeat(indent)}${key}: []`); continue; }
+			if (!Array.isArray(item) && Object.keys(item).length === 0) { out.push(`${" ".repeat(indent)}${key}: {}`); continue; }
 			out.push(`${" ".repeat(indent)}${key}:`);
-			emitValue(out, value2, indent + 2);
+			emitValue(out, item, indent + 2);
 		} else {
-			out.push(`${" ".repeat(indent)}${key}: ${formatScalar(value2)}`);
+			out.push(`${" ".repeat(indent)}${key}: ${formatScalar(item)}`);
 		}
 	}
 }
 
-function formatScalar(value) {
+function formatScalar(value: Value): string {
 	if (typeof value === "number") return String(value);
 	const text = String(value);
 	if (text === "") return "''";
@@ -174,8 +196,12 @@ function formatScalar(value) {
 	return `'${text.replace(/'/g, "''")}'`;
 }
 
-function wrap(text) {
-	const lines = [];
+function unquote(text: string): string {
+	return text.replace(/''/g, "'");
+}
+
+function wrap(text: string): string[] {
+	const lines: string[] = [];
 	for (const paragraph of text.split("\n")) {
 		if (paragraph === "") { lines.push(""); continue; }
 		const words = paragraph.split(" ");
