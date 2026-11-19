@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, listItems, missingPlanProblem, nextItem, parseLedger, parsePorcelain, planReference, problemTarget, resolveLedgerPath, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, listItems, missingPlanProblem, nextItem, parseLedger, parsePorcelain, planReference, problemTarget, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -565,6 +565,86 @@ test("resolveLedgerPath takes the first non-empty source in precedence order", (
 	// No extension check anywhere: .yml and .yaml both resolve.
 	assert.equal(resolveLedgerPath("/repo", { explicit: "plan/iter.yml" }), "/repo/plan/iter.yml");
 	assert.equal(resolveLedgerPath("/repo", { default: "plan/ledger.yml" }), "/repo/plan/ledger.yml");
+});
+
+test("resolveWorkspace takes the item value, then the ledger default, then the session root", () => {
+	const parsed = parseLedger([
+		"ledger:",
+		"  branch: feature-x",
+		"  features:",
+		"    - id: alpha",
+		"      status: todo",
+		"      goal: Do the thing.",
+		"      short_goal: Do the thing.",
+		"      workspace: sub-repo-1",
+		"      acceptance_criteria: [],",
+		"      constraints: [],",
+		"      files: { in: [], out: [] }",
+		"      tests: [],",
+		"      limitations: [],",
+		"      summary: ''",
+		"      commits: {}",
+		].join("\n"));
+	assert.deepEqual(parsed.problems, []);
+	const item = parsed.ledger!.features[0];
+	assert.equal(item.workspace, "sub-repo-1");
+	assert.equal(resolveWorkspace("/repo", item, "."), "/repo/sub-repo-1");
+	// The item wins over the ledger-level workspace.
+	assert.equal(resolveWorkspace("/repo", item, "sub-repo-2"), "/repo/sub-repo-1");
+	// An item without the field falls back to the ledger default, then to the session root.
+	const plain = parseLedger(FIXTURE.replace("{BRANCH}", "feature-x")).ledger!.features[0];
+	assert.equal(plain.workspace, undefined);
+	assert.equal(resolveWorkspace("/repo", plain, ""), "/repo");
+	assert.equal(resolveWorkspace("/repo", plain, "sub-repo-2"), "/repo/sub-repo-2");
+	// An absolute workspace is used as given.
+	assert.equal(resolveWorkspace("/repo", { ...plain, workspace: "/work/other" }, "."), "/work/other");
+});
+
+test("a per-item workspace and branch parse and round-trip", () => {
+	const text = [
+		"ledger:",
+		"  branch: feature-x",
+		"  features:",
+		"    - id: alpha",
+		"      status: todo",
+		"      goal: Do the thing.",
+		"      short_goal: Do the thing.",
+		"      workspace: sub-repo-1",
+		"      branch: feature-x",
+		"      acceptance_criteria: [],",
+		"      constraints: [],",
+		"      files: { in: [], out: [] }",
+		"      tests: [],",
+		"      limitations: [],",
+		"      summary: ''",
+		"      commits: {}",
+		].join("\n");
+	const parsed = parseLedger(text);
+	assert.deepEqual(parsed.problems, []);
+	assert.equal(parsed.ledger!.features[0].workspace, "sub-repo-1");
+	assert.equal(parsed.ledger!.features[0].branch, "feature-x");
+	assert.deepEqual(parseLedger(serializeLedger(parsed.ledger!)).ledger, parsed.ledger);
+	// A ledger without them is unchanged: the fields stay absent and are not written out.
+	const plain = parseLedger(FIXTURE.replace("{BRANCH}", "feature-x"));
+	assert.equal(plain.ledger!.features[0].workspace, undefined);
+	assert.equal(plain.ledger!.features[0].branch, undefined);
+	assert.ok(!serializeLedger(plain.ledger!).includes("      workspace:"));
+});
+
+test("resolveRepoRoot reads the repository from the workspace, or returns the workspace itself", async () => {
+	const { dir, cleanup } = await setupRepo(FIXTURE);
+	try {
+		// A workspace inside the repository resolves to the repository root.
+		const workspace = join(dir, "sub-repo-1");
+		await mkdir(workspace);
+		await writeFile(join(workspace, ".keep"), "x");
+		assert.equal(await resolveRepoRoot(workspace, exec), dir);
+		// Outside a git repository the workspace is the root, so the caller skips the git-backed checks.
+		const draft = await mkdtemp(join(tmpdir(), "feature-ledger-norepo-"));
+		try {
+			assert.equal(await resolveRepoRoot(draft, exec), draft);
+		} finally { await rm(draft, { recursive: true }); }
+	} finally { await cleanup(); }
 });
 
 test("the tool resolves the path from the argument, then the environment, then the pointer, then the default", async () => {

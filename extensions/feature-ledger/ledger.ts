@@ -18,6 +18,8 @@ export interface LedgerItem {
 	status: ItemStatus;
 	goal: string;
 	short_goal: string;
+	workspace?: string;
+	branch?: string;
 	acceptance_criteria: string[];
 	constraints: string[];
 	validation_scripts?: string[];
@@ -56,6 +58,22 @@ function firstNonEmpty(...values: (string | undefined)[]): string {
 		if (value !== undefined && value !== "") return value;
 	}
 	return "";
+}
+
+// The directory the tools work from for an item: the item value, else the ledger-level
+// workspace, else the session root. Relative to the session root; absolute as given.
+// No git call and no filesystem check here, so it stays unit-testable.
+export function resolveWorkspace(cwd: string, item: LedgerItem, ledgerDefault: string): string {
+	const value = firstNonEmpty(item.workspace, ledgerDefault, ".");
+	return isAbsolute(value) ? value : resolve(cwd, value);
+}
+
+// The repository an item's commit is made in. Outside a git repository the workspace
+// itself is the root, so the caller skips the git-backed checks. exec is passed in rather
+// than called here, so the helper stays testable without a repository.
+export async function resolveRepoRoot(workspace: string, exec: Exec): Promise<string> {
+	const root = (await exec("git", ["rev-parse", "--show-toplevel"], workspace)).stdout.trim();
+	return root || workspace;
 }
 
 // Two checks the tool wrapper runs because they need the filesystem or git. The wording follows the
@@ -154,6 +172,8 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			status: (STATUSES.includes(item.status as ItemStatus) ? item.status : "todo") as ItemStatus,
 			goal: typeof item.goal === "string" ? item.goal : "",
 			short_goal: typeof item.short_goal === "string" ? item.short_goal : "",
+			...(typeof item.workspace === "string" && item.workspace !== "" ? { workspace: item.workspace } : {}),
+			...(typeof item.branch === "string" && item.branch !== "" ? { branch: item.branch } : {}),
 			acceptance_criteria: list(item.acceptance_criteria, at("acceptance_criteria"), problems),
 			constraints: list(item.constraints, at("constraints"), problems),
 			...(Array.isArray(item.validation_scripts) ? { validation_scripts: list(item.validation_scripts, at("validation_scripts"), problems) } : {}),
@@ -279,7 +299,7 @@ export function nextItem(ledger: Ledger): LedgerNextResult {
 	};
 }
 
-const ITEM_KEYS = ["id", "status", "goal", "short_goal", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
+const ITEM_KEYS = ["id", "status", "goal", "short_goal", "workspace", "branch", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
 
 export function serializeLedger(ledger: Ledger): string {
 	const ordered: Record<string, unknown> = {
