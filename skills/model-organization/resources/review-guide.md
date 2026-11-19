@@ -1,6 +1,6 @@
 # Reviewing Model Organization
 
-Read this when reviewing a diff that touches model definitions or the engines consuming them, or when running a dedicated refactor of scattered-model tech debt. It validates that `explanation.md`'s expectations are met and catches unnecessary hardcoding.
+Read this when reviewing a diff that touches model definitions or the engines consuming them, or when running a dedicated refactor of scattered-model tech debt. It validates that `resources/explanation.md` expectations are met and catches unnecessary hardcoding.
 
 ## Step 0 — Build the ownership map
 
@@ -41,7 +41,7 @@ Group by file. Each finding:
 file:line — <A#/B#> — what is spelled/duplicated here and where its owner lives — remediation direction
 ```
 
-If two or more findings share a pattern (e.g., several B1 hits from the same parallel table), summarize them as one structural finding naming the table to delete. When you need the concrete target shape for a remediation, read `examples.md` in this skill directory now and ground the recommendation in its before/after mappings — do not describe the fix from memory.
+If two or more findings share a pattern (e.g., several B1 hits from the same parallel table), summarize them as one structural finding naming the table to delete. When you need the concrete target shape for a remediation, read `resources/examples.md` now and ground the recommendation in its before/after mappings — do not describe the fix from memory.
 
 ## Refactor mode (dedicated tech-debt sessions)
 
