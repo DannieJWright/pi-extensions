@@ -111,9 +111,10 @@ export function missingPlanProblem(at: string, ref: string): string {
 	return `${at} names a plan file that does not exist (${ref})`;
 }
 
-// The check strings for the workspace and files.in checks. The tool wrapper runs the filesystem
-// and git work and calls these, so the wording is fixed in the core. The field name comes from
-// problemTarget, so these lines do not repeat it.
+// The check strings for the workspace, files.in, and plan checks. The tool wrapper runs the
+// filesystem and git work and calls these, so the wording is fixed in the core. The field name
+// comes from problemTarget, so these lines do not repeat it. A files.in entry is a warning, not a
+// problem: an author may name a file an earlier step will create, so the check must not fail on it.
 export function missingWorkspaceProblem(at: string, workspace: string): string {
 	return `${at} does not exist (${workspace})`;
 }
@@ -122,8 +123,8 @@ export function outsideRepoProblem(at: string, workspace: string): string {
 	return `${at} is not inside a git repository (${workspace})`;
 }
 
-export function missingInputProblem(at: string, path: string): string {
-	return `${at} does not resolve from the session root (${path})`;
+export function missingInputWarning(at: string, path: string): string {
+	return `${at} names a file that does not exist yet (${path})`;
 }
 
 export function trackedPlanProblem(paths: string[]): string {
