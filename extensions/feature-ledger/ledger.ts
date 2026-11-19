@@ -46,10 +46,11 @@ export function ensureParent(path: string): Promise<void> {
 // root and the four sources; the pointer file (plan/ledger.path in the session root) is read by the
 // caller, so this stays testable. Precedence: explicit, then env, then pointer, then default.
 // Relative values resolve against the session root; absolute values are used as given. Any extension
-// is accepted, so .yml and .yaml both work and nothing checks an extension.
-export function resolveLedgerPath(cwd: string, opts: { explicit?: string; env?: string; pointer?: string; default?: string }): string {
+// is accepted, so .yml and .yaml both work and nothing checks an extension. The default is required:
+// a caller that trusts the result reads it as a file, so an empty result would be a directory.
+export function resolveLedgerPath(cwd: string, opts: { explicit?: string; env?: string; pointer?: string; default: string }): string {
 	const value = firstNonEmpty(opts.explicit, opts.env, opts.pointer, opts.default);
-	if (!value) return cwd;
+	if (!value) throw new Error("resolveLedgerPath: every source is empty, so there is no ledger file to read");
 	return isAbsolute(value) ? value : resolve(cwd, value);
 }
 

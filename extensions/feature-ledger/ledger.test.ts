@@ -569,12 +569,13 @@ test("resolveLedgerPath takes the first non-empty source in precedence order", (
 	assert.equal(resolveLedgerPath("/repo", { ...all, explicit: undefined, env: "" }), "/repo/plan/c.yaml");
 	assert.equal(resolveLedgerPath("/repo", { ...all, explicit: undefined, env: undefined, pointer: "" }), "/repo/plan/ledger.yaml");
 	// Relative values resolve against the session root; absolute values are used as given.
-	assert.equal(resolveLedgerPath("/repo/work", { explicit: "draft/ledger.yaml" }), "/repo/work/draft/ledger.yaml");
-	assert.equal(resolveLedgerPath("/repo/work", { explicit: "/tmp/draft.yaml" }), "/tmp/draft.yaml");
-	// With nothing supplied, the call returns the session root itself.
-	assert.equal(resolveLedgerPath("/repo/work", {}), "/repo/work");
+	assert.equal(resolveLedgerPath("/repo/work", { explicit: "draft/ledger.yaml", default: "plan/ledger.yaml" }), "/repo/work/draft/ledger.yaml");
+	assert.equal(resolveLedgerPath("/repo/work", { explicit: "/tmp/draft.yaml", default: "plan/ledger.yaml" }), "/tmp/draft.yaml");
+	// The default is required. With every source empty there is no file to read, so the call throws
+	// instead of handing back the session root, which is a directory.
+	assert.throws(() => resolveLedgerPath("/repo/work", { default: "" }), /every source is empty/);
 	// No extension check anywhere: .yml and .yaml both resolve.
-	assert.equal(resolveLedgerPath("/repo", { explicit: "plan/iter.yml" }), "/repo/plan/iter.yml");
+	assert.equal(resolveLedgerPath("/repo", { explicit: "plan/iter.yml", default: "plan/ledger.yaml" }), "/repo/plan/iter.yml");
 	assert.equal(resolveLedgerPath("/repo", { default: "plan/ledger.yml" }), "/repo/plan/ledger.yml");
 });
 
