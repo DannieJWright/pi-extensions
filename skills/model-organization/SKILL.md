@@ -55,6 +55,25 @@ Match the current task to exactly one context below. Load only the listed resour
 - Review and refactor findings use the finding format in `resources/review-guide.md`: `file:line — A#/B# — what is spelled here and where its owner lives — remediation direction`.
 - Plans and specs state the result of the add-type cost test from `resources/explanation.md`.
 
+## Checklist IDs
+
+Findings, examples, and the issues below cite IDs from the checklists in `resources/review-guide.md`. This legend names each check only; the review guide holds the full test for each.
+
+| ID | Check |
+|---|---|
+| A1 | One owner per type |
+| A2 | Enums and vocabulary co-located with the model |
+| A3 | Parse/format owned by the model or a generic walker |
+| A4 | Persistence mapping read from the model |
+| A5 | No parallel lists of the same facts |
+| A6 | Parent delegates to child; no per-type branching |
+| A7 | Add-type cost test (1–3 files) |
+| B1 | Call-site vocabulary outside the owner module |
+| B2 | Per-type branching in engines |
+| B3 | Duplicated derived patterns |
+| B4 | Inline error vocabulary |
+| B5 | Repeated persistence kinds or columns |
+
 ## Common Issues
 
 ### No single clear owner for a type

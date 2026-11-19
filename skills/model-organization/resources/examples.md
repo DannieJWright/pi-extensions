@@ -1,6 +1,6 @@
 # Examples: Scattered Model Knowledge → Per-Model Organization
 
-Read only via `resources/review-guide.md` — when grounding a remediation or structuring a refactor's end state. Each case maps its smells to the review-guide checklist IDs so you can trace every move back to an expectation.
+Read only via `resources/review-guide.md` — when grounding a remediation or structuring a refactor's end state. Each case maps its smells to the review-guide checklist IDs (A1–A7 for expectations, B1–B5 for hardcoding; the legend is in `SKILL.md` and the full tests are in `resources/review-guide.md`) so you can trace every move back to an expectation.
 
 ## Case 1 (illustrative, from a real refactor): plan-format models
 
