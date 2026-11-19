@@ -78,7 +78,8 @@ export async function resolveRepoRoot(workspace: string, exec: Exec): Promise<st
 }
 
 // True when path is inside root. A path above root is not, so a change outside the item's
-// own repository is reported as a warning instead of committed.
+// own repository is reported as a warning instead of committed. Paths are compared as written;
+// symlinks are not resolved.
 export function isInside(path: string, root: string): boolean {
 	const rel = relative(root, path);
 	if (isAbsolute(rel)) return false;
@@ -145,8 +146,9 @@ export function problemTarget(n: number, id: string, field: string): string {
 // fails on them with exit 128; those entries are skipped. The same filter answers whether the working
 // tree has changes, so sandbox noise alone does not pass that check.
 // Entries are read with `--porcelain -z`: records are NUL-separated and paths are not quoted, so a
-// path with a space parses correctly. For a rename git reports "source -> destination"; the
-// destination is the path that exists. Git 2.2 or later is assumed (this repository runs git 2.53).
+// path with a space parses correctly. For a rename or a copy, -z writes the destination path first,
+// then the source path, as two records with no arrow; the destination is the path that exists.
+// Git 2.2 or later is assumed (this repository runs git 2.53).
 export type EntryStat = (path: string) => Promise<Pick<Stats, "isFile" | "isSymbolicLink" | "isDirectory">>;
 
 export function isAddableEntry(info: Pick<Stats, "isFile", "isSymbolicLink", "isDirectory">): boolean {
@@ -154,7 +156,8 @@ export function isAddableEntry(info: Pick<Stats, "isFile", "isSymbolicLink", "is
 }
 
 // The status field is the two-letter column of a porcelain record. Either letter being D or R means
-// git can record the change.
+// git can record the change. A conflict code (DU, UD, DD) is included: git add on an unmerged path
+// records the working-tree version, which resolves the conflict.
 export function isAddableStatus(field: string): boolean {
 	return field.includes("D") || field.includes("R");
 }
@@ -166,12 +169,17 @@ export interface PorcelainEntry {
 
 export function parsePorcelain(porcelain: string): PorcelainEntry[] {
 	const entries: PorcelainEntry[] = [];
-	for (const record of porcelain.split("\0")) {
+	const records = porcelain.split("\0");
+	for (let i = 0; i < records.length; i++) {
+		const record = records[i];
 		if (record.length < 4) continue;
-		const rest = record.slice(3);
-		// A rename names the destination, the path that exists.
-		const arrow = rest.indexOf(" -> ");
-		entries.push({ status: record.slice(0, 2), path: arrow === -1 ? rest : rest.slice(arrow + 4) });
+		const status = record.slice(0, 2);
+		const path = record.slice(3);
+		entries.push({ status, path });
+		// A rename or a copy is two records with no arrow: the destination first, then the source.
+		// The destination is the entry, the path that exists; the source record is consumed here so
+		// it is not read as a record of its own.
+		if (status === "R " || status === "C ") i++;
 	}
 	return entries;
 }

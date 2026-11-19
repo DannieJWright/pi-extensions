@@ -198,6 +198,11 @@ test("the entry filter keeps regular files, symbolic links, and directories", ()
 	assert.ok(isAddableStatus("R "));
 	assert.ok(!isAddableStatus("??"));
 	assert.ok(!isAddableStatus(" M"));
+	// A conflict code is addable too: git add on an unmerged path records the working-tree version,
+	// which resolves the conflict.
+	assert.ok(isAddableStatus("DU"));
+	assert.ok(isAddableStatus("UD"));
+	assert.ok(isAddableStatus("DD"));
 });
 
 test("the pathspec is built from the addable entries only", async () => {
@@ -216,9 +221,9 @@ test("the pathspec is built from the addable entries only", async () => {
 			isDirectory: () => kind === "directory",
 		};
 	};
-	// A D entry has no path on disk, so it is kept by its status letter. A rename names the
-	// destination, the path that exists; the source is gone.
-	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", " D deleted.txt", "R  src/old.ts -> src/renamed.ts"].join("\0");
+	// A D entry has no path on disk, so it is kept by its status letter. A rename is two records with
+	// no arrow: the destination first, then the source. The destination is the path that exists.
+	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", " D deleted.txt", "R  src/renamed.ts", "src/old.ts"].join("\0");
 	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["src/a.ts", "docs/link.md", "artifacts", "deleted.txt", "src/renamed.ts"]);
 });
 
@@ -231,6 +236,23 @@ test("a path with a space is kept through the -z parse", async () => {
 	]);
 	const fakeStat = async () => ({ isFile: () => true, isSymbolicLink: () => false, isDirectory: () => false });
 	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["notes with a space.md", "old name.txt"]);
+});
+
+test("a rename is read as two records: the destination, then the source", () => {
+	// With -z the arrow is gone and the order is reversed, so the source record must not be read as a
+	// record of its own.
+	assert.deepEqual(parsePorcelain(["R  src/renamed.ts", "src/old.ts"].join("\0")), [
+		{ status: "R ", path: "src/renamed.ts" },
+	]);
+	// A short source path is consumed too, so no garbage entry reaches the caller.
+	assert.deepEqual(parsePorcelain(["R  src/renamed.ts", "old"].join("\0")), [
+		{ status: "R ", path: "src/renamed.ts" },
+	]);
+	// A copy has the same shape.
+	assert.deepEqual(parsePorcelain(["C  docs/new.md", "docs/old.md", "?? notes.md"].join("\0")), [
+		{ status: "C ", path: "docs/new.md" },
+		{ status: "??", path: "notes.md" },
+	]);
 });
 
 test("a device entry is skipped and a deletion next to it is staged", async () => {
@@ -486,6 +508,10 @@ test("a submit call with no id names the missing field", async () => {
 		const partial = await api.tools.ledger_submit.execute(null, { id: "alpha" }, null, null, createFakeContext(dir));
 		assert.ok(partial.isError);
 		assert.equal(partial.content[0].text, "ledger_submit: commit_message: missing, summary: missing");
+		// An empty string counts as missing, not as a value.
+		const empty = await api.tools.ledger_submit.execute(null, { id: "", commit_message: "x", summary: "y", limitations: [] }, null, null, createFakeContext(dir));
+		assert.ok(empty.isError);
+		assert.equal(empty.content[0].text, "ledger_submit: id: missing");
 	} finally { await cleanup(); }
 });
 
@@ -686,6 +712,11 @@ test("the tool resolves the path from the argument, then the environment, then t
 		await writeFile(join(dir, "plan", "ledger.path"), "plan/from-pointer.yml\n");
 		assert.equal((await call({})).path, join(dir, "plan", "from-pointer.yml"));
 		assert.ok((await call({})).ok);
+		// A missing or unreadable pointer contributes nothing: replace the pointer file with a
+		// directory, so the read fails and the default applies.
+		await rm(join(dir, "plan", "ledger.path"));
+		await mkdir(join(dir, "plan", "ledger.path"));
+		assert.equal((await call({})).path, path);
 	} finally {
 		delete process.env.PI_LEDGER_PATH;
 		await cleanup();
