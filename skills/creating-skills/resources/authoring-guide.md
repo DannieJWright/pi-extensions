@@ -49,7 +49,7 @@ Apply these to the generated skill's folder:
 Skills load in three levels: frontmatter (always), SKILL.md body (when relevant), and linked resource files (only when needed). Use this to keep token usage low while staying complete.
 
 - **Keep SKILL.md lean** — under ~5,000 words. It holds the core instructions and a map; detail moves out.
-- **Split into sibling resource `.md` files** in the same folder when content is large or only needed for specific phases. Each generated skill must be self-contained: its resources live alongside `SKILL.md` and are referenced by relative name within the skill — never point a generated skill at material outside its own folder (no links to other skills, docs, or paths it does not bundle).
+- **Split into sibling resource `.md` files** in the same folder when content is large or only needed for specific phases. Each generated skill must be self-contained: its resources live alongside `SKILL.md` and are referenced by a path relative to the skill folder root (see "Referencing bundled files" below) — never point a generated skill at material outside its own folder (no links to other skills, docs, or paths it does not bundle).
 - **Add a Resources table near the top of SKILL.md** mapping each path to what it contains, so the agent knows what exists and when to open it:
 
   ```markdown
@@ -62,6 +62,25 @@ Skills load in three levels: frontmatter (always), SKILL.md body (when relevant)
 
 - **Add delegation rules / guardrails** so the agent loads only what the current task needs and never preloads: "Read `X` before doing Y; do not load more than one resource per phase." Guard against "just in case" loading.
 - **Reference resources explicitly in instructions**: e.g. "Before writing queries, consult `resources/api-patterns.md` for rate-limiting and pagination patterns."
+
+### Referencing bundled files
+
+The agent harness gives the agent the path to the skill folder (the folder that holds `SKILL.md`). Every reference to a file bundled in that folder must be a path relative to that root.
+
+- Write `resources/examples.md`, not `examples.md`. Write `subagents/reviewer.md`, not `reviewer.md`.
+- Use this form everywhere: SKILL.md, resource files, subagent templates, Resources tables, and script docs.
+- A file does not resolve paths relative to itself. A reference from `resources/a.md` to `resources/b.md` is still `resources/b.md`.
+- Use one form only: no leading `./`, no `../`, no absolute or machine-specific paths.
+- Put each path in backticks.
+- The rule covers files bundled in the skill folder only. Paths in the user's project (for example `docs/research/guide.md`) stay as the project defines them.
+
+| Bad | Good |
+|---|---|
+| `see examples.md` | `see resources/examples.md` |
+| `./resources/examples.md` | `resources/examples.md` |
+| `../shared/guide.md` | bundle a copy as `resources/guide.md`, then use that path |
+| `/home/me/skills/x/scripts/validate.py` | `scripts/validate.py` |
+| in `resources/a.md`: `b.md` | `resources/b.md` |
 
 ### Example multi-file layout
 
@@ -122,7 +141,7 @@ A baseline template — a floor, not a ceiling. Add sections that fit the domain
 ## Overview
 [Core principle in 1–2 sentences]
 
-## Resources (under `resources/`)     <!-- only if multi-file; see §3 -->
+## Resources (under `resources/`)     <!-- only if multi-file; see §3. Paths are relative to the skill folder root -->
 | Path | Contains |
 |---|---|
 | `resources/<file>.md` | What it contains and when to load it. |

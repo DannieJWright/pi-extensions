@@ -1,6 +1,6 @@
 # Examples
 
-Reference examples for authoring and testing decisions. Load this only when `authoring-guide.md` or `testing-validation.md` directs you to compare against an example — do not preload it.
+Reference examples for authoring and testing decisions. Load this only when `resources/authoring-guide.md` or `resources/testing-validation.md` directs you to compare against an example — do not preload it.
 
 ## 1. Frontmatter: good vs bad
 
@@ -98,6 +98,19 @@ Cause: pooling exists but is behind an interface the scan can't see.
 Solution: Open the referenced manager; if a pool is used, drop the finding and note why.
 ```
 
-Trigger test lists this skill would generate (see `testing-validation.md`):
+Trigger test lists this skill would generate (see `resources/testing-validation.md`):
 - Should trigger: "review this script", "check my Unity code for performance problems", "audit all C# in Assets/Scripts".
 - Should NOT trigger: "help me write a new MonoBehaviour from scratch", "explain LINQ allocations" (no review request).
+
+## 4. File references: good vs bad
+
+Paths are relative to the skill folder root, which the harness provides. Project paths are not skill files.
+
+```markdown
+<!-- BAD -->  Consult examples.md for a sample.                    (bare name)
+<!-- BAD -->  Consult ./resources/examples.md for a sample.        (./ prefix)
+<!-- BAD -->  Run /home/me/skills/x/scripts/validate.py.           (absolute path)
+<!-- GOOD --> Consult `resources/examples.md` for a sample.
+<!-- GOOD --> Run `scripts/validate.py`.
+<!-- OK -->   Read `docs/research/guide.md` in the user's project. (project path, not bundled)
+```

@@ -28,7 +28,10 @@ When:   the skill executes its workflow
 Then:
   - <expected concrete outcome>
   - <no API/tool errors>
+  - every bundled file the skill points at is found at its stated path
 ```
+
+Also run a reference check. Given the skill folder path, list every backticked file path in SKILL.md and the resource files (for example with grep). Each path must start with a skill subdirectory (`resources/`, `subagents/`, `scripts/`, `assets/`) and must exist under the skill folder root.
 
 ## 3. Performance comparison (does it beat baseline?)
 
@@ -54,6 +57,8 @@ Run this before deploying. A complex skill may warrant extra self-review beyond 
 - [ ] Description states WHAT it does AND WHEN to use it, with concrete trigger phrases
 - [ ] Description < 1024 chars; no XML angle brackets (`<` `>`) anywhere in the frontmatter
 - [ ] No `README.md` inside the skill folder
+- [ ] Every reference to a bundled file is a path relative to the skill folder root (`resources/examples.md`), never a bare filename, `./`, `../`, or an absolute path (see "Referencing bundled files" in `resources/authoring-guide.md`)
+- [ ] Every referenced path exists in the skill folder, and every bundled file is referenced from SKILL.md
 
 **Content & parameterization**
 - [ ] All hardcoded specifics are parameterized into a Configuration table (if applicable)

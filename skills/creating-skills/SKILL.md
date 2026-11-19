@@ -21,7 +21,7 @@ Generate reusable AI agent skills from specific prompts, workflows, or ideas. Ge
 | `resources/requirements-interview.md` | The interview protocol: use-case-first definition, success criteria, and the clarifying questions that establish shared understanding before authoring. Load first in every run. |
 | `resources/authoring-guide.md` | How to build the skill: frontmatter rules (WHAT + WHEN), naming/structure requirements, the progressive-disclosure multi-file pattern for generated skills, a design-pattern menu, specificity and error-handling best practices, plus parameterization and subagent-template authoring. Load when writing SKILL.md or its resources. |
 | `resources/testing-validation.md` | How to prove it works: trigger tests (should/should-NOT-trigger), functional test cases, negative triggers, under/over-triggering signals with the iteration loop, and the final verification checklist. Load before declaring a skill done. |
-| `resources/examples.md` | One complete prompt → SKILL.md walkthrough plus good/bad frontmatter and parameterization pairs. **Never load this directly** — consult it only when authoring-guide or testing-validation directs you to compare against an example. |
+| `resources/examples.md` | One complete prompt → SKILL.md walkthrough plus good/bad frontmatter and parameterization pairs. **Never load this directly** — consult it only when `resources/authoring-guide` or `resources/testing-validation` directs you to compare against an example. |
 
 Supporting material lives in subdirectories of the skill folder: `resources/` for guidance read on demand (the files above), `subagents/` for one prompt template per dispatched subagent role, `scripts/` for deterministic code run as needed, and `assets/` for static output material — see `resources/authoring-guide.md`.
 
@@ -53,13 +53,14 @@ digraph workflow {
 3. **Pick a pattern** — Using `resources/authoring-guide.md`, choose the design pattern that fits the use cases (sequential orchestration, iterative refinement, context-aware tool selection, or domain-specific intelligence). This shapes the structure you will write.
 4. **Generalize & parameterize** — Extract hardcoded specifics into configurable variables and replace them with variable references (rules in `resources/authoring-guide.md`).
 5. **Define subagents** — If the skill dispatches subagents, store each as its own file under `subagents/<role>.md` (per `resources/authoring-guide.md`) *before* writing SKILL.md so it is ready to reference; point at these files from SKILL.md rather than embedding the prompts.
-6. **Write the skill** — Generate SKILL.md and any resource files under `resources/` per `resources/authoring-guide.md`, applying progressive disclosure: keep SKILL.md lean and move detail into referenced resources (plus `scripts/` for deterministic code and `assets/` for static output material where useful).
+6. **Write the skill** — Generate SKILL.md and any resource files under `resources/` per `resources/authoring-guide.md`, using skill-root-relative paths for every file reference and applying progressive disclosure: keep SKILL.md lean and move detail into referenced resources (plus `scripts/` for deterministic code and `assets/` for static output material where useful).
 7. **Validate & test** — Run `resources/testing-validation.md`: build trigger tests and functional cases, wire in negative triggers, then complete the verification checklist before deploying.
 
 ## Guardrails
 
 - CRITICAL: Do not emit a generated skill's frontmatter until its description states BOTH what the skill does AND when to use it (with concrete trigger phrases). See `resources/authoring-guide.md`.
 - CRITICAL: Do not declare a skill done until every item in the `resources/testing-validation.md` verification checklist passes.
+- CRITICAL: Reference every bundled file by its path relative to the skill folder root (`resources/examples.md`, not `examples.md`). The harness gives the agent that root. See `resources/authoring-guide.md`.
 - Keep SKILL.md lean; move detailed documentation into resource files under `resources/` rather than inlining it (progressive disclosure).
 - The generated skill must be self-contained and portable — no local code imports, kebab-case naming that matches its folder.
 
@@ -68,4 +69,4 @@ digraph workflow {
 After validating:
 1. Place the skill as `<name>/SKILL.md` inside whatever skills directory the target environment discovers (e.g., `skill/<name>/`, `.opencode/skills/`, or a global config path), with any sibling resource files alongside it.
 2. Verify the `name` field exactly matches the folder name (kebab-case).
-3. Test by loading the skill and confirming the frontmatter parses and its resources are reachable relative to the skill's own folder.
+3. Test by loading the skill and confirming the frontmatter parses and every referenced path resolves from the skill folder root.
