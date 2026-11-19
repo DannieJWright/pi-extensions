@@ -66,14 +66,6 @@ The tools write one shared file. For now we assume concurrent work: a parent age
 
 This is accepted for now and is a point to come back to. When it becomes a problem, the fix is a write lock per item, or one file per item with a shared header. Record this so a later agent does not treat a lost write as a tool bug.
 
-## Cleanup before merge
-
-The ledger and the plan files are removed before the PR is opened. This check is optional: it runs only when the ledger sits inside a git repository. Before the PR is opened, this must print nothing:
-
-```sh
-git ls-files plan/
-```
-
-`ledger_check` reports a repository where this is not empty, so the state is checked before the PR is opened, not assumed.
+## What the reviewer sees
 
 The reviewer sees the closed items through the merged branch history or the squash, not through the file.

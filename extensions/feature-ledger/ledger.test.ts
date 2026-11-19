@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import { badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -780,8 +780,6 @@ test("planReference reads the plan path out of a goal", () => {
 test("the check lines share one wording", () => {
 	assert.equal(missingPlanProblem(problemTarget(0, "alpha", "goal"), "plan/x.md"),
 		"features[0] (alpha): goal names a plan file that does not exist (plan/x.md)");
-	assert.equal(trackedPlanProblem(["plan/feature-x/ledger.yaml"]),
-		"git ls-files plan/ is not empty: plan/feature-x/ledger.yaml (the plan and the ledger are removed before the PR is opened)");
 	assert.equal(missingWorkspaceProblem(problemTarget(0, "alpha", "workspace"), "/session/sub-repo-1"),
 		"features[0] (alpha): workspace does not exist (/session/sub-repo-1)");
 	assert.equal(outsideRepoProblem(problemTarget(0, "alpha", "workspace"), "/session/sub-repo-1"),
@@ -822,49 +820,6 @@ test("ledger_check reports a goal that names a plan file that does not exist", a
 			"features[0] (alpha): goal names a plan file that does not exist (plan/2026-11-18_missing-plan.md)",
 		]);
 	} finally { await cleanup(); }
-});
-
-test("ledger_check reports tracked files under plan/", async () => {
-	const { dir, path, cleanup } = await setupRepo(FIXTURE);
-	try {
-		// The check reads files.in entries, so the fixture's entry must exist.
-		await ensureParent(join(dir, "src/a.ts"));
-		await writeFile(join(dir, "src/a.ts"), "x\n");
-		await exec("git", ["add", "-f", "plan/ledger.yaml"], dir);
-		const api = createFakeApi();
-		featureLedger(api);
-		const result = await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir));
-		assert.ok(result.isError);
-		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
-			"git ls-files plan/ is not empty: plan/ledger.yaml (the plan and the ledger are removed before the PR is opened)",
-		]);
-	} finally { await cleanup(); }
-});
-
-test("the tracked-plan check runs on the repository that holds the ledger, not the session root's", async () => {
-	// The session root is one repository; the ledger is in another. The check is about the file, so the
-	// file's repository decides whether the check runs.
-	const root = await mkdtemp(join(tmpdir(), "feature-ledger-tracked-elsewhere-"));
-	try {
-		await exec("git", ["init", "-q"], root);
-		const other = join(root, "other-repo");
-		await mkdir(other);
-		await exec("git", ["init", "-q"], other);
-		// The check reads files.in entries, so the fixture's entry must exist.
-		await ensureParent(join(root, "src/a.ts"));
-		await writeFile(join(root, "src/a.ts"), "x\n");
-		const path = join(other, "plan", "ledger.yaml");
-		await ensureParent(path);
-		await writeFile(path, itemLedger([]));
-		await exec("git", ["add", "-f", "plan/ledger.yaml"], other);
-		const api = createFakeApi();
-		featureLedger(api);
-		const result = await api.tools.ledger_check.execute(null, { path }, null, null, createFakeContext(root));
-		assert.ok(result.isError, result.content[0].text);
-		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
-			"git ls-files plan/ is not empty: plan/ledger.yaml (the plan and the ledger are removed before the PR is opened)",
-		]);
-	} finally { await rm(root, { recursive: true }); }
 });
 
 test("ledger_check reports a workspace that does not exist, and one that is not inside a git repository", async () => {
@@ -955,22 +910,6 @@ test("a plan reference resolves against the session root, not the repository roo
 		// The same file is not found from the repository root, so a session root without it is reported.
 		assert.deepEqual((await call(dir)).problems, ["features[0] (alpha): goal names a plan file that does not exist (plan/named-plan.md)"]);
 	} finally { await cleanup(); }
-});
-
-test("the tracked-plan check is skipped when the ledger is not inside a git repository", async () => {
-	const root = await mkdtemp(join(tmpdir(), "feature-ledger-nogit-"));
-	try {
-		const ws = join(root, "sub-repo-1");
-		await mkdir(ws);
-		await exec("git", ["init", "-q"], ws);
-		await ensureParent(join(root, "plan", "ledger.yaml"));
-		await writeFile(join(root, "plan", "ledger.yaml"), itemLedger(["      workspace: sub-repo-1"]));
-		const api = createFakeApi();
-		featureLedger(api);
-		const result = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(root))).content[0].text);
-		// The item's own repository is checked, but no tracked-file line is claimed for the session root.
-		assert.deepEqual(result.problems, []);
-	} finally { await rm(root, { recursive: true }); }
 });
 
 test("parseLedger returns the file position of each parsed item", () => {

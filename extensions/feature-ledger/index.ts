@@ -6,10 +6,10 @@
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
 import { access, readFile } from "node:fs/promises";
-import { join, isAbsolute, dirname } from "node:path";
+import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, findItem, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
+import { checkParsed, findItem, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
@@ -171,20 +171,11 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_check",
 		label: "Ledger check",
-		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems, warnings }; ok is true when there are no problems, and isError is set only when problems exist. A warning does not make the check fail. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted. It reports a workspace that does not exist or is not inside a git repository, and a goal that names a plan file that does not exist, as problems. A files.in entry that does not exist yet is a warning, not a problem: an author may name a file an earlier step will create. Plan references resolve against the session root. The tracked-plan check is optional and runs only when the ledger sits inside a git repository.",
+		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems, warnings }; ok is true when there are no problems, and isError is set only when problems exist. A warning does not make the check fail. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted. It reports a workspace that does not exist or is not inside a git repository, and a goal that names a plan file that does not exist, as problems. A files.in entry that does not exist yet is a warning, not a problem: an author may name a file an earlier step will create. Plan references resolve against the session root.",
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				const path = await resolvePath(ctx, params.path);
-				// The check is about the file, so the repository is the one that contains it, not the one the
-				// session root happens to be in. git may be unavailable: the file check still runs, and the
-				// git-backed checks are skipped.
-				let repoRoot = "";
-				try {
-					repoRoot = await resolveRepoRoot(dirname(path), exec);
-				} catch {
-					repoRoot = "";
-				}
 				const parsed = parseLedger(await readFile(path, "utf8"));
 				const problems = checkParsed(parsed);
 				// A warning is reported and does not fail the check. Only problems set ok and isError.
@@ -218,11 +209,6 @@ export default function featureLedger(pi: ExtensionAPI): void {
 								problems.push(missingPlanProblem(problemTarget(parsed.indexes[i], item.id, "goal"), ref));
 							}
 						}
-					}
-					// Optional: only a ledger inside a git repository can be checked against tracked files.
-					if (repoRoot) {
-						const tracked = (await exec("git", ["ls-files", "plan/"], repoRoot)).stdout.split("\n").filter((line) => line !== "");
-						if (tracked.length > 0) problems.push(trackedPlanProblem(tracked));
 					}
 				}
 				const result = { path, ok: problems.length === 0, problems, warnings };

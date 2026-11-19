@@ -22,7 +22,7 @@ repository.
 Run `just feature-ledger check` and `just test` through the just tools exposed to you. These are your own
 commands in this repository; the rule above is about what a skill file tells another agent to run.
 
-`plan/` is gitignored in this repository. The tracked-plan problem in `ledger_check` exists to keep plan files
-out of a merge in projects that track `plan/`; it runs only when the ledger sits inside a git repository, so it
-cannot fire here. Do not ask for confirmation about an untracked or gitignored file under `plan/`, here or in a
-project that tracks it: those files are removed before the PR is opened.
+`plan/` is gitignored in this repository and `ledger_check` does not check it. Cleaning plan files before the
+PR is opened is the working project's review, not the tool's. Do not ask for confirmation about an untracked or
+gitignored file under `plan/`, here or in a project that tracks it: those files are removed before the PR is
+opened.
