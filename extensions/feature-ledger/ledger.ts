@@ -40,21 +40,22 @@ export function ensureParent(path: string): Promise<void> {
 	return mkdir(dirname(path), { recursive: true });
 }
 
-export function ledgerPath(repoRoot: string, branch: string): string {
-	return join(repoRoot, "plan", branch, "ledger.yaml");
+// Pure path helper for the tools: no git and no filesystem access. The caller supplies the session
+// root and the four sources; the pointer file (plan/ledger.path in the session root) is read by the
+// caller, so this stays testable. Precedence: explicit, then env, then pointer, then default.
+// Relative values resolve against the session root; absolute values are used as given. Any extension
+// is accepted, so .yml and .yaml both work and nothing checks an extension.
+export function resolveLedgerPath(cwd: string, opts: { explicit?: string; env?: string; pointer?: string; default?: string }): string {
+	const value = firstNonEmpty(opts.explicit, opts.env, opts.pointer, opts.default);
+	if (!value) return cwd;
+	return isAbsolute(value) ? value : resolve(cwd, value);
 }
 
-// Pure wiring helpers for the check: no git and no filesystem access, the caller supplies
-// the repo root, the branch, and the file read. The CLI and the tool share them.
-
-export function resolveCheckTarget(cwd: string, path?: string, defaultTarget?: string): string {
-	if (!path) return defaultTarget ?? cwd;
-	return isAbsolute(path) ? path : resolve(cwd, path);
-}
-
-export function locationProblem(path: string, repoRoot: string, branch: string): string | null {
-	if (!branch || path === ledgerPath(repoRoot, branch)) return null;
-	return `path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`;
+function firstNonEmpty(...values: (string | undefined)[]): string {
+	for (const value of values) {
+		if (value !== undefined && value !== "") return value;
+	}
+	return "";
 }
 
 // Two checks the tool wrapper runs because they need the filesystem or git. The wording follows the
@@ -311,8 +312,8 @@ export interface StartResult {
 	};
 }
 
-export async function startItem(opts: { repoRoot: string; branch: string; id: string; exec: Exec }): Promise<StartResult> {
-	const path = ledgerPath(opts.repoRoot, opts.branch);
+export async function startItem(opts: { ledgerPath: string; repoRoot: string; id: string; exec: Exec }): Promise<StartResult> {
+	const path = opts.ledgerPath;
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
 	if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
 	const item = ledger.features.find((feature) => feature.id === opts.id);
@@ -342,8 +343,8 @@ export type SubmitResult =
 	| { rejected: false; commit: string; filesOut: string[] };
 
 export async function submitItem(opts: {
+	ledgerPath: string;
 	repoRoot: string;
-	branch: string;
 	id: string;
 	commitMessage: string;
 	summary: string;
@@ -352,7 +353,7 @@ export async function submitItem(opts: {
 	logDir?: string;
 	stat?: EntryStat;
 }): Promise<SubmitResult> {
-	const path = ledgerPath(opts.repoRoot, opts.branch);
+	const path = opts.ledgerPath;
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
 	if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
 	const item = ledger.features.find((feature) => feature.id === opts.id);

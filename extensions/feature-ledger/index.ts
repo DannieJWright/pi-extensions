@@ -9,7 +9,7 @@ import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, ledgerPath, listItems, locationProblem, missingPlanProblem, nextItem, parseLedger, problemTarget, planReference, resolveCheckTarget, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
+import { checkParsed, listItems, missingPlanProblem, nextItem, parseLedger, problemTarget, planReference, resolveLedgerPath, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
 
 const EMPTY_PARAMS = {
 	type: "object",
@@ -21,7 +21,7 @@ const EMPTY_PARAMS = {
 const START_PARAMS = {
 	type: "object",
 	properties: {
-		id: { type: "string", description: "Feature id in plan/<branch>/ledger.yaml" },
+		id: { type: "string", description: "Feature id in the resolved ledger file" },
 	},
 	required: ["id"],
 	additionalProperties: false,
@@ -30,7 +30,7 @@ const START_PARAMS = {
 const CHECK_PARAMS = {
 	type: "object",
 	properties: {
-		path: { type: "string", description: "Ledger file to check. Default plan/<branch>/ledger.yaml for the current branch. Use a path for a draft ledger not yet under plan/." },
+		path: { type: "string", description: "Ledger file to check. Without it the path is resolved from PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted." },
 	},
 	required: [],
 	additionalProperties: false,
@@ -39,7 +39,7 @@ const CHECK_PARAMS = {
 const SUBMIT_PARAMS = {
 	type: "object",
 	properties: {
-		id: { type: "string", description: "Feature id in plan/<branch>/ledger.yaml" },
+		id: { type: "string", description: "Feature id in the resolved ledger file" },
 		commit_message: { type: "string", description: "Commit message for the single commit this item produces" },
 		summary: { type: "string", description: "What was done, in past tense" },
 		limitations: { type: "array", items: { type: "string" }, description: "Known limitations to append to the item" },
@@ -47,6 +47,24 @@ const SUBMIT_PARAMS = {
 	required: ["id", "commit_message", "summary"],
 	additionalProperties: false,
 } as unknown as TSchema;
+
+const POINTER_FILE = join("plan", "ledger.path");
+const DEFAULT_LEDGER = "plan/ledger.yaml";
+
+// The pointer file is read at call time: one line, one path. A missing or unreadable file
+// contributes nothing to the resolution order.
+async function readPointer(cwd: string): Promise<string> {
+	try {
+		const text = await readFile(join(cwd, POINTER_FILE), "utf8");
+		return text.split("\n")[0]?.trim() ?? "";
+	} catch {
+		return "";
+	}
+}
+
+async function resolvePath(ctx: ExtensionContext, explicit?: string): Promise<string> {
+	return resolveLedgerPath(ctx.cwd, { explicit, env: process.env.PI_LEDGER_PATH, pointer: await readPointer(ctx.cwd), default: DEFAULT_LEDGER });
+}
 
 function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -98,9 +116,9 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		return { repoRoot: root, branch };
 	}
 
+	// Read tools do not touch git: the path comes from the resolution order, not from a branch.
 	async function readLedger(ctx: ExtensionContext): Promise<Ledger> {
-		const { repoRoot, branch } = await locate(ctx);
-		const path = ledgerPath(repoRoot, branch);
+		const path = await resolvePath(ctx);
 		const text = await readFile(path, "utf8");
 		const { ledger, problems } = parseLedger(text);
 		if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
@@ -140,28 +158,20 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_check",
 		label: "Ledger check",
-		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Default target is plan/<branch>/ledger.yaml for the current branch; an optional path checks a draft ledger. Output is JSON { path, ok, problems }, isError when problems exist. A path that is not plan/<branch>/ledger.yaml for the current branch is reported as a problem, as is a goal that names a plan file that does not exist and a repository with tracked files under plan/.",
+		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems }, isError when problems exist. Without a path argument the file is resolved from PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. A goal that names a plan file that does not exist is reported, as is a repository with tracked files under plan/ when the ledger sits inside a git repo.",
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				// git may be unavailable for a draft ledger outside a repo: check the file and skip the location line.
+				// git may be unavailable: the file check still runs, and the git-backed checks are skipped.
 				let repoRoot = "";
-				let branch = "";
 				try {
-					const located = await locate(ctx);
-					repoRoot = located.repoRoot;
-					branch = located.branch;
-				} catch (error) {
-					if (!params.path) throw error;
+					repoRoot = (await locate(ctx)).repoRoot;
+				} catch {
+					repoRoot = "";
 				}
-				// Unreachable through the normal path: locate() throws when the branch is empty. This
-				// branch is kept for the draft-ledger-outside-a-repo case above, where locate() fails and
-				// the given path is used, so there is no default target to name.
-				const path = resolveCheckTarget(ctx.cwd, params.path, branch ? ledgerPath(repoRoot, branch) : undefined);
+				const path = await resolvePath(ctx, params.path);
 				const parsed = parseLedger(await readFile(path, "utf8"));
 				const problems = checkParsed(parsed);
-				const location = locationProblem(path, repoRoot, branch);
-				if (location) problems.push(location);
 				// These two need the filesystem and git, so they run here and not in checkLedger.
 				if (parsed.ledger && repoRoot) {
 					for (const [i, item] of parsed.ledger.features.entries()) {
@@ -191,8 +201,8 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const { repoRoot, branch } = await locate(ctx);
-				const { item, brief } = await startItem({ repoRoot, branch, id: params.id, exec });
+				const repoRoot = (await locate(ctx)).repoRoot;
+				const { item, brief } = await startItem({ ledgerPath: await resolvePath(ctx, params.path), repoRoot, id: params.id, exec });
 				return { content: [{ type: "text", text: briefText(item, brief) }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_start: ${message(error)}` }], details: {}, isError: true };
@@ -209,10 +219,10 @@ export default function featureLedger(pi: ExtensionAPI): void {
 			try {
 				const missing = missingRequired(params, SUBMIT_PARAMS.required as string[]);
 				if (missing.length > 0) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
-				const { repoRoot, branch } = await locate(ctx);
+				const repoRoot = (await locate(ctx)).repoRoot;
 				const result = await submitItem({
+					ledgerPath: await resolvePath(ctx, params.path),
 					repoRoot,
-					branch,
 					id: params.id,
 					commitMessage: params.commit_message,
 					summary: params.summary,
