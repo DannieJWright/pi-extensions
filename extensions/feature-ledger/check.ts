@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // CLI: validate a feature ledger file. Used by `just feature-ledger check`.
-// Thin wrapper over checkLedger in ledger.ts, which the ledger_check tool also calls,
+// Thin wrapper over parseLedger and checkParsed in ledger.ts, which the ledger_check tool also calls,
 // so the CLI and the tool cannot disagree. The check logic is for real ledgers; the
 // default target is the reference example under the skill. Exits 1 on problems.
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, parseLedger } from "./ledger.ts";
+import { checkParsed, parseLedger } from "./ledger.ts";
 
 const USAGE = `usage: node check.ts [path]
 
@@ -28,15 +28,15 @@ export async function run(argv: string[]): Promise<number> {
 		console.error(`feature-ledger check: cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
 		return 1;
 	}
-	const problems = checkLedger(text);
+	// Same core as the ledger_check tool: one parse serves the problems and the feature count.
+	const parsed = parseLedger(text);
+	const problems = checkParsed(parsed);
 	if (problems.length > 0) {
 		console.error(`feature-ledger check: ${path}`);
 		for (const problem of problems) console.error(`  ${problem}`);
 		return 1;
 	}
-	// Same core as the ledger_check tool. parseLedger is called only for the feature count.
-	const { ledger } = parseLedger(text);
-	console.log(`feature-ledger check: ${path} parses (${ledger!.features.length} features)`);
+	console.log(`feature-ledger check: ${path} parses (${parsed.ledger!.features.length} features)`);
 	return 0;
 }
 

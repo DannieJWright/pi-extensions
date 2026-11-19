@@ -1,40 +1,16 @@
 import { test } from "node:test";
+import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { checkLedger, ensureParent, ledgerPath, listItems, nextItem, parseLedger, serializeLedger, startItem, submitItem, type Exec } from "./ledger.ts";
+import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, ledgerPath, listItems, locationProblem, missingPlanProblem, nextItem, parseLedger, parsePorcelain, planReference, problemTarget, resolveCheckTarget, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import featureLedger from "./index.ts";
+import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
-const run = promisify(execFile);
-
-const exec: Exec = async (command, args, cwd) => {
-	try {
-		const { stdout, stderr } = await run(command, args, { cwd });
-		return { code: 0, stdout, stderr };
-	} catch (error) {
-		const failure = error as { code?: number; stdout?: string; stderr?: string };
-		return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
-	}
-};
-
-async function setupRepo(ledgerText: string): Promise<{ dir: string; branch: string; cleanup: () => Promise<void> }> {
-	const dir = await mkdtemp(join(tmpdir(), "feature-ledger-"));
-	await exec("git", ["-c", "init.defaultBranch=feature-x", "init", "-q"], dir);
-	await exec("git", ["config", "user.email", "test@example.com"], dir);
-	await exec("git", ["config", "user.name", "Ledger Test"], dir);
-	// The ledger lives under plan/, which the repo gitignores; mirror that here.
-	await writeFile(join(dir, ".gitignore"), "plan/\n");
-	const branch = (await exec("git", ["symbolic-ref", "--short", "HEAD"], dir)).stdout.trim();
-	await writeFile(join(dir, "README.md"), "seed\n");
-	await exec("git", ["add", "-A"], dir);
-	await exec("git", ["commit", "-q", "-m", "seed"], dir);
-	await ensureParent(ledgerPath(dir, branch));
-	await writeFile(ledgerPath(dir, branch), ledgerText.replace("{BRANCH}", branch));
-	return { dir, branch, cleanup: () => rm(dir, { recursive: true }) };
-}
+// The harness provides exec and setupRepo. The ledger lives under plan/, which the
+// repo gitignores; setupRepo mirrors that here.
 
 const FIXTURE = `ledger:
   description: Test fixture.
@@ -100,6 +76,10 @@ test("commit hashes that look numeric stay strings", () => {
 	assert.deepEqual(problems, []);
 	assert.equal(ledger!.features[0].commits.start, "6576964");
 	assert.equal(ledger!.features[0].commits.end, "1048321");
+	// A hash with leading zeros keeps them: a value with a leading zero is not read as a number.
+	const zeros = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: done\n      short_goal: Do the thing.\n      commits:\n        start: 0092502\n        end: 1048321\n");
+	assert.deepEqual(zeros.problems, []);
+	assert.equal(zeros.ledger!.features[0].commits.start, "0092502");
 });
 
 test("start marks the item in-progress and records the start commit", async () => {
@@ -187,6 +167,112 @@ test("submit refuses a clean tree and a moved HEAD", async () => {
 	} finally { await cleanup(); }
 });
 
+test("the entry filter keeps regular files, symbolic links, and directories", () => {
+	const entry = (kind: string) => ({
+		isFile: () => kind === "file",
+		isSymbolicLink: () => kind === "symlink",
+		isDirectory: () => kind === "directory",
+	});
+	assert.ok(isAddableEntry(entry("file")));
+	assert.ok(isAddableEntry(entry("symlink")));
+	assert.ok(isAddableEntry(entry("directory")));
+	assert.ok(!isAddableEntry(entry("character device")));
+	assert.ok(!isAddableEntry(entry("block device")));
+	assert.ok(!isAddableEntry(entry("socket")));
+	// A removal or a rename is recorded by git, so those entries are addable without a path on disk.
+	assert.ok(isAddableStatus(" D"));
+	assert.ok(isAddableStatus("D "));
+	assert.ok(isAddableStatus("R "));
+	assert.ok(!isAddableStatus("??"));
+	assert.ok(!isAddableStatus(" M"));
+});
+
+test("the pathspec is built from the addable entries only", async () => {
+	const kinds: Record<string, string> = {
+		".pi-dotfile": "character device",
+		"src/a.ts": "file",
+		"docs/link.md": "symlink",
+		"artifacts": "directory",
+		"src/renamed.ts": "file",
+	};
+	const fakeStat = async (path: string) => {
+		const kind = kinds[path.slice("/repo/".length)];
+		return {
+			isFile: () => kind === "file",
+			isSymbolicLink: () => kind === "symlink",
+			isDirectory: () => kind === "directory",
+		};
+	};
+	// A D entry has no path on disk, so it is kept by its status letter. A rename names the
+	// destination, the path that exists; the source is gone.
+	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", " D deleted.txt", "R  src/old.ts -> src/renamed.ts"].join("\0");
+	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["src/a.ts", "docs/link.md", "artifacts", "deleted.txt", "src/renamed.ts"]);
+});
+
+test("a path with a space is kept through the -z parse", async () => {
+	// With -z the records are NUL-separated and the paths are not quoted.
+	const porcelain = ["?? notes with a space.md", " D old name.txt"].join("\0");
+	assert.deepEqual(parsePorcelain(porcelain), [
+		{ status: "??", path: "notes with a space.md" },
+		{ status: " D", path: "old name.txt" },
+	]);
+	const fakeStat = async () => ({ isFile: () => true, isSymbolicLink: () => false, isDirectory: () => false });
+	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["notes with a space.md", "old name.txt"]);
+});
+
+test("a device entry is skipped and a deletion next to it is staged", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	// The sandbox view shows a project-root dotfile as a character device, which git add cannot
+	// take. The stat is injected because the sandbox cannot create a device.
+	const fakeStat = async (path: string) => ({
+		isFile: () => path.endsWith("src/a.ts"),
+		isSymbolicLink: () => false,
+		isDirectory: () => false,
+	});
+	try {
+		await startItem({ repoRoot: dir, branch, id: "alpha", exec });
+		await ensureParent(join(dir, "src/a.ts"));
+		await writeFile(join(dir, "src/a.ts"), "changed\n");
+		// A tracked file removed in the working tree has no inode, so it is kept by its status letter.
+		await rm(join(dir, "README.md"));
+		const status = ["?? .pi-dotfile", " D README.md", "?? src/a.ts"].join("\0");
+		const addArgs: string[][] = [];
+		const recordingExec = async (command: string, args: string[], cwd: string) => {
+			if (command === "git" && args[0] === "status") return { code: 0, stdout: status, stderr: "" };
+			if (command === "git" && args[0] === "add") addArgs.push(args);
+			return exec(command, args, cwd);
+		};
+		const result = await submitItem({
+			repoRoot: dir, branch, id: "alpha", commitMessage: "feat: alpha",
+			summary: "Did the thing.", limitations: [], exec: recordingExec, logDir: dir, stat: fakeStat,
+		});
+		assert.ok(!result.rejected);
+		assert.deepEqual(addArgs[0], ["add", "-A", "--", "README.md", "src/a.ts"]);
+		// files.out still comes from the commit diff, so the skipped device is not in it.
+		assert.deepEqual(result.filesOut, ["README.md", "src/a.ts"]);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("a tree with only a device entry reports no changes", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	const fakeStat = async () => ({ isFile: () => false, isSymbolicLink: () => false, isDirectory: () => false });
+	try {
+		await startItem({ repoRoot: dir, branch, id: "alpha", exec });
+		const noiseOnly = async (command: string, args: string[], cwd: string) => {
+			if (command === "git" && args[0] === "status") return { code: 0, stdout: "?? .pi-dotfile", stderr: "" };
+			return exec(command, args, cwd);
+		};
+		const error = await submitItem({
+			repoRoot: dir, branch, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec: noiseOnly, logDir: dir, stat: fakeStat,
+		}).catch((error) => error as Error);
+		assert.match(error.message, /no changes/);
+	} finally {
+		await cleanup();
+	}
+});
+
 test("a missing short_goal is reported as a problem", () => {
 	const { problems } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      goal: Do the thing.\n");
 	assert.deepEqual(problems, ["features[0] (alpha): missing short_goal"]);
@@ -250,9 +336,7 @@ test("checkLedger names the file position when an item is skipped", () => {
 		"ledger:",
 		"  branch: alpha",
 		"  features:",
-		"    - id: ''",
-		"      status: todo",
-		"      short_goal: No id.",
+		"    - \"not an item\"",
 		"    - id: first",
 		"      status: todo",
 		"      short_goal: First item.",
@@ -260,7 +344,7 @@ test("checkLedger names the file position when an item is skipped", () => {
 		"      status: todo",
 		"      short_goal: Second item with the same id.",
 	].join("\n");
-	assert.deepEqual(checkLedger(skipped), ["features[0]: missing id", "features[2] (first): duplicate id"]);
+	assert.deepEqual(checkLedger(skipped), ["features[0] is not an item", "features[2] (first): duplicate id"]);
 });
 
 test("checkLedger keeps the existing missing short_goal problems", () => {
@@ -351,4 +435,261 @@ test("nextItem reports all items complete", () => {
 test("nextItem on an empty ledger reports todo with no next", () => {
 	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features: []\n");
 	assert.deepEqual(nextItem(ledger!), { next: null, status: "todo" });
+});
+
+test("the harness runs a tool against a temporary repository with no Pi session", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		assert.ok(Object.keys(api.tools).sort().join(",") === "ledger_check,ledger_list,ledger_next,ledger_start,ledger_submit");
+
+		const ctx = createFakeContext(dir);
+		const list = await api.tools.ledger_list.execute(null, {}, null, null, ctx);
+		assert.ok(!list.isError);
+		const result = JSON.parse(list.content[0].text);
+		assert.equal(result.branch, branch);
+		assert.deepEqual(result.items, [{ id: "alpha", status: "todo", short_goal: "Do the thing.", commits: { start: null, end: null } }]);
+
+		const next = await api.tools.ledger_next.execute(null, {}, null, null, ctx);
+		assert.ok(!next.isError);
+		assert.equal(JSON.parse(next.content[0].text).next.id, "alpha");
+
+		// exec wraps child_process.execFile and returns { code, stdout, stderr }.
+		const failed = await api.exec("git", ["symbolic-ref", "refs/not-a-ref"], dir);
+		assert.notEqual(failed.code, 0);
+		assert.equal(failed.stdout, "");
+	} finally { await cleanup(); }
+});
+
+test("a submit call with no id names the missing field", async () => {
+	const { dir, cleanup } = await setupRepo(FIXTURE);
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		// id stays first in the schema and in the required list.
+		assert.equal((api.tools.ledger_submit.parameters as { required: string[] }).required[0], "id");
+		assert.match(api.tools.ledger_submit.description, /Pass id first/);
+
+		const result = await api.tools.ledger_submit.execute(null, {}, null, null, createFakeContext(dir));
+		assert.ok(result.isError);
+		assert.match(result.content[0].text, /^ledger_submit: id: missing/);
+
+		const partial = await api.tools.ledger_submit.execute(null, { id: "alpha" }, null, null, createFakeContext(dir));
+		assert.ok(partial.isError);
+		assert.equal(partial.content[0].text, "ledger_submit: commit_message: missing, summary: missing");
+	} finally { await cleanup(); }
+});
+
+test("a bullet that parses as a mapping is reported as a problem line", () => {
+	const mapping = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: alpha",
+		"      status: todo",
+		"      short_goal: Do the thing.",
+		"      constraints:",
+		"        - Read-only: the tool never writes the ledger.",
+	].join("\n");
+	assert.deepEqual(parseLedger(mapping).problems, [
+		'features[0] (alpha): constraints[0] is not a string (a bullet that starts with "key: value" reads as a mapping)',
+	]);
+	assert.deepEqual(checkLedger(mapping), [
+		'features[0] (alpha): constraints[0] is not a string (a bullet that starts with "key: value" reads as a mapping)',
+	]);
+
+	// A quoted bullet is a string: no problem.
+	const quoted = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: alpha",
+		"      status: todo",
+		"      short_goal: Do the thing.",
+		"      constraints:",
+		'        - "Read-only: the tool never writes the ledger."',
+	].join("\n");
+	assert.deepEqual(parseLedger(quoted).problems, []);
+	assert.deepEqual(checkLedger(quoted), []);
+	assert.deepEqual(parseLedger(quoted).ledger!.features[0].constraints, ["Read-only: the tool never writes the ledger."]);
+
+	// Read tools keep their behavior: the mapping entry still reaches the reader as [object Object].
+	const { ledger } = parseLedger(mapping);
+	assert.deepEqual(listItems(ledger!).items[0].short_goal, "Do the thing.");
+	assert.deepEqual(nextItem(ledger!).next!.short_goal, "Do the thing.");
+});
+
+test("an unborn branch reports the configured init.defaultBranch name", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "feature-ledger-"));
+	try {
+		await exec("git", ["-c", "init.defaultBranch=feature-x", "init", "-q"], dir);
+		// The ledger file must exist for the check to read it; the branch name comes from the symbolic ref.
+		await ensureParent(ledgerPath(dir, "feature-x"));
+		await writeFile(ledgerPath(dir, "feature-x"), "ledger:\n  branch: feature-x\n  features: []\n");
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir))).content[0].text);
+		assert.match(result.path, /\/plan\/feature-x\/ledger\.yaml$/);
+		assert.ok(result.ok);
+	} finally { await rm(dir, { recursive: true }); }
+});
+
+test("a detached HEAD resolves through the fallback", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	try {
+		await execFile("git", ["checkout", "--detach", "-q"], { cwd: dir });
+		// The default target is now plan/HEAD/, so the file must be readable there for the
+		// location line to be produced.
+		await ensureParent(ledgerPath(dir, "HEAD"));
+		await writeFile(ledgerPath(dir, "HEAD"), await readFile(ledgerPath(dir, branch), "utf8"));
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir))).content[0].text);
+		assert.match(result.path, /\/plan\/HEAD\/ledger\.yaml$/);
+		assert.ok(result.ok);
+	} finally { await cleanup(); }
+});
+
+test("resolveCheckTarget resolves a relative path against cwd and uses an absolute path as given", () => {
+	assert.equal(resolveCheckTarget("/repo"), "/repo");
+	assert.equal(resolveCheckTarget("/repo/work", "draft/ledger.yaml"), "/repo/work/draft/ledger.yaml");
+	assert.equal(resolveCheckTarget("/repo/work", "/tmp/draft.yaml"), "/tmp/draft.yaml");
+	// With no path, the caller-supplied default target is used.
+	assert.equal(resolveCheckTarget("/repo/work", undefined, ledgerPath("/repo", "feature-x")), "/repo/plan/feature-x/ledger.yaml");
+});
+
+test("locationProblem names the location line only for a path outside plan/<branch>/", () => {
+	assert.equal(locationProblem(ledgerPath("/repo", "feature-x"), "/repo", "feature-x"), null);
+	assert.equal(locationProblem("/repo/plan/other/ledger.yaml", "/repo", "feature-x"),
+		"path is not plan/feature-x/ledger.yaml for branch feature-x (ledger_list will not find it)");
+	// No branch (a draft ledger outside a repo): no location line.
+	assert.equal(locationProblem("/tmp/draft.yaml", "", ""), null);
+});
+
+const GOAL_WITH_PLAN = FIXTURE.replace(
+	"      goal: >\n        Do the thing.",
+	"      goal: Option 9 of plan/2026-11-18_missing-plan.md. Do the thing.",
+);
+
+test("planReference reads the plan path out of a goal", () => {
+	assert.equal(planReference("Option 4.a of plan/chat-ui/agent-improvement-ideas-1.md. Live search."), "plan/chat-ui/agent-improvement-ideas-1.md");
+	assert.equal(planReference("Do the thing."), null);
+});
+
+test("the two new lines follow the location line in wording", () => {
+	assert.equal(missingPlanProblem(problemTarget(0, "alpha", "goal"), "plan/x.md"),
+		"features[0] (alpha): goal names a plan file that does not exist (plan/x.md)");
+	assert.equal(trackedPlanProblem(["plan/feature-x/ledger.yaml"]),
+		"git ls-files plan/ is not empty: plan/feature-x/ledger.yaml (the plan and the ledger are removed before the PR is opened)");
+});
+
+test("checkLedger stays free of the git and filesystem checks", () => {
+	assert.deepEqual(checkLedger(GOAL_WITH_PLAN.replace("{BRANCH}", "feature-x")), []);
+});
+
+test("ledger_check reports a goal that names a plan file that does not exist", async () => {
+	const { dir, branch, cleanup } = await setupRepo(GOAL_WITH_PLAN);
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir));
+		assert.ok(result.isError);
+		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
+			"features[0] (alpha): goal names a plan file that does not exist (plan/2026-11-18_missing-plan.md)",
+		]);
+	} finally { await cleanup(); }
+});
+
+test("ledger_check reports tracked files under plan/", async () => {
+	const { dir, branch, cleanup } = await setupRepo(FIXTURE);
+	try {
+		await exec("git", ["add", "-f", `plan/${branch}/ledger.yaml`], dir);
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir));
+		assert.ok(result.isError);
+		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
+			`git ls-files plan/ is not empty: plan/${branch}/ledger.yaml (the plan and the ledger are removed before the PR is opened)`,
+		]);
+	} finally { await cleanup(); }
+});
+
+test("parseLedger returns the file position of each parsed item", () => {
+	const skipped = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: ''",
+		"      status: todo",
+		"      short_goal: No id.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - not an item",
+		"    - id: second",
+		"      status: todo",
+		"      short_goal: Second item.",
+	].join("\n");
+	const { problems, indexes } = parseLedger(skipped);
+	// Item 0 has no id and item 2 is not an item, so neither is in the parsed list.
+	// The parsed items are the ones at file positions 1 and 3, so indexes holds those two.
+	assert.deepEqual(indexes, [1, 3]);
+	assert.deepEqual(problems, [
+		"features[0]: missing id",
+		"features[2] is not an item",
+	]);
+	// The duplicate line names the position in the file, not the index in the parsed list.
+	assert.deepEqual(checkLedger(skipped), [
+		"features[0]: missing id",
+		"features[2] is not an item",
+	]);
+});
+
+test("a duplicate id names the file position when an earlier item is skipped for a missing id", () => {
+	const skipped = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - id: ''",
+		"      status: todo",
+		"      short_goal: No id.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item with the id.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: Second item with the same id.",
+	].join("\n");
+	const { problems, indexes } = parseLedger(skipped);
+	// The item with no id is not in the parsed list, so the two items with the id are parsed at
+	// index 0 and 1, and their file positions are 1 and 2.
+	assert.deepEqual(indexes, [1, 2]);
+	assert.deepEqual(problems, ["features[0]: missing id"]);
+	assert.deepEqual(checkLedger(skipped), [
+		"features[0]: missing id",
+		"features[2] (first): duplicate id",
+	]);
+});
+
+test("a duplicate id names the file position when an item is skipped", () => {
+	const skipped = [
+		"ledger:",
+		"  branch: alpha",
+		"  features:",
+		"    - \"not an item\"",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: First item.",
+		"    - id: first",
+		"      status: todo",
+		"      short_goal: Second item with the same id.",
+	].join("\n");
+	const { indexes } = parseLedger(skipped);
+	// The skipped item is not in the parsed list, so parsed index 1 and 2 name file positions 1 and 2.
+	assert.deepEqual(indexes, [1, 2]);
+	assert.deepEqual(checkLedger(skipped), [
+		"features[0] is not an item",
+		"features[2] (first): duplicate id",
+	]);
 });

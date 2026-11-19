@@ -5,11 +5,11 @@
 // the validation-gated commit. The read tools (ledger_list, ledger_next) never write.
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
-import { readFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { access, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkLedger, ledgerPath, listItems, nextItem, parseLedger, startItem, submitItem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
+import { checkParsed, ledgerPath, listItems, locationProblem, missingPlanProblem, nextItem, parseLedger, problemTarget, planReference, resolveCheckTarget, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
 
 const EMPTY_PARAMS = {
 	type: "object",
@@ -52,6 +52,12 @@ function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+// Names each required field that is missing, in the order of the required list.
+// The tool wrapper reports it as "id: missing" rather than only the arguments received.
+function missingRequired(params: Record<string, unknown>, required: string[]): string[] {
+	return required.filter((field) => params[field] === undefined || params[field] === "");
+}
+
 function briefText(item: LedgerItem, brief: { validation_scripts: string[] }): string {
 	const lines = [
 		`ledger_start: ${item.id} is in-progress (commit ${item.commits.start})`,
@@ -84,7 +90,10 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	async function locate(ctx: ExtensionContext): Promise<{ repoRoot: string; branch: string }> {
 		const root = (await exec("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).stdout.trim();
 		if (!root) throw new Error("not inside a git repository");
-		const branch = (await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)).stdout.trim();
+		// symbolic-ref gives the real branch name before the first commit; rev-parse gives HEAD there.
+		// Keep rev-parse as the fallback for a detached HEAD, where symbolic-ref fails.
+		const symbolic = await exec("git", ["symbolic-ref", "--short", "HEAD"], root);
+		const branch = symbolic.stdout.trim() || (await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)).stdout.trim();
 		if (!branch) throw new Error("cannot read the current branch");
 		return { repoRoot: root, branch };
 	}
@@ -131,7 +140,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_check",
 		label: "Ledger check",
-		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Default target is plan/<branch>/ledger.yaml for the current branch; an optional path checks a draft ledger. Output is JSON { path, ok, problems }, isError when problems exist. A path that is not plan/<branch>/ledger.yaml for the current branch is reported as a problem.",
+		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Default target is plan/<branch>/ledger.yaml for the current branch; an optional path checks a draft ledger. Output is JSON { path, ok, problems }, isError when problems exist. A path that is not plan/<branch>/ledger.yaml for the current branch is reported as a problem, as is a goal that names a plan file that does not exist and a repository with tracked files under plan/.",
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -145,11 +154,27 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				} catch (error) {
 					if (!params.path) throw error;
 				}
-				const given = params.path;
-				const path = given ? (isAbsolute(given) ? given : resolve(ctx.cwd, given)) : ledgerPath(repoRoot, branch);
-				const problems = checkLedger(await readFile(path, "utf8"));
-				if (given && branch && path !== ledgerPath(repoRoot, branch)) {
-					problems.push(`path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`);
+				// Unreachable through the normal path: locate() throws when the branch is empty. This
+				// branch is kept for the draft-ledger-outside-a-repo case above, where locate() fails and
+				// the given path is used, so there is no default target to name.
+				const path = resolveCheckTarget(ctx.cwd, params.path, branch ? ledgerPath(repoRoot, branch) : undefined);
+				const parsed = parseLedger(await readFile(path, "utf8"));
+				const problems = checkParsed(parsed);
+				const location = locationProblem(path, repoRoot, branch);
+				if (location) problems.push(location);
+				// These two need the filesystem and git, so they run here and not in checkLedger.
+				if (parsed.ledger && repoRoot) {
+					for (const [i, item] of parsed.ledger.features.entries()) {
+						const ref = planReference(item.goal);
+						if (!ref) continue;
+						try {
+							await access(join(repoRoot, ref));
+						} catch {
+							problems.push(missingPlanProblem(problemTarget(parsed.indexes[i], item.id, "goal"), ref));
+						}
+					}
+					const tracked = (await exec("git", ["ls-files", "plan/"], repoRoot)).stdout.split("\n").filter((line) => line !== "");
+					if (tracked.length > 0) problems.push(trackedPlanProblem(tracked));
 				}
 				const result = { path, ok: problems.length === 0, problems };
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {}, isError: problems.length > 0 };
@@ -178,10 +203,12 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_submit",
 		label: "Ledger submit",
-		description: "Validate and commit a ledger item. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done.",
+		description: "Validate and commit a ledger item. Pass id first. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done.",
 		parameters: SUBMIT_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
+				const missing = missingRequired(params, SUBMIT_PARAMS.required as string[]);
+				if (missing.length > 0) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
 				const { repoRoot, branch } = await locate(ctx);
 				const result = await submitItem({
 					repoRoot,

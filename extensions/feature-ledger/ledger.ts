@@ -2,8 +2,9 @@
 // The tools in index.ts call these; the logic is kept here so it is testable
 // without a Pi session.
 
+import { lstat, type Stats } from "node:fs/promises";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
@@ -43,11 +44,96 @@ export function ledgerPath(repoRoot: string, branch: string): string {
 	return join(repoRoot, "plan", branch, "ledger.yaml");
 }
 
-export function parseLedger(text: string): { ledger: Ledger | null; problems: string[] } {
+// Pure wiring helpers for the check: no git and no filesystem access, the caller supplies
+// the repo root, the branch, and the file read. The CLI and the tool share them.
+
+export function resolveCheckTarget(cwd: string, path?: string, defaultTarget?: string): string {
+	if (!path) return defaultTarget ?? cwd;
+	return isAbsolute(path) ? path : resolve(cwd, path);
+}
+
+export function locationProblem(path: string, repoRoot: string, branch: string): string | null {
+	if (!branch || path === ledgerPath(repoRoot, branch)) return null;
+	return `path is not plan/${branch}/ledger.yaml for branch ${branch} (ledger_list will not find it)`;
+}
+
+// Two checks the tool wrapper runs because they need the filesystem or git. The wording follows the
+// location line: the fact, then the consequence in parentheses.
+export function planReference(goal: string): string | null {
+	const match = goal.match(/plan\/[^\s,;:"']+\.md/);
+	return match ? match[0] : null;
+}
+
+export function missingPlanProblem(at: string, ref: string): string {
+	return `${at} names a plan file that does not exist (${ref})`;
+}
+
+export function trackedPlanProblem(paths: string[]): string {
+	return `git ls-files plan/ is not empty: ${paths.join(", ")} (the plan and the ledger are removed before the PR is opened)`;
+}
+
+export function problemTarget(n: number, id: string, field: string): string {
+	return `features[${n}] (${id}): ${field}`;
+}
+
+// git add can record a removal or a rename, so a D or R entry is addable without the path on disk.
+// Every other entry needs the path to exist and be a regular file, a symbolic link, or a
+// git-directory. The sandbox view shows project-root dotfiles as character devices, so `git add -A`
+// fails on them with exit 128; those entries are skipped. The same filter answers whether the working
+// tree has changes, so sandbox noise alone does not pass that check.
+// Entries are read with `--porcelain -z`: records are NUL-separated and paths are not quoted, so a
+// path with a space parses correctly. For a rename git reports "source -> destination"; the
+// destination is the path that exists. Git 2.2 or later is assumed (this repository runs git 2.53).
+export type EntryStat = (path: string) => Promise<Pick<Stats, "isFile" | "isSymbolicLink" | "isDirectory">>;
+
+export function isAddableEntry(info: Pick<Stats, "isFile", "isSymbolicLink", "isDirectory">): boolean {
+	return info.isFile() || info.isSymbolicLink() || info.isDirectory();
+}
+
+// The status field is the two-letter column of a porcelain record. Either letter being D or R means
+// git can record the change.
+export function isAddableStatus(field: string): boolean {
+	return field.includes("D") || field.includes("R");
+}
+
+export interface PorcelainEntry {
+	status: string;
+	path: string;
+}
+
+export function parsePorcelain(porcelain: string): PorcelainEntry[] {
+	const entries: PorcelainEntry[] = [];
+	for (const record of porcelain.split("\0")) {
+		if (record.length < 4) continue;
+		const rest = record.slice(3);
+		// A rename names the destination, the path that exists.
+		const arrow = rest.indexOf(" -> ");
+		entries.push({ status: record.slice(0, 2), path: arrow === -1 ? rest : rest.slice(arrow + 4) });
+	}
+	return entries;
+}
+
+export async function addablePaths(porcelain: string, repoRoot: string, stat: EntryStat = lstat): Promise<string[]> {
+	const paths: string[] = [];
+	for (const entry of parsePorcelain(porcelain)) {
+		if (isAddableStatus(entry.status)) { paths.push(entry.path); continue; }
+		let info;
+		try {
+			info = await stat(join(repoRoot, entry.path));
+		} catch {
+			continue; // the entry is no longer there
+		}
+		if (isAddableEntry(info)) paths.push(entry.path);
+	}
+	return paths;
+}
+
+export function parseLedger(text: string): { ledger: Ledger | null; problems: string[]; indexes: number[] } {
 	const problems: string[] = [];
+	const indexes: number[] = [];
 	const doc = parseYaml(text) as Record<string, unknown>;
 	const raw = doc.ledger;
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ledger: null, problems: ["no ledger block"] };
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ledger: null, problems: ["no ledger block"], indexes };
 	const ledger = raw as Record<string, unknown>;
 	if (!Array.isArray(ledger.features)) problems.push("ledger.features is not a list");
 	const features = (Array.isArray(ledger.features) ? ledger.features : []) as Record<string, unknown>[];
@@ -56,19 +142,23 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 		if (!feature || typeof feature !== "object" || Array.isArray(feature)) { problems.push(`features[${n}] is not an item`); continue; }
 		const item = feature as Record<string, unknown>;
 		if (typeof item.id !== "string" || item.id === "") { problems.push(`features[${n}]: missing id`); continue; }
+		// One index per parsed item, so indexes[i] is the file position of features[i].
+		// An item skipped here is not in the parsed list, so it must not be in indexes.
+		indexes.push(n);
 		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
 		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
+		const at = (field: string) => problemTarget(n, item.id, field);
 		items.push({
 			id: item.id,
 			status: (STATUSES.includes(item.status as ItemStatus) ? item.status : "todo") as ItemStatus,
 			goal: typeof item.goal === "string" ? item.goal : "",
 			short_goal: typeof item.short_goal === "string" ? item.short_goal : "",
-			acceptance_criteria: list(item.acceptance_criteria),
-			constraints: list(item.constraints),
-			...(Array.isArray(item.validation_scripts) ? { validation_scripts: list(item.validation_scripts) } : {}),
-			files: { in: list((item.files as Record<string, unknown>)?.in), out: list((item.files as Record<string, unknown>)?.out) },
-			tests: list(item.tests),
-			limitations: list(item.limitations),
+			acceptance_criteria: list(item.acceptance_criteria, at("acceptance_criteria"), problems),
+			constraints: list(item.constraints, at("constraints"), problems),
+			...(Array.isArray(item.validation_scripts) ? { validation_scripts: list(item.validation_scripts, at("validation_scripts"), problems) } : {}),
+			files: { in: list((item.files as Record<string, unknown>)?.in, at("files.in"), problems), out: list((item.files as Record<string, unknown>)?.out, at("files.out"), problems) },
+			tests: list(item.tests, at("tests"), problems),
+			limitations: list(item.limitations, at("limitations"), problems),
 			summary: typeof item.summary === "string" ? item.summary : "",
 			commits: Object.fromEntries(
 				Object.entries((item.commits as Record<string, unknown>) ?? {}).map(([key, value]) => [key, value === null || value === undefined ? value : String(value)]),
@@ -80,37 +170,45 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			description: typeof ledger.description === "string" ? ledger.description : "",
 			workspace: typeof ledger.workspace === "string" ? ledger.workspace : "",
 			branch: typeof ledger.branch === "string" ? ledger.branch : "",
-			validation_scripts: list(ledger.validation_scripts),
+			validation_scripts: list(ledger.validation_scripts, "ledger.validation_scripts", problems),
 			features: items,
 		},
 		problems,
+		indexes,
 	};
 }
 
-function list(value: unknown): string[] {
-	return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
+function list(value: unknown, field: string, problems: string[]): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.map((entry, index) => {
+		if (typeof entry === "string") return entry;
+		// A bullet such as "- Read-only: the tool never writes the ledger." parses as a mapping,
+		// so it reaches a reader as [object Object]. Writers must quote such a line.
+		problems.push(`${field}[${index}] is not a string (a bullet that starts with "key: value" reads as a mapping)`);
+		return String(entry);
+	});
 }
 
 // The check: parseLedger problems plus duplicate id detection. One flat problem list,
 // no severity levels. parseLedger itself is unchanged: read tools do not error on
 // duplicate ids, so a duplicate is a check-time finding only.
 // The location line is added by the caller (the CLI or the tool), not here, so both
-// share this core. Indices name the feature position in the file, matching the lines
-// parseLedger reports.
+// share this core. Problem lines name the position in the file, taken from the indexes
+// parseLedger returns, so a skipped item does not shift the numbering.
 
 export function checkLedger(text: string): string[] {
-	const { ledger, problems } = parseLedger(text);
+	return checkParsed(parseLedger(text));
+}
+
+// Split so the tool wrapper parses once and can read the items for the checks it runs itself.
+export function checkParsed(parsed: { ledger: Ledger | null; problems: string[]; indexes: number[] }): string[] {
+	const { ledger, problems, indexes } = parsed;
 	if (!ledger) return problems;
-	const doc = parseYaml(text) as Record<string, unknown>;
-	const features = (doc.ledger as Record<string, unknown>)?.features;
-	if (!Array.isArray(features)) return problems;
 	const seen = new Set<string>();
-	for (const [n, feature] of features.entries()) {
-		if (!feature || typeof feature !== "object" || Array.isArray(feature)) continue;
-		const id = (feature as Record<string, unknown>).id;
-		if (typeof id !== "string" || id === "") continue;
-		if (seen.has(id)) problems.push(`features[${n}] (${id}): duplicate id`);
-		else seen.add(id);
+	for (const [i, item] of ledger.features.entries()) {
+		if (item.id === "") continue;
+		if (seen.has(item.id)) problems.push(`features[${indexes[i]}] (${item.id}): duplicate id`);
+		else seen.add(item.id);
 	}
 	return problems;
 }
@@ -252,6 +350,7 @@ export async function submitItem(opts: {
 	limitations: string[];
 	exec: Exec;
 	logDir?: string;
+	stat?: EntryStat;
 }): Promise<SubmitResult> {
 	const path = ledgerPath(opts.repoRoot, opts.branch);
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
@@ -264,8 +363,9 @@ export async function submitItem(opts: {
 	const head = (await opts.exec("git", ["rev-parse", "HEAD"], opts.repoRoot)).stdout.trim();
 	const startFull = (await opts.exec("git", ["rev-parse", item.commits.start], opts.repoRoot)).stdout.trim();
 	if (head !== startFull) throw new Error(`HEAD moved during the work (${item.commits.start} is not HEAD); the item must be one commit`);
-	const dirty = (await opts.exec("git", ["status", "--porcelain"], opts.repoRoot)).stdout.trim();
-	if (!dirty) throw new Error("the working tree has no changes");
+	const status = await opts.exec("git", ["status", "--porcelain", "-z"], opts.repoRoot);
+	const paths = await addablePaths(status.stdout, opts.repoRoot, opts.stat ?? lstat);
+	if (paths.length === 0) throw new Error("the working tree has no changes");
 
 	const scripts = item.validation_scripts ?? ledger.validation_scripts;
 	for (const script of scripts) {
@@ -280,7 +380,8 @@ export async function submitItem(opts: {
 		}
 	}
 
-	const staged = await opts.exec("git", ["add", "-A"], opts.repoRoot);
+	// -A so a removal inside the pathspec is recorded, not only the added files.
+	const staged = await opts.exec("git", ["add", "-A", "--", ...paths], opts.repoRoot);
 	if (staged.code !== 0) throw new Error(`git add failed: ${staged.stderr || staged.stdout}`);
 	const commit = await opts.exec("git", ["commit", "-m", opts.commitMessage], opts.repoRoot);
 	if (commit.code !== 0) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`);

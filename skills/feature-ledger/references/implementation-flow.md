@@ -38,21 +38,30 @@ Refuses when the item is not `in-progress`, when the tree has no changes, or whe
 
 All tools write and read the same file, so a parent agent, a subagent, and a new session see the same state.
 
+## Reading state
+
+Read state through `ledger_list`, `ledger_next`, or `ledger_start`, never with the read tool on `plan/<branch>/ledger.yaml`. The file carries every item, so a direct read pulls state the agent does not need.
+
+Two exceptions:
+
+- The writing flow authors the file, so it may read what it wrote.
+- `ledger_check` reads the file internally, which is allowed.
+
 ## Work order for an item
 
-1. `ledger_start(id)` — read the item, capture the before frame (before-after-capture skill).
+1. `ledger_next()` — confirm the item to work, then `ledger_start(id)` for that item. The order is part of the plan: a parent may hold another item in progress, so the first item in the file is not necessarily the item to work. `ledger_start` still refuses an item already in-progress; this rule is about picking the right item, not about locking. For a UI item, capture the before frame (before-after-capture skill).
 2. Implement.
 3. Tests: narrow run first, then the full suite once.
-4. Capture the after frame and run the pair check.
+4. For a UI item, capture the after frame and run the pair check. A non-UI item has no pair: record the command output that shows the result.
 5. `ledger_submit(...)` — the tool runs the validation scripts, commits, and closes the item.
 
 One item at a time per agent. An agent that is given an item calls `ledger_start` for that item and `ledger_submit` at the end. It does not work on another item.
 
-Definition of done for an item: the validation scripts pass **and** the after artifact was verified to show the change. "Code written" is not done.
+The capture pair applies only to UI items. Definition of done for a UI item: the validation scripts pass **and** the after artifact was verified to show the change. Definition of done for a non-UI item: the validation scripts pass **and** the recorded command output shows the result. "Code written" is not done.
 
 ## Skills this flow uses
 
-- `before-after-capture` — the pair, the conditions, and the pair check. The result goes in the item's `summary` and points to the sidecar.
+- `before-after-capture` — the pair, the conditions, and the pair check, for UI items only. The result goes in the item's `summary` and points to the sidecar.
 - `stable-test-hooks` — the test ids the capture spec selects, so a spec does not break when the markup changes.
 
 The feature id is one key: ledger item → capture spec → artifact folder → commit message.

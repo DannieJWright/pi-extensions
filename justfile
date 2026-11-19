@@ -7,15 +7,56 @@ REPO := justfile_directory()
 _list-recipes:
     just --list
 
-# Run the permission-mode generator check, the just-tools tests, the provider rules check, the feature-ledger check and tests, and the skill script tests.
+# Run the permission-mode generator check, the just-tools tests, the provider rules check, the feature-ledger check and tests, and the skill script tests. Prints one line per group at the end: name, pass count, fail count. The full output is still written to the log file. Exit is non-zero when any group fails.
 [group('test')]
 test:
-    just -f "{{ REPO }}/justfile" perm check
-    just -f "{{ REPO }}/justfile" just-tools test
-    just -f "{{ REPO }}/justfile" provider-rules check
-    just -f "{{ REPO }}/justfile" feature-ledger check
-    just -f "{{ REPO }}/justfile" feature-ledger test
-    just -f "{{ REPO }}/justfile" skills test
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    justfile="{{ REPO }}/justfile"
+    summary=()
+    overall=0
+
+    run_group() {
+        name="$1"
+        shift
+
+        status=0
+        out="$("$@" 2>&1)" || status=$?
+
+        # Keep the full output on stdout so the log file holds it as before.
+        printf '%s\n' "$out"
+
+        # The counts come from the Node test runner's summary lines, "ℹ pass" and "ℹ fail". If that
+        # format changes, no line matches and the group falls back to one result by exit status, the
+        # same way a check group is counted here.
+        pass=""
+        fail=""
+        if line=$(printf '%s\n' "$out" | grep '^ℹ pass ' | head -1); then pass=${line#ℹ pass }; fi
+        if line=$(printf '%s\n' "$out" | grep '^ℹ fail ' | head -1); then fail=${line#ℹ fail }; fi
+        # A check group has no test counts: one run is one result.
+        if [ -z "${pass}" ] && [ -z "${fail}" ]; then
+            pass=0
+            fail=0
+            if [ "${status}" -eq 0 ]; then pass=1; else fail=1; fi
+        fi
+
+        if [ "${status}" -ne 0 ]; then overall=1; fi
+        summary+=("${name} pass=${pass} fail=${fail}")
+    }
+
+    run_group "perm check" just -f "${justfile}" perm check
+    run_group "just-tools test" just -f "${justfile}" just-tools test
+    run_group "provider-rules check" just -f "${justfile}" provider-rules check
+    run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
+    run_group "feature-ledger test" just -f "${justfile}" feature-ledger test
+    run_group "skills test" just -f "${justfile}" skills test
+
+    echo
+    echo "summary:"
+    for line in ${summary[@]+"${summary[@]}"}; do echo "${line}"; done
+
+    exit "${overall}"
 
 # Run the just-tools and permission-mode merge tests. Pass Node options after `--` (for example `just just-tools test -- --test-name-pattern=grep`).
 [arg('action', pattern='test', help='test')]
