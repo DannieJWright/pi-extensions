@@ -57,7 +57,7 @@ Expected footprint: **1–3 files** for a plain type; more only if the type intr
 
 ## Smells (summary)
 
-Full detection procedures live in `review-guide.md`. The smells at a glance:
+Full detection procedures live in `resources/review-guide.md`. The smells at a glance:
 
 - **Parallel correspondence tables** — a second hand-maintained list of types/labels/aliases beside the models.
 - **Call-site vocabulary** — section names, labels, status values, or reference prefixes spelled as string literals outside their owning model file.

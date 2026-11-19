@@ -1,14 +1,16 @@
 # Examples: Scattered Model Knowledge → Per-Model Organization
 
-Read only via `review-guide.md` — when grounding a remediation or structuring a refactor's end state. Each case maps its smells to the review-guide checklist IDs so you can trace every move back to an expectation.
+Read only via `resources/review-guide.md` — when grounding a remediation or structuring a refactor's end state. Each case maps its smells to the review-guide checklist IDs (A1–A7 for expectations, B1–B5 for hardcoding; the legend is in `SKILL.md` and the full tests are in `resources/review-guide.md`) so you can trace every move back to an expectation.
 
-## Case 1 (canonical, real): plan-format models
+## Case 1 (illustrative, from a real refactor): plan-format models
 
-A Markdown document format with nested types: `Plan` → `Component` → six item sections (Requirements, Constraints, Decisions, Knowledge Gaps, Notes, Open Questions), plus `ActionItem` with three subsections. Before the refactor, knowledge about these ten section types was spread across three feature files; after, each type's knowledge lives in exactly one model module under `plans/models/`.
+This case comes from a real project. Copy its structure, not its names.
+
+A Markdown document format with nested types: `Plan` → `Component` → six item sections (Requirements, Constraints, Decisions, Knowledge Gaps, Notes, Open Questions), plus `ActionItem` with three subsections. Before the refactor, knowledge about these ten section types was spread across three feature files; after, each type's knowledge lives in exactly one model module under a `models/` directory.
 
 ### What the bad organization looked like
 
-The codec monolith (`markdown.ts`, 436 lines) carried a hardcoded section list **and** a parallel correspondence table of the same facts:
+The codec monolith (`markdown.ts`) carried a hardcoded section list **and** a parallel correspondence table of the same facts:
 
 ```ts
 const sections = [
@@ -55,7 +57,7 @@ const itemFields = {
 
 and per-kind persistence branches (`["requirement", component.requirements], ["constraint", ...]`). Meanwhile `domain.ts` held only Zod schemas — the types were defined in one file while everything that *operated on them* lived elsewhere, so adding a section meant editing at least three files across four concerns.
 
-Smells → checklist: parallel tables (**A5**, **B1**), per-type call-site spelling and flags (**B2**), kind strings repeated across modules (**B4**/**B5**). The decay was real: the old heading matcher had drifted into accepting `COMPONENT` where the schema rejected it — exactly what hand-maintained parallel tables do over time.
+Smells → checklist: parallel tables (**A5**, **B1**), per-type call-site spelling and flags (**B2**), kind strings repeated across modules (**B4**/**B5**). The decay was real: the old heading matcher had drifted to accept a heading the schema rejected — exactly what hand-maintained parallel tables do over time.
 
 ### What the good organization looks like
 
@@ -96,7 +98,7 @@ Ownership after: each of the ten section headings, labels, prefixes, and kinds i
 | | Before | After |
 |---|---|---|
 | Add a plain item section | Edit schemas in `domain.ts`; extend `sections[]`, the `referenceTypes` table, parse dispatch, and rendering in `markdown.ts`; add kind mapping + branches in `repository.ts` (≥3 files, 4 concerns) | One factory call in the model file, one entry in the ordered section list, one parent schema field (1–2 files); a runtime-registered section is picked up by parsing, formatting, renumbering, patch merging, persistence, and retrieval with zero other edits — proven by an extensibility test that performs exactly this procedure |
-| Failure mode if missed | Parallel tables drift (the `COMPONENT` incident) | A second table of the same facts *is* the finding (A5/B1); there is one place to look |
+| Failure mode if missed | Parallel tables drift (a matcher accepting a value the schema rejects) | A second table of the same facts *is* the finding (A5/B1); there is one place to look |
 
 ## Case 2 (generic, synthetic): an Order entity spread across four modules
 
