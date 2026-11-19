@@ -11,9 +11,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { TSchema } from "typebox";
 import { checkParsed, listItems, missingPlanProblem, nextItem, parseLedger, problemTarget, planReference, resolveLedgerPath, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type Ledger, type LedgerItem } from "./ledger.ts";
 
-const EMPTY_PARAMS = {
+// The same path argument on every tool. It is never required: without it the path comes
+// from the resolution order.
+const PATH_DESCRIPTION = "Ledger file. Without it the path is resolved in order: PI_LEDGER_PATH, then the first line of plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted; a relative path resolves against the session root.";
+const PATH_PROPERTY = { type: "string", description: PATH_DESCRIPTION };
+
+const LIST_PARAMS = {
 	type: "object",
-	properties: {},
+	properties: { path: PATH_PROPERTY },
 	required: [],
 	additionalProperties: false,
 } as unknown as TSchema;
@@ -22,6 +27,7 @@ const START_PARAMS = {
 	type: "object",
 	properties: {
 		id: { type: "string", description: "Feature id in the resolved ledger file" },
+		path: PATH_PROPERTY,
 	},
 	required: ["id"],
 	additionalProperties: false,
@@ -29,9 +35,7 @@ const START_PARAMS = {
 
 const CHECK_PARAMS = {
 	type: "object",
-	properties: {
-		path: { type: "string", description: "Ledger file to check. Without it the path is resolved from PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted." },
-	},
+	properties: { path: PATH_PROPERTY },
 	required: [],
 	additionalProperties: false,
 } as unknown as TSchema;
@@ -43,6 +47,7 @@ const SUBMIT_PARAMS = {
 		commit_message: { type: "string", description: "Commit message for the single commit this item produces" },
 		summary: { type: "string", description: "What was done, in past tense" },
 		limitations: { type: "array", items: { type: "string" }, description: "Known limitations to append to the item" },
+		path: PATH_PROPERTY,
 	},
 	required: ["id", "commit_message", "summary"],
 	additionalProperties: false,
@@ -117,8 +122,8 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	}
 
 	// Read tools do not touch git: the path comes from the resolution order, not from a branch.
-	async function readLedger(ctx: ExtensionContext): Promise<Ledger> {
-		const path = await resolvePath(ctx);
+	async function readLedger(ctx: ExtensionContext, explicit?: string): Promise<Ledger> {
+		const path = await resolvePath(ctx, explicit);
 		const text = await readFile(path, "utf8");
 		const { ledger, problems } = parseLedger(text);
 		if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
@@ -128,11 +133,11 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_list",
 		label: "Ledger list",
-		description: "Read every ledger item in file order. Returns JSON: branch, and for each item id, status, short_goal, and commits (start is null for a todo item, end is null for an in-progress item). Errors when an item has no short_goal value. Read-only.",
-		parameters: EMPTY_PARAMS,
-		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+		description: "Read every ledger item in file order. Returns JSON: branch, and for each item id, status, short_goal, and commits (start is null for a todo item, end is null for an in-progress item). Errors when an item has no short_goal value. Read-only. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
+		parameters: LIST_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const result = listItems(await readLedger(ctx));
+				const result = listItems(await readLedger(ctx, params.path));
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_list: ${message(error)}` }], details: {}, isError: true };
@@ -143,11 +148,11 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_next",
 		label: "Ledger next",
-		description: "Read the next item to work on: the first in-progress item, else the first todo. Returns JSON { next: { id, status, short_goal }, status } where status is the ledger state (todo when nothing is started, in-progress when at least one item is in-progress or done, done when all are done and next is null). Errors when the selected item has no short_goal value. Read-only.",
-		parameters: EMPTY_PARAMS,
-		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+		description: "Read the next item to work on: the first in-progress item, else the first todo. Returns JSON { next: { id, status, short_goal }, status } where status is the ledger state (todo when nothing is started, in-progress when at least one item is in-progress or done, done when all are done and next is null). Errors when the selected item has no short_goal value. Read-only. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
+		parameters: LIST_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const result = nextItem(await readLedger(ctx));
+				const result = nextItem(await readLedger(ctx, params.path));
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_next: ${message(error)}` }], details: {}, isError: true };
@@ -158,7 +163,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_check",
 		label: "Ledger check",
-		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems }, isError when problems exist. Without a path argument the file is resolved from PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. A goal that names a plan file that does not exist is reported, as is a repository with tracked files under plan/ when the ledger sits inside a git repo.",
+		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems }, isError when problems exist. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted. A goal that names a plan file that does not exist is reported, as is a repository with tracked files under plan/ when the ledger sits inside a git repo.",
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -197,7 +202,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_start",
 		label: "Ledger start",
-		description: "Read a feature ledger item and mark it in-progress. Returns the item brief: goal, acceptance criteria, constraints, files.in, tests. Refuses when the item is not todo.",
+		description: "Read a feature ledger item and mark it in-progress. Returns the item brief: goal, acceptance criteria, constraints, files.in, tests. Refuses when the item is not todo. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -213,7 +218,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_submit",
 		label: "Ledger submit",
-		description: "Validate and commit a ledger item. Pass id first. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done.",
+		description: "Validate and commit a ledger item. Pass id first. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
 		parameters: SUBMIT_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {

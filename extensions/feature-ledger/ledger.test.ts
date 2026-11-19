@@ -677,6 +677,47 @@ test("the tool resolves the path from the argument, then the environment, then t
 	}
 });
 
+test("every tool takes an optional path and uses it when given", async () => {
+	const { dir, path, cleanup } = await setupRepo(FIXTURE);
+	const api = createFakeApi();
+	featureLedger(api);
+	const names = ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"];
+	try {
+		for (const name of names) {
+			const schema = api.tools[name].parameters as { properties: Record<string, unknown>; required: string[] };
+			assert.ok(schema.properties.path, `${name}: no path parameter`);
+			assert.ok(!schema.required.includes("path"), `${name}: path is required`);
+			assert.match(api.tools[name].description, /PI_LEDGER_PATH, then plan\/ledger\.path in the session root, then plan\/ledger\.yaml/, `${name}: the description does not state the resolution order`);
+		}
+
+		// A free-form path under plan/ with any extension: no path problem, no iteration naming.
+		const other = join(dir, "plan", "scratch", "draft.yml");
+		await ensureParent(other);
+		await writeFile(other, FIXTURE.replace("{BRANCH}", "feature-x"));
+		const ctx = createFakeContext(dir);
+		const call = async (name: string, params: Record<string, unknown>) => (await api.tools[name].execute(null, params, null, null, ctx)).content[0].text;
+
+		const checked = JSON.parse(await call("ledger_check", { path: other }));
+		assert.equal(checked.path, other);
+		assert.ok(checked.ok);
+		assert.equal(JSON.parse(await call("ledger_list", { path: other })).items[0].id, "alpha");
+		assert.equal(JSON.parse(await call("ledger_next", { path: other })).next.id, "alpha");
+
+		await call("ledger_start", { id: "alpha", path: other });
+		assert.match(await readFile(other, "utf8"), /status: in-progress/);
+		// The default file is untouched: only the file named by the argument changed.
+		assert.match(await readFile(path, "utf8"), /status: todo/);
+
+		// A submit through the argument writes the item in that file.
+		await writeFile(join(dir, "tracked.txt"), "x\n");
+		const submitted = await api.tools.ledger_submit.execute(null, { id: "alpha", commit_message: "test: submit through a path argument", summary: "Recorded the path argument.", path: other }, null, null, ctx);
+		assert.ok(!submitted.isError, submitted.content[0].text);
+		assert.match(submitted.content[0].text, /is done \(commit [0-9a-f]{7}\)/);
+		assert.match(await readFile(other, "utf8"), /status: done/);
+		assert.match(await readFile(path, "utf8"), /status: todo/);
+	} finally { await cleanup(); }
+});
+
 const GOAL_WITH_PLAN = FIXTURE.replace(
 	"      goal: >\n        Do the thing.",
 	"      goal: Option 9 of plan/2026-11-18_missing-plan.md. Do the thing.",
