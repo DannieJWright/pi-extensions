@@ -127,10 +127,6 @@ export function missingInputWarning(at: string, path: string): string {
 	return `${at} names a path that does not exist yet (${path})`;
 }
 
-export function trackedPlanProblem(paths: string[]): string {
-	return `git ls-files plan/ is not empty: ${paths.join(", ")} (the plan and the ledger are removed before the PR is opened)`;
-}
-
 // A field that must be a plain value is shown as it was written, so a flow sequence such as
 // [sub-repo-1] reads as a list and not as its joined text.
 export function badValueProblem(at: string, value: unknown): string {

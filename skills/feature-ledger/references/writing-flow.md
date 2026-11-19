@@ -27,7 +27,7 @@ Read this when turning a plan into a ledger. Field rules and the shared conventi
 
 Run the `ledger_check` tool. It reads the file at the resolved path — a `path` argument, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. A draft ledger is named with `path`. This is the only path you have: the check lives in the extension, and an agent working a ledger has no access to the extension's own scripts or recipes.
 
-The check returns `{ path, ok, problems, warnings }`. It reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, a goal that names a plan file that does not exist, a `workspace` that does not exist or is not inside a git repository, and tracked files under `plan/`, which is optional and runs only when the ledger sits inside a git repository. Fix those before the first `ledger_start`.
+The check returns `{ path, ok, problems, warnings }`. It reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, a goal that names a plan file that does not exist, a `workspace` that does not exist or is not inside a git repository. Fix those before the first `ledger_start`.
 
 A `files.in` entry that does not exist yet is a warning, not a problem. Naming a file an earlier step will create is normal, so a warning needs no fix and the check still passes.
 

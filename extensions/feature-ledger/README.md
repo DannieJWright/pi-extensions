@@ -49,10 +49,9 @@ Read-only:
 - `ledger_check` — validate a ledger. Returns JSON `{ "path", "ok", "problems", "warnings" }`. `ok` is true when
   there are no problems, and `isError` is set only when problems exist: a warning is reported and does not
   fail the check. Reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, a goal that
-  names a plan file that does not exist, a `workspace` that does not exist or is not inside a git repository,
-  and tracked files under `plan/`. A `files.in` entry that does not exist yet is a warning, not a problem, so
-  a draft ledger that names a file an earlier step will create still passes. The tracked-plan check is
-  optional and runs only when the ledger sits inside a git repository. Plan references resolve against the
+  names a plan file that does not exist, or a `workspace` that does not exist or is not inside a git
+  repository (that part needs git). A `files.in` entry that does not exist yet is a warning, not a problem, so
+  a draft ledger that names a file an earlier step will create still passes. Plan references resolve against the
   session root. There is no location line. `check.ts` is the same check for humans and CI, without the
   filesystem and git work, so it has no `files.in` check and prints problems only.
 
