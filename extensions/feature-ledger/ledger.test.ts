@@ -787,7 +787,7 @@ test("the check lines share one wording", () => {
 	assert.equal(outsideRepoProblem(problemTarget(0, "alpha", "workspace"), "/session/sub-repo-1"),
 		"features[0] (alpha): workspace is not inside a git repository (/session/sub-repo-1)");
 	assert.equal(missingInputWarning(problemTarget(0, "alpha", "files.in"), "/session/sub-repo-1/notes.md"),
-		"features[0] (alpha): files.in names a file that does not exist yet (/session/sub-repo-1/notes.md)");
+		"features[0] (alpha): files.in names a path that does not exist yet (/session/sub-repo-1/notes.md)");
 	assert.equal(badValueProblem(problemTarget(0, "alpha", "workspace"), ["sub-repo-1"]),
 		"features[0] (alpha): workspace must be a non-empty string, got [\"sub-repo-1\"]");
 });
@@ -902,7 +902,7 @@ test("ledger_check reports a files.in entry that does not exist as a warning, no
 		const result = await api.tools.ledger_check.execute(null, {}, null, null, ctx);
 		return { ...JSON.parse(result.content[0].text), isError: result.isError };
 	};
-	const line = (target: string) => `features[0] (alpha): files.in names a file that does not exist yet (${target})`;
+	const line = (target: string) => `features[0] (alpha): files.in names a path that does not exist yet (${target})`;
 	try {
 		// A draft ledger may name a file an earlier step will create, so this is reported as a
 		// warning: the check still passes, and isError is not set.
@@ -932,7 +932,9 @@ test("ledger_check reports a files.in entry that does not exist as a warning, no
 			await writeFile(join(elsewhere, "notes.md"), "note\n");
 			const absolute = itemLedger(["      files:", "        in:", `          - ${join(elsewhere, "notes.md")}`, "        out: []"]).replace("      files: { in: [], out: [] }", "");
 			await writeFile(path, absolute);
-			assert.deepEqual((await call()).warnings, []);
+			const abs = await call();
+			assert.deepEqual(abs.problems, []);
+			assert.deepEqual(abs.warnings, []);
 		} finally { await rm(elsewhere, { recursive: true }); }
 	} finally { await cleanup(); }
 });

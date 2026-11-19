@@ -124,7 +124,7 @@ export function outsideRepoProblem(at: string, workspace: string): string {
 }
 
 export function missingInputWarning(at: string, path: string): string {
-	return `${at} names a file that does not exist yet (${path})`;
+	return `${at} names a path that does not exist yet (${path})`;
 }
 
 export function trackedPlanProblem(paths: string[]): string {
