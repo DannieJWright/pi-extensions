@@ -66,7 +66,7 @@ steps:
 
 Step vocabulary: `goto`, `fill`, `press`, `hover`, `click`, `scroll_to`, `wait_for`, `assert`, `screenshot`. The runner exits nonzero if an `assert` fails or a target is not rendered.
 
-Selectors come from the stable-test-hooks skill: test ids for regions, role + name for controls. A spec that hard-codes markup selectors breaks when the markup changes.
+Select through test ids for regions and role + name for controls. A spec that hard-codes markup selectors breaks when the markup changes.
 
 ## 3. Conditions (must match between before and after)
 
