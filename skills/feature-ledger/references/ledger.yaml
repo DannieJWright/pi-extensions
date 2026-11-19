@@ -1,7 +1,10 @@
 ledger:
   description: >
     Three agent workflows for feature work: capture, test hooks, and the ledger.
-  workspace: .worktrees/chat-ui
+  # The session root is the chat-ui worktree, so every path below reads from it. An item workspace
+  # is a directory inside the session root, and its repository is the worktree, whose branch is
+  # chat-ui: the branch at the ledger level and the branch on the item both match.
+  workspace: .
   branch: chat-ui
   validation_scripts:
     # The project's own recipe, as the agent working the item would run it.
@@ -49,6 +52,12 @@ ledger:
       goal: >
         Show copy actions on result blocks when the row is hovered.
       short_goal: Copy actions on result blocks on hover.
+      # The item's workspace wins over the workspace at the ledger level. A path in files.in or
+      # tests reads from the session root, so it is written with the workspace prefix.
+      workspace: packages/web
+      # branch is a label the author writes. ledger_start compares it with the branch of the
+      # item's repository and errors on a mismatch.
+      branch: chat-ui
       acceptance_criteria:
         - The actions appear on hover and on keyboard focus.
         - Each action is reachable by role with its own name.
@@ -57,7 +66,7 @@ ledger:
           - packages/web/src/features/agent/components/transcript/ResultBlock.tsx
         out: []
       tests:
-        - tests/unit/agent/block-actions.test.tsx
+        - packages/web/tests/unit/agent/block-actions.test.tsx
       limitations: []
       summary: ''
       commits: {}

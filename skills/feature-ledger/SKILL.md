@@ -20,7 +20,9 @@ This file holds only what both flows share.
 
 ## Ledger file
 
-`plan/<branch>/ledger.yaml`. One file per feature branch; every item lives in it, in order. The reference example is `references/ledger.yaml` in this skill; it parses with the tools.
+The path is resolved for each call, in this order: a path argument given to the tool, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. A relative path resolves against the session root. Any extension is accepted, and no path is checked for a `.yaml` name. Free-form paths under `plan/` are allowed; there is no enforced iteration naming.
+
+Every item lives in one file, in order. The reference example is `references/ledger.yaml` in this skill; it parses with the tools.
 
 YAML. Multiline text uses `>` blocks. Arrays for every list. Keys are exact, in this order.
 
@@ -30,11 +32,13 @@ Field rules:
 - `status` — `todo`, `in-progress`, `done`. Set by the tools, never by hand.
 - `goal` — the work to be completed. Includes the option reference when the item came from a plan. Name the plan file by its path under `plan/`; `ledger_check` reports a goal that names a plan file that does not exist.
 - `short_goal` — one sentence: the overview of the item. Required. This is what a reader or a script sees first; `goal` carries the detail. Write it at authoring time, do not derive it from `goal`. The `ledger_check` tool reports a missing value, and the read tools error on an item without one.
+- `workspace` — the directory the item is worked in, relative to the session root, or absolute. Optional. An item's value wins over the `workspace` at the ledger level; with neither, the session root is used. One workspace per item, one commit per item. Validation scripts run from the workspace root, and the commit is made inside that workspace's repository. `files.out` entries are prefixed with the workspace so they read from the session root. `ledger_check` reports a workspace that does not exist or is not inside a git repository.
+- `branch` — an optional label the author writes. No tool reads a branch from git to find the file. `ledger_list` echoes it only when the file has it. When an item states a branch, `ledger_start` compares it with the branch of the item's repository and errors on a mismatch.
 - `acceptance_criteria` — bullet points. The key is one word with an underscore so a tool can read it without a quoting rule.
 - `constraints` — what must be kept in mind while working.
 - List entries must be plain strings. A bullet that starts with `key: value` reads as a mapping, not as a string, so quote the whole line when you write it: `- "Read-only: the tool never writes the ledger."`. `ledger_check` reports such an entry as a problem line; a quoted bullet is fine.
-- `validation_scripts` — commands that run the full suite, taken from the project the work happens in: its own defined recipes or scripts, or the agent tools available there (for example `just_test`). Do not write a recipe from another project. Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the repo root) before it accepts a submission. Each command must exit 0.
-- `files.in` — known relevant files, written before the work starts. This is what a fresh agent reads first.
+- `validation_scripts` — commands that run the full suite, taken from the project the work happens in: its own defined recipes or scripts, or the agent tools available there (for example `just_test`). Do not write a recipe from another project. Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the item's workspace root) before it accepts a submission. Each command must exit 0. A script may change directory inside the workspace, for example `cd sub-repo-1 && just test all`.
+- `files.in` — known relevant files, written before the work starts. This is what a fresh agent reads first. Paths are relative to the session root, or absolute. `ledger_check` reports an entry that does not resolve from the session root.
 - `files.out` — files edited during the work. Written by the submit tool from the commit diff.
 - `tests` — tests created or modified.
 - `limitations` — problems, limits, and compromises found during the work. Required for any item that shipped a compromise.
@@ -49,7 +53,7 @@ The writing flow may only create items as `todo`.
 
 ## Read state through the tools
 
-An agent working an item reads state through `ledger_list`, `ledger_next`, or `ledger_start`. It does not read `plan/<branch>/ledger.yaml` with the read tool. The file carries every item, so a direct read pulls state the agent does not need.
+An agent working an item reads state through `ledger_list`, `ledger_next`, or `ledger_start`. It does not read the ledger file with the read tool. The file carries every item, so a direct read pulls state the agent does not need.
 
 Two exceptions:
 
@@ -64,7 +68,7 @@ This is accepted for now and is a point to come back to. When it becomes a probl
 
 ## Cleanup before merge
 
-The ledger lives in `plan/<branch>/` and is removed with the plan before merge. Before the PR is opened, this must print nothing:
+The ledger and the plan files are removed before the PR is opened. This check is optional: it runs only when the ledger sits inside a git repository. Before the PR is opened, this must print nothing:
 
 ```sh
 git ls-files plan/

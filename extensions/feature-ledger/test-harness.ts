@@ -8,7 +8,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ensureParent, ledgerPath } from "./ledger.ts";
+import { ensureParent, resolveLedgerPath } from "./ledger.ts";
 
 const run = promisify(execFile);
 
@@ -65,10 +65,11 @@ export function createFakeContext(cwd: string): FakeContext {
 	return { cwd };
 }
 
-// A temporary git repository with a ledger under plan/<branch>/, mirroring the
-// project layout (plan/ is gitignored). branch is the real branch name, read from
-// the symbolic ref before the first commit.
-export async function setupRepo(ledgerText: string): Promise<{ dir: string; branch: string; cleanup: () => Promise<void> }> {
+// A temporary git repository with a ledger at the resolved default path, mirroring the
+// project layout (plan/ is gitignored). branch is the real branch name, read from the
+// symbolic ref before the first commit, so a test can still assert on it. path is the
+// default target resolveLedgerPath gives for this directory.
+export async function setupRepo(ledgerText: string): Promise<{ dir: string; branch: string; path: string; cleanup: () => Promise<void> }> {
 	const dir = await mkdtemp(join(tmpdir(), "feature-ledger-"));
 	await exec("git", ["-c", "init.defaultBranch=feature-x", "init", "-q"], dir);
 	await exec("git", ["config", "user.email", "ledger-test@example.com"], dir);
@@ -78,7 +79,8 @@ export async function setupRepo(ledgerText: string): Promise<{ dir: string; bran
 	await writeFile(join(dir, "README.md"), "seed\n");
 	await exec("git", ["add", "-A"], dir);
 	await exec("git", ["commit", "-q", "-m", "seed"], dir);
-	await ensureParent(ledgerPath(dir, branch));
-	await writeFile(ledgerPath(dir, branch), ledgerText.replace("{BRANCH}", branch));
-	return { dir, branch, cleanup: () => rm(dir, { recursive: true }) };
+	const path = resolveLedgerPath(dir, { default: "plan/ledger.yaml" });
+	await ensureParent(path);
+	await writeFile(path, ledgerText.replace("{BRANCH}", branch));
+	return { dir, branch, path, cleanup: () => rm(dir, { recursive: true }) };
 }
