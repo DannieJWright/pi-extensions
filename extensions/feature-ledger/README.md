@@ -46,12 +46,15 @@ Read-only:
   state: `todo` when nothing is started, `in-progress` when at least one item is in-progress or done, `done`
   when all items are done and `next` is null. A script or a delegate calls it and hands the item to the next
   agent, who calls `ledger_start`. Errors when an item has no `short_goal` value, same as `ledger_list`.
-- `ledger_check` — validate a ledger. Returns JSON `{ "path", "ok", "problems" }` and `isError` when problems
-  exist. Reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, a goal that names a
-  plan file that does not exist, a `workspace` that does not exist or is not inside a git repository, and a
-  `files.in` entry that does not resolve from the session root. The tracked-plan check is optional and runs
-  only when the ledger sits inside a git repository. Plan references resolve against the session root. There
-  is no location line. `check.ts` is the same check for humans and CI, without the filesystem and git work.
+- `ledger_check` — validate a ledger. Returns JSON `{ "path", "ok", "problems", "warnings" }`. `ok` is true when
+  there are no problems, and `isError` is set only when problems exist: a warning is reported and does not
+  fail the check. Reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, a goal that
+  names a plan file that does not exist, a `workspace` that does not exist or is not inside a git repository,
+  and tracked files under `plan/`. A `files.in` entry that does not exist yet is a warning, not a problem, so
+  a draft ledger that names a file an earlier step will create still passes. The tracked-plan check is
+  optional and runs only when the ledger sits inside a git repository. Plan references resolve against the
+  session root. There is no location line. `check.ts` is the same check for humans and CI, without the
+  filesystem and git work, so it has no `files.in` check and prints problems only.
 
 Writing:
 
