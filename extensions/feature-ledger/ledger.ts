@@ -128,6 +128,12 @@ export function trackedPlanProblem(paths: string[]): string {
 	return `git ls-files plan/ is not empty: ${paths.join(", ")} (the plan and the ledger are removed before the PR is opened)`;
 }
 
+// A field that must be a plain value is shown as it was written, so a flow sequence such as
+// [sub-repo-1] reads as a list and not as its joined text.
+export function badValueProblem(at: string, value: unknown): string {
+	return `${at} must be a non-empty string, got ${JSON.stringify(value)}`;
+}
+
 export function problemTarget(n: number, id: string, field: string): string {
 	return `features[${n}] (${id}): ${field}`;
 }
@@ -204,6 +210,10 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
 		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
 		const at = (field: string) => problemTarget(n, item.id, field);
+		// A workspace or branch that is not a plain value is reported, not dropped: a typo would otherwise
+		// make the item fall back to the session root with no problem line.
+		if (item.workspace !== undefined && (typeof item.workspace !== "string" || item.workspace === "")) problems.push(badValueProblem(at("workspace"), item.workspace));
+		if (item.branch !== undefined && (typeof item.branch !== "string" || item.branch === "")) problems.push(badValueProblem(at("branch"), item.branch));
 		items.push({
 			id: item.id,
 			status: (STATUSES.includes(item.status as ItemStatus) ? item.status : "todo") as ItemStatus,
@@ -381,6 +391,9 @@ export function findItem(ledger: Ledger, id: string, path: string): LedgerItem {
 export interface ItemContext {
 	cwd: string;
 	ledgerPath: string;
+	// The parsed ledger the caller read. The write steps use this object and write it back, so the file
+	// is parsed once per call and the item reported is the item written.
+	ledger: Ledger;
 	workspace: string;
 	repoRoot: string;
 	branch: string;
@@ -403,8 +416,7 @@ export interface StartResult {
 
 export async function startItem(opts: ItemContext): Promise<StartResult> {
 	const path = opts.ledgerPath;
-	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
-	if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
+	const ledger = opts.ledger;
 	const item = findItem(ledger, opts.id, path);
 	if (item.status !== "todo") throw new Error(`item ${opts.id} is already ${item.status}; one writer per item`);
 	// A per-item branch is an author-written label. It is checked against the repository the item
@@ -444,8 +456,7 @@ export async function submitItem(opts: ItemContext & {
 	stat?: EntryStat;
 }): Promise<SubmitResult> {
 	const path = opts.ledgerPath;
-	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
-	if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
+	const ledger = opts.ledger;
 	const item = findItem(ledger, opts.id, path);
 	if (item.status !== "in-progress") throw new Error(`item ${opts.id} is ${item.status}; submit requires in-progress`);
 	if (!item.commits.start) throw new Error(`item ${opts.id} has no commits.start`);

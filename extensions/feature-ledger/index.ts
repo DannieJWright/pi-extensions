@@ -6,10 +6,10 @@
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
 import { access, readFile } from "node:fs/promises";
-import { join, isAbsolute } from "node:path";
+import { join, isAbsolute, dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, findItem, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
+import { checkParsed, findItem, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
@@ -81,7 +81,7 @@ function missingRequired(params: Record<string, unknown>, required: string[]): s
 	return required.filter((field) => params[field] === undefined || params[field] === "");
 }
 
-function briefText(item: LedgerItem, brief: { workspace: string; validation_scripts: string[] }): string {
+function briefText(item: LedgerItem, brief: StartResult["brief"]): string {
 	const lines = [
 		`ledger_start: ${item.id} is in-progress (commit ${item.commits.start})`,
 		"",
@@ -100,7 +100,7 @@ function briefText(item: LedgerItem, brief: { workspace: string; validation_scri
 		"Tests:",
 		...brief.tests.map((testLine) => `- ${testLine}`),
 		"",
-		`Validation scripts (run by ledger_submit from the repo root): ${brief.validation_scripts.join(", ")}`,
+		`Validation scripts (run by ledger_submit from the item's workspace root): ${brief.validation_scripts.join(", ")}`,
 	];
 	return lines.join("\n");
 }
@@ -120,19 +120,13 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		return branch;
 	}
 
-	async function locate(ctx: ExtensionContext): Promise<{ repoRoot: string; branch: string }> {
-		const root = (await exec("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).stdout.trim();
-		if (!root) throw new Error("not inside a git repository");
-		return { repoRoot: root, branch: await readBranch(root) };
-	}
-
 	// The workspace, repository and actual branch an item works in. Only the write steps need a
 	// repository; the read tools never resolve one.
 	async function itemContext(ctx: ExtensionContext, ledgerPath: string, ledger: Ledger, item: LedgerItem): Promise<ItemContext> {
 		const workspace = resolveWorkspace(ctx.cwd, item, ledger.workspace);
 		const repoRoot = await resolveRepoRoot(workspace, exec);
 		if (!repoRoot) throw new Error(`no git repository at ${workspace}`);
-		return { cwd: ctx.cwd, ledgerPath, workspace, repoRoot, branch: await readBranch(repoRoot), id: item.id, exec };
+		return { cwd: ctx.cwd, ledgerPath, ledger, workspace, repoRoot, branch: await readBranch(repoRoot), id: item.id, exec };
 	}
 
 	// Read tools do not touch git: the path comes from the resolution order, not from a branch.
@@ -181,14 +175,16 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				// git may be unavailable: the file check still runs, and the git-backed checks are skipped.
+				const path = await resolvePath(ctx, params.path);
+				// The check is about the file, so the repository is the one that contains it, not the one the
+				// session root happens to be in. git may be unavailable: the file check still runs, and the
+				// git-backed checks are skipped.
 				let repoRoot = "";
 				try {
-					repoRoot = (await locate(ctx)).repoRoot;
+					repoRoot = await resolveRepoRoot(dirname(path), exec);
 				} catch {
 					repoRoot = "";
 				}
-				const path = await resolvePath(ctx, params.path);
 				const parsed = parseLedger(await readFile(path, "utf8"));
 				const problems = checkParsed(parsed);
 				// These need the filesystem and git, so they run here and not in checkLedger. Plan
@@ -244,9 +240,8 @@ export default function featureLedger(pi: ExtensionAPI): void {
 			try {
 				const { path, ledger } = await readLedger(ctx, params.path);
 				const item = findItem(ledger, params.id, path);
+				// The file is parsed once, and the brief reports the item the write path returned.
 				const { item: started, brief } = await startItem(await itemContext(ctx, path, ledger, item));
-				// The brief reports the item the write path returned. startItem re-reads and re-parses the
-				// file, so the item found before it is a different object and has no commits.start.
 				return { content: [{ type: "text", text: briefText(started, brief) }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_start: ${message(error)}` }], details: {}, isError: true };

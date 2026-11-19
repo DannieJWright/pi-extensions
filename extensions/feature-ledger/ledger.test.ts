@@ -2,19 +2,21 @@ import { test } from "node:test";
 import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import { badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
 // The harness provides exec and setupRepo. The ledger lives under plan/, which the
 // repo gitignores; setupRepo mirrors that here.
 
-// The write steps take the resolved context, so the tests build it the same way the tool does.
+// The write steps take the resolved context, so the tests build it the same way the tool does: the
+// parsed ledger is read once and passed in.
 const itemOpts = (cwd: string, ledgerPath: string, id: string, extra: Record<string, unknown> = {}) => ({
-	cwd, ledgerPath, workspace: cwd, repoRoot: cwd, branch: "", id, exec, ...extra,
+	cwd, ledgerPath, ledger: parseLedger(readFileSync(ledgerPath, "utf8")).ledger!, workspace: cwd, repoRoot: cwd, branch: "", id, exec, ...extra,
 });
 
 const FIXTURE = `ledger:
@@ -741,6 +743,20 @@ test("the check lines share one wording", () => {
 		"features[0] (alpha): workspace is not inside a git repository (/session/sub-repo-1)");
 	assert.equal(missingInputProblem(problemTarget(0, "alpha", "files.in"), "/session/sub-repo-1/notes.md"),
 		"features[0] (alpha): files.in does not resolve from the session root (/session/sub-repo-1/notes.md)");
+	assert.equal(badValueProblem(problemTarget(0, "alpha", "workspace"), ["sub-repo-1"]),
+		"features[0] (alpha): workspace must be a non-empty string, got [\"sub-repo-1\"]");
+});
+
+test("parseLedger reports a workspace or branch that is not a plain value", () => {
+	// A typo such as workspace: [sub-repo-1] must not fall back to the session root in silence.
+	assert.deepEqual(parseLedger(itemLedger(["      workspace: [sub-repo-1]"])).problems, [
+		"features[0] (alpha): workspace must be a non-empty string, got [\"sub-repo-1\"]",
+	]);
+	assert.deepEqual(parseLedger(itemLedger(["      branch: \"\""])).problems, [
+		"features[0] (alpha): branch must be a non-empty string, got \"\"",
+	]);
+	// A field that is not written stays quiet.
+	assert.deepEqual(parseLedger(itemLedger([])).problems, []);
 });
 
 test("checkLedger stays free of the git and filesystem checks", () => {
@@ -778,6 +794,32 @@ test("ledger_check reports tracked files under plan/", async () => {
 			"git ls-files plan/ is not empty: plan/ledger.yaml (the plan and the ledger are removed before the PR is opened)",
 		]);
 	} finally { await cleanup(); }
+});
+
+test("the tracked-plan check runs on the repository that holds the ledger, not the session root's", async () => {
+	// The session root is one repository; the ledger is in another. The check is about the file, so the
+	// file's repository decides whether the check runs.
+	const root = await mkdtemp(join(tmpdir(), "feature-ledger-tracked-elsewhere-"));
+	try {
+		await exec("git", ["init", "-q"], root);
+		const other = join(root, "other-repo");
+		await mkdir(other);
+		await exec("git", ["init", "-q"], other);
+		// The check reads files.in entries, so the fixture's entry must exist.
+		await ensureParent(join(root, "src/a.ts"));
+		await writeFile(join(root, "src/a.ts"), "x\n");
+		const path = join(other, "plan", "ledger.yaml");
+		await ensureParent(path);
+		await writeFile(path, itemLedger([]));
+		await exec("git", ["add", "-f", "plan/ledger.yaml"], other);
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_check.execute(null, { path }, null, null, createFakeContext(root));
+		assert.ok(result.isError, result.content[0].text);
+		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
+			"git ls-files plan/ is not empty: plan/ledger.yaml (the plan and the ledger are removed before the PR is opened)",
+		]);
+	} finally { await rm(root, { recursive: true }); }
 });
 
 test("ledger_check reports a workspace that does not exist, and one that is not inside a git repository", async () => {
