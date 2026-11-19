@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import { badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -786,8 +786,8 @@ test("the check lines share one wording", () => {
 		"features[0] (alpha): workspace does not exist (/session/sub-repo-1)");
 	assert.equal(outsideRepoProblem(problemTarget(0, "alpha", "workspace"), "/session/sub-repo-1"),
 		"features[0] (alpha): workspace is not inside a git repository (/session/sub-repo-1)");
-	assert.equal(missingInputProblem(problemTarget(0, "alpha", "files.in"), "/session/sub-repo-1/notes.md"),
-		"features[0] (alpha): files.in does not resolve from the session root (/session/sub-repo-1/notes.md)");
+	assert.equal(missingInputWarning(problemTarget(0, "alpha", "files.in"), "/session/sub-repo-1/notes.md"),
+		"features[0] (alpha): files.in names a path that does not exist yet (/session/sub-repo-1/notes.md)");
 	assert.equal(badValueProblem(problemTarget(0, "alpha", "workspace"), ["sub-repo-1"]),
 		"features[0] (alpha): workspace must be a non-empty string, got [\"sub-repo-1\"]");
 });
@@ -887,7 +887,7 @@ test("ledger_check reports a workspace that does not exist, and one that is not 
 	} finally { await rm(root, { recursive: true }); }
 });
 
-test("ledger_check reports a files.in entry that does not resolve from the session root", async () => {
+test("ledger_check reports a files.in entry that does not exist as a warning, not a problem", async () => {
 	const text = itemLedger([
 		"      files:",
 		"        in:",
@@ -898,19 +898,43 @@ test("ledger_check reports a files.in entry that does not resolve from the sessi
 	const api = createFakeApi();
 	featureLedger(api);
 	const ctx = createFakeContext(dir);
-	const call = async () => JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, ctx)).content[0].text);
+	const call = async () => {
+		const result = await api.tools.ledger_check.execute(null, {}, null, null, ctx);
+		return { ...JSON.parse(result.content[0].text), isError: result.isError };
+	};
+	const line = (target: string) => `features[0] (alpha): files.in names a path that does not exist yet (${target})`;
 	try {
-		assert.deepEqual((await call()).problems, [`features[0] (alpha): files.in does not resolve from the session root (${join(dir, "sub-repo-1/notes.md")})`]);
+		// A draft ledger may name a file an earlier step will create, so this is reported as a
+		// warning: the check still passes, and isError is not set.
+		const missing = await call();
+		assert.deepEqual(missing.warnings, [line(join(dir, "sub-repo-1/notes.md"))]);
+		assert.deepEqual(missing.problems, []);
+		assert.ok(missing.ok);
+		assert.ok(!missing.isError);
+		// A problem still fails the check with a warning present, so the two lists stay separate.
+		await writeFile(path, text.replace("      short_goal: Do the thing.", "      short_goal: \"\""));
+		const mixed = await call();
+		assert.deepEqual(mixed.problems, ["features[0] (alpha): missing short_goal"]);
+		assert.deepEqual(mixed.warnings, [line(join(dir, "sub-repo-1/notes.md"))]);
+		assert.ok(!mixed.ok);
+		assert.ok(mixed.isError);
+		// Once the file exists the warning is gone.
+		await writeFile(path, text);
 		await ensureParent(join(dir, "sub-repo-1/notes.md"));
 		await writeFile(join(dir, "sub-repo-1/notes.md"), "note\n");
-		assert.deepEqual((await call()).problems, []);
+		const clean = await call();
+		assert.deepEqual(clean.problems, []);
+		assert.deepEqual(clean.warnings, []);
+		assert.ok(clean.ok);
 		// An absolute entry resolves as given, not under the session root.
 		const elsewhere = await mkdtemp(join(tmpdir(), "feature-ledger-abs-"));
 		try {
 			await writeFile(join(elsewhere, "notes.md"), "note\n");
 			const absolute = itemLedger(["      files:", "        in:", `          - ${join(elsewhere, "notes.md")}`, "        out: []"]).replace("      files: { in: [], out: [] }", "");
 			await writeFile(path, absolute);
-			assert.deepEqual((await call()).problems, []);
+			const abs = await call();
+			assert.deepEqual(abs.problems, []);
+			assert.deepEqual(abs.warnings, []);
 		} finally { await rm(elsewhere, { recursive: true }); }
 	} finally { await cleanup(); }
 });
