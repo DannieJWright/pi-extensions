@@ -62,6 +62,5 @@ The capture pair applies only to UI items. Definition of done for a UI item: the
 ## Skills this flow uses
 
 - `before-after-capture` — the pair, the conditions, and the pair check, for UI items only. The result goes in the item's `summary` and points to the sidecar.
-- `stable-test-hooks` — the test ids the capture spec selects, so a spec does not break when the markup changes.
 
 The feature id is one key: ledger item → capture spec → artifact folder → commit message.

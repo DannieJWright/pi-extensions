@@ -52,8 +52,6 @@ ledger:
       acceptance_criteria:
         - The actions appear on hover and on keyboard focus.
         - Each action is reachable by role with its own name.
-      constraints:
-        - Test ids follow the stable-test-hooks skill.
       files:
         in:
           - packages/web/src/features/agent/components/transcript/ResultBlock.tsx

@@ -4,7 +4,7 @@ description: >
   Guides repository-aware test setup, structure, implementation, fixes, and reviews
   across unit, integration, service, and UI layers. Use when asked to "set up tests",
   "add tests", "write unit tests", "fix a failing test", "test an endpoint", "add
-  Playwright tests", "review test coverage", or organize a test suite. Do not use for
+  Playwright tests", "review test coverage", organize a test suite, or update tests after a component gains a control. Do not use for
   generic debugging without a testing request or for dependency security audits.
 ---
 
@@ -75,6 +75,7 @@ Most tests should be unit tests. Integration tests should be the next largest gr
 - Service and UI tests are idempotent, isolate their data, and clean up even after failures.
 - The project documents fixture, test-resource, and reusable-test-utility locations in `README.md` or `AGENTS.md`.
 - Assertions include useful context where ambiguity warrants it.
+- When a component gained a control, selectors in its tests were audited and each control is named.
 - The smallest relevant test command ran successfully, or its specific blocker is reported.
 
 ## Common Issues
