@@ -245,7 +245,9 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				const { path, ledger } = await readLedger(ctx, params.path);
 				const item = findItem(ledger, params.id, path);
 				const { item: started, brief } = await startItem(await itemContext(ctx, path, ledger, item));
-				return { content: [{ type: "text", text: briefText(item, brief) }], details: {} };
+				// The brief reports the item the write path returned. startItem re-reads and re-parses the
+				// file, so the item found before it is a different object and has no commits.start.
+				return { content: [{ type: "text", text: briefText(started, brief) }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_start: ${message(error)}` }], details: {}, isError: true };
 			}

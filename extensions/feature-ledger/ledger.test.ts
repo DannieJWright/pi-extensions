@@ -1073,3 +1073,19 @@ test("the tool names the workspace when it is not inside a git repository", asyn
 		assert.match(result.content[0].text, new RegExp(`no git repository at .*sub-repo-1`));
 	} finally { await rm(root, { recursive: true }); }
 });
+
+test("the start brief names the commit the write path recorded", async () => {
+	const { dir, path, cleanup } = await setupRepo(itemLedger([]));
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_start.execute(null, { id: "alpha" }, null, null, createFakeContext(dir));
+		assert.ok(!result.isError, result.content[0].text);
+		// The line must name the item startItem returned, not the one found before the write: the
+		// earlier object has no commits.start, so the line would read (commit undefined).
+		const recorded = parseLedger(await readFile(path, "utf8")).ledger!.features[0].commits.start;
+		assert.ok(recorded, "the write path recorded no commit");
+		assert.match(result.content[0].text, new RegExp(`is in-progress \\(commit ${recorded}\\)`));
+		assert.ok(!result.content[0].text.includes("commit undefined"), result.content[0].text);
+	} finally { await cleanup(); }
+});
