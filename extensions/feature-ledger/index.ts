@@ -6,10 +6,10 @@
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
 import { access, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, findItem, listItems, missingPlanProblem, nextItem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
+import { checkParsed, findItem, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, trackedPlanProblem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
@@ -177,7 +177,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_check",
 		label: "Ledger check",
-		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems }, isError when problems exist. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted. A goal that names a plan file that does not exist is reported, as is a repository with tracked files under plan/ when the ledger sits inside a git repo.",
+		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems }, isError when problems exist. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted. It reports a workspace that does not exist or is not inside a git repository, a files.in entry that does not resolve from the session root, and a goal that names a plan file that does not exist. Plan references resolve against the session root. The tracked-plan check is optional and runs only when the ledger sits inside a git repository.",
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -191,19 +191,41 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				const path = await resolvePath(ctx, params.path);
 				const parsed = parseLedger(await readFile(path, "utf8"));
 				const problems = checkParsed(parsed);
-				// These two need the filesystem and git, so they run here and not in checkLedger.
-				if (parsed.ledger && repoRoot) {
+				// These need the filesystem and git, so they run here and not in checkLedger. Plan
+				// references resolve against the session root, not the repository.
+				if (parsed.ledger) {
 					for (const [i, item] of parsed.ledger.features.entries()) {
-						const ref = planReference(item.goal);
-						if (!ref) continue;
+						const at = problemTarget(parsed.indexes[i], item.id, "workspace");
+						const workspace = resolveWorkspace(ctx.cwd, item, parsed.ledger.workspace);
 						try {
-							await access(join(repoRoot, ref));
+							await access(workspace);
 						} catch {
-							problems.push(missingPlanProblem(problemTarget(parsed.indexes[i], item.id, "goal"), ref));
+							problems.push(missingWorkspaceProblem(at, workspace));
+							continue;
+						}
+						if (!(await resolveRepoRoot(workspace, exec))) problems.push(outsideRepoProblem(at, workspace));
+						for (const entry of item.files.in) {
+							const target = isAbsolute(entry) ? entry : join(ctx.cwd, entry);
+							try {
+								await access(target);
+							} catch {
+								problems.push(missingInputProblem(problemTarget(parsed.indexes[i], item.id, "files.in"), target));
+							}
+						}
+						const ref = planReference(item.goal);
+						if (ref) {
+							try {
+								await access(join(ctx.cwd, ref));
+							} catch {
+								problems.push(missingPlanProblem(problemTarget(parsed.indexes[i], item.id, "goal"), ref));
+							}
 						}
 					}
-					const tracked = (await exec("git", ["ls-files", "plan/"], repoRoot)).stdout.split("\n").filter((line) => line !== "");
-					if (tracked.length > 0) problems.push(trackedPlanProblem(tracked));
+					// Optional: only a ledger inside a git repository can be checked against tracked files.
+					if (repoRoot) {
+						const tracked = (await exec("git", ["ls-files", "plan/"], repoRoot)).stdout.split("\n").filter((line) => line !== "");
+						if (tracked.length > 0) problems.push(trackedPlanProblem(tracked));
+					}
 				}
 				const result = { path, ok: problems.length === 0, problems };
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {}, isError: problems.length > 0 };

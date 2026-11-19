@@ -103,6 +103,21 @@ export function missingPlanProblem(at: string, ref: string): string {
 	return `${at} names a plan file that does not exist (${ref})`;
 }
 
+// The check strings for the workspace and files.in checks. The tool wrapper runs the filesystem
+// and git work and calls these, so the wording is fixed in the core. The field name comes from
+// problemTarget, so these lines do not repeat it.
+export function missingWorkspaceProblem(at: string, workspace: string): string {
+	return `${at} does not exist (${workspace})`;
+}
+
+export function outsideRepoProblem(at: string, workspace: string): string {
+	return `${at} is not inside a git repository (${workspace})`;
+}
+
+export function missingInputProblem(at: string, path: string): string {
+	return `${at} does not resolve from the session root (${path})`;
+}
+
 export function trackedPlanProblem(paths: string[]): string {
 	return `git ls-files plan/ is not empty: ${paths.join(", ")} (the plan and the ledger are removed before the PR is opened)`;
 }
