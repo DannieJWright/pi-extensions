@@ -89,6 +89,19 @@ test("commit hashes that look numeric stay strings", () => {
 	assert.equal(zeros.ledger!.features[0].commits.start, "0092502");
 });
 
+test("a null commit value is dropped, so the round-trip stays value-clean", () => {
+	// An empty commit value parses to null. serializeLedger writes nothing for null or undefined, so a
+	// value parse kept would never come back: the same item serialised and parsed again must give the
+	// same object. listItems still reports an unset commit as null, so the read view is unchanged.
+	const parsed = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: in-progress\n      short_goal: Do the thing.\n      commits:\n        start:\n        end: 6be88a3\n");
+	assert.deepEqual(parsed.problems, []);
+	assert.equal(parsed.ledger!.features[0].commits.start, undefined);
+	// The written file keeps no empty commit key, and reading it back gives the same object.
+	assert.ok(!serializeLedger(parsed.ledger!).includes("start:"), serializeLedger(parsed.ledger!));
+	assert.deepEqual(parseLedger(serializeLedger(parsed.ledger!)).ledger!, parsed.ledger!);
+	assert.deepEqual(listItems(parsed.ledger!).items[0].commits, { start: null, end: "6be88a3" });
+});
+
 test("start marks the item in-progress and records the start commit", async () => {
 	const { dir, path, cleanup } = await setupRepo(FIXTURE);
 	try {

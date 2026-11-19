@@ -228,8 +228,12 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			tests: list(item.tests, at("tests"), problems),
 			limitations: list(item.limitations, at("limitations"), problems),
 			summary: typeof item.summary === "string" ? item.summary : "",
+			// A null or undefined commit is dropped, not kept: serializeLedger writes nothing for it, so a
+			// value parse kept would never come back through the round-trip.
 			commits: Object.fromEntries(
-				Object.entries((item.commits as Record<string, unknown>) ?? {}).map(([key, value]) => [key, value === null || value === undefined ? value : String(value)]),
+				Object.entries((item.commits as Record<string, unknown>) ?? {})
+					.map(([key, value]) => [key, value === null || value === undefined ? undefined : String(value)])
+					.filter(([, value]) => value !== undefined),
 			) as LedgerItem["commits"],
 		});
 	}
