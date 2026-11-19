@@ -4,7 +4,7 @@
 
 import { lstat, type Stats } from "node:fs/promises";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
@@ -68,12 +68,28 @@ export function resolveWorkspace(cwd: string, item: LedgerItem, ledgerDefault: s
 	return isAbsolute(value) ? value : resolve(cwd, value);
 }
 
-// The repository an item's commit is made in. Outside a git repository the workspace
-// itself is the root, so the caller skips the git-backed checks. exec is passed in rather
-// than called here, so the helper stays testable without a repository.
+// The repository an item's commit is made in. exec is passed in rather than called here, so the
+// helper stays testable. An empty result means the workspace is not inside a git repository, which
+// the caller reports with the workspace named.
 export async function resolveRepoRoot(workspace: string, exec: Exec): Promise<string> {
 	const root = (await exec("git", ["rev-parse", "--show-toplevel"], workspace)).stdout.trim();
-	return root || workspace;
+	return root;
+}
+
+// True when path is inside root. A path above root is not, so a change outside the item's
+// own repository is reported as a warning instead of committed.
+export function isInside(path: string, root: string): boolean {
+	const rel = relative(root, path);
+	if (isAbsolute(rel)) return false;
+	if (rel === "") return true;
+	return rel.split(sep)[0] !== "..";
+}
+
+// Prefix a path reported by git inside the workspace so it reads from the session root.
+// A workspace that is the session root needs no prefix.
+export function prefixFromRoot(cwd: string, workspace: string, paths: string[]): string[] {
+	const prefix = relative(cwd, workspace);
+	return prefix ? paths.map((path) => join(prefix, path)) : paths;
 }
 
 // Two checks the tool wrapper runs because they need the filesystem or git. The wording follows the
@@ -238,11 +254,13 @@ export interface LedgerListEntry {
 	id: string;
 	status: ItemStatus;
 	short_goal: string;
+	workspace: string;
 	commits: { start: string | null; end: string | null };
 }
 
+// branch is only present when the file has it. It is an author-written label, not a git read.
 export interface LedgerListResult {
-	branch: string;
+	branch?: string;
 	items: LedgerListEntry[];
 }
 
@@ -252,6 +270,7 @@ export interface LedgerNextEntry {
 	id: string;
 	status: ItemStatus;
 	short_goal: string;
+	workspace: string;
 }
 
 export interface LedgerNextResult {
@@ -269,16 +288,24 @@ function requireShortGoal(item: LedgerItem): string {
 	return item.short_goal;
 }
 
+// The workspace as the file states it, relative to the session root. The read tools report
+// this without running git, so a delegate can see where the item works.
+function itemWorkspace(ledger: Ledger, item: LedgerItem): string {
+	return item.workspace || ledger.workspace || ".";
+}
+
 export function listItems(ledger: Ledger): LedgerListResult {
-	return {
-		branch: ledger.branch,
+	const result: LedgerListResult = {
 		items: ledger.features.map((item) => ({
 			id: item.id,
 			status: item.status,
 			short_goal: requireShortGoal(item),
+			workspace: itemWorkspace(ledger, item),
 			commits: { start: item.commits.start ?? null, end: item.commits.end ?? null },
 		})),
 	};
+	if (ledger.branch) result.branch = ledger.branch;
+	return result;
 }
 
 // The next item is the first in-progress one, else the first todo.
@@ -294,7 +321,7 @@ export function nextItem(ledger: Ledger): LedgerNextResult {
 			: "in-progress";
 	const item = ledger.features.find((feature) => feature.status === "in-progress") ?? ledger.features.find((feature) => feature.status === "todo") ?? null;
 	return {
-		next: item ? { id: item.id, status: item.status, short_goal: requireShortGoal(item) } : null,
+		next: item ? { id: item.id, status: item.status, short_goal: requireShortGoal(item), workspace: itemWorkspace(ledger, item) } : null,
 		status: state,
 	};
 }
@@ -320,9 +347,30 @@ export function serializeLedger(ledger: Ledger): string {
 	return serializeYaml({ ledger: ordered });
 }
 
+// Everything a write step needs. The tool resolves the workspace, the repository and the
+// actual branch before calling, so the core stays testable with an injected exec.
+// The item a write step acts on. Both the tool wrapper and the write steps use this, so the
+// message is the same from either side.
+export function findItem(ledger: Ledger, id: string, path: string): LedgerItem {
+	const item = ledger.features.find((feature) => feature.id === id);
+	if (!item) throw new Error(`no item ${id} in ${path}`);
+	return item;
+}
+
+export interface ItemContext {
+	cwd: string;
+	ledgerPath: string;
+	workspace: string;
+	repoRoot: string;
+	branch: string;
+	id: string;
+	exec: Exec;
+}
+
 export interface StartResult {
 	item: LedgerItem;
 	brief: {
+		workspace: string;
 		goal: string;
 		acceptance_criteria: string[];
 		constraints: string[];
@@ -332,13 +380,17 @@ export interface StartResult {
 	};
 }
 
-export async function startItem(opts: { ledgerPath: string; repoRoot: string; id: string; exec: Exec }): Promise<StartResult> {
+export async function startItem(opts: ItemContext): Promise<StartResult> {
 	const path = opts.ledgerPath;
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
 	if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
-	const item = ledger.features.find((feature) => feature.id === opts.id);
-	if (!item) throw new Error(`no item ${opts.id} in ${path}`);
+	const item = findItem(ledger, opts.id, path);
 	if (item.status !== "todo") throw new Error(`item ${opts.id} is already ${item.status}; one writer per item`);
+	// A per-item branch is an author-written label. It is checked against the repository the item
+	// works in, and a mismatch is an error before any work starts.
+	if (item.branch && opts.branch && item.branch !== opts.branch) {
+		throw new Error(`item ${opts.id} says branch ${item.branch}, but ${opts.workspace} is on ${opts.branch}`);
+	}
 	const head = (await opts.exec("git", ["rev-parse", "--short", "HEAD"], opts.repoRoot)).stdout.trim();
 	if (!head) throw new Error("cannot read HEAD");
 	item.status = "in-progress";
@@ -348,6 +400,7 @@ export async function startItem(opts: { ledgerPath: string; repoRoot: string; id
 	return {
 		item,
 		brief: {
+			workspace: opts.workspace,
 			goal: item.goal,
 			acceptance_criteria: item.acceptance_criteria,
 			constraints: item.constraints,
@@ -360,24 +413,19 @@ export async function startItem(opts: { ledgerPath: string; repoRoot: string; id
 
 export type SubmitResult =
 	| { rejected: true; script: string; exit: number; logPath: string; lastOutput: string }
-	| { rejected: false; commit: string; filesOut: string[] };
+	| { rejected: false; commit: string; filesOut: string[]; outOfRepo: string[] };
 
-export async function submitItem(opts: {
-	ledgerPath: string;
-	repoRoot: string;
-	id: string;
+export async function submitItem(opts: ItemContext & {
 	commitMessage: string;
 	summary: string;
 	limitations: string[];
-	exec: Exec;
 	logDir?: string;
 	stat?: EntryStat;
 }): Promise<SubmitResult> {
 	const path = opts.ledgerPath;
 	const { ledger, problems } = parseLedger(await readFile(path, "utf8"));
 	if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
-	const item = ledger.features.find((feature) => feature.id === opts.id);
-	if (!item) throw new Error(`no item ${opts.id} in ${path}`);
+	const item = findItem(ledger, opts.id, path);
 	if (item.status !== "in-progress") throw new Error(`item ${opts.id} is ${item.status}; submit requires in-progress`);
 	if (!item.commits.start) throw new Error(`item ${opts.id} has no commits.start`);
 
@@ -389,8 +437,10 @@ export async function submitItem(opts: {
 	if (paths.length === 0) throw new Error("the working tree has no changes");
 
 	const scripts = item.validation_scripts ?? ledger.validation_scripts;
+	// Validation runs from the item's workspace root. A script that needs another repository cd's
+	// into it itself.
 	for (const script of scripts) {
-		const result = await opts.exec("sh", ["-c", script], opts.repoRoot);
+		const result = await opts.exec("sh", ["-c", script], opts.workspace);
 		if (result.code !== 0) {
 			const output = `${result.stdout}${result.stderr}`;
 			const logDir = opts.logDir ?? "/tmp";
@@ -408,7 +458,17 @@ export async function submitItem(opts: {
 	if (commit.code !== 0) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`);
 	const end = (await opts.exec("git", ["rev-parse", "--short", "HEAD"], opts.repoRoot)).stdout.trim();
 	const diff = await opts.exec("git", ["diff", "--name-only", item.commits.start, end], opts.repoRoot);
-	const filesOut = diff.stdout.split("\n").filter((line) => line !== "");
+	// Every entry reads from the session root: a path inside the item's workspace is prefixed with it.
+	const filesOut = prefixFromRoot(opts.cwd, opts.workspace, diff.stdout.split("\n").filter((line) => line !== ""));
+	// Changes outside the item's repository are reported as a warning, never committed. Nothing is
+	// claimed when the session root is not a git repository.
+	const outOfRepo: string[] = [];
+	const session = await opts.exec("git", ["status", "--porcelain", "-z"], opts.cwd);
+	if (session.code === 0) {
+		for (const entry of parsePorcelain(session.stdout)) {
+			if (!isInside(join(opts.cwd, entry.path), opts.repoRoot)) outOfRepo.push(entry.path);
+		}
+	}
 
 	item.files = { in: item.files.in, out: filesOut };
 	item.summary = opts.summary;
@@ -417,5 +477,5 @@ export async function submitItem(opts: {
 	item.status = "done";
 	await ensureParent(path);
 	await writeFile(path, serializeLedger(ledger));
-	return { rejected: false, commit: end, filesOut };
+	return { rejected: false, commit: end, filesOut, outOfRepo };
 }

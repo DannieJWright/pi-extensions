@@ -5,12 +5,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, listItems, missingPlanProblem, nextItem, parseLedger, parsePorcelain, planReference, problemTarget, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingPlanProblem, nextItem, parseLedger, parsePorcelain, planReference, problemTarget, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
 // The harness provides exec and setupRepo. The ledger lives under plan/, which the
 // repo gitignores; setupRepo mirrors that here.
+
+// The write steps take the resolved context, so the tests build it the same way the tool does.
+const itemOpts = (cwd: string, ledgerPath: string, id: string, extra: Record<string, unknown> = {}) => ({
+	cwd, ledgerPath, workspace: cwd, repoRoot: cwd, branch: "", id, exec, ...extra,
+});
 
 const FIXTURE = `ledger:
   description: Test fixture.
@@ -85,7 +90,7 @@ test("commit hashes that look numeric stay strings", () => {
 test("start marks the item in-progress and records the start commit", async () => {
 	const { dir, path, cleanup } = await setupRepo(FIXTURE);
 	try {
-		const result = await startItem({ ledgerPath: path, repoRoot: dir, id: "alpha", exec });
+		const result = await startItem(itemOpts(dir, path, "alpha"));
 		assert.equal(result.item.status, "in-progress");
 		assert.match(result.item.commits.start!, /^[0-9a-f]{7,}$/);
 		assert.deepEqual(result.brief.acceptance_criteria, ["The thing is done."]);
@@ -94,7 +99,7 @@ test("start marks the item in-progress and records the start commit", async () =
 		const reread = parseLedger(await readFile(path, "utf8")).ledger!;
 		assert.equal(reread.features[0].status, "in-progress");
 		assert.equal(reread.features[0].commits.start, result.item.commits.start);
-		const second = await startItem({ ledgerPath: path, repoRoot: dir, id: "alpha", exec }).catch((error) => error as Error);
+		const second = await startItem(itemOpts(dir, path, "alpha")).catch((error) => error as Error);
 		assert.match(second.message, /already in-progress/);
 	} finally { await cleanup(); }
 });
@@ -103,13 +108,10 @@ test("a failed validation rejects the submit and writes the full log", async () 
 	const fixture = FIXTURE.replace("echo base-ok", "sh -c 'echo failing-line >&2; exit 1'");
 	const { dir, path, cleanup } = await setupRepo(fixture);
 	try {
-		await startItem({ ledgerPath: path, repoRoot: dir, id: "alpha", exec });
+		await startItem(itemOpts(dir, path, "alpha"));
 		await writeFile(join(dir, "src.txt"), "work\n");
 		const headBefore = (await exec("git", ["rev-parse", "HEAD"], dir)).stdout.trim();
-		const result = await submitItem({
-			ledgerPath: path, repoRoot: dir, id: "alpha", commitMessage: "feat: alpha", summary: "Done.", limitations: [],
-			exec, logDir: dir,
-		});
+		const result = await submitItem(itemOpts(dir, path, "alpha", { commitMessage: "feat: alpha", summary: "Done.", limitations: [], logDir: dir, }));
 		assert.ok(result.rejected);
 		assert.match(result.script, /exit 1/);
 		assert.equal(result.exit, 1);
@@ -125,14 +127,10 @@ test("a failed validation rejects the submit and writes the full log", async () 
 test("a passing validation commits and closes the item", async () => {
 	const { dir, path, cleanup } = await setupRepo(FIXTURE);
 	try {
-		const started = await startItem({ ledgerPath: path, repoRoot: dir, id: "alpha", exec });
+		const started = await startItem(itemOpts(dir, path, "alpha"));
 		await ensureParent(join(dir, "src/a.ts"));
 		await writeFile(join(dir, "src/a.ts"), "changed\n");
-		const result = await submitItem({
-			ledgerPath: path, repoRoot: dir, id: "alpha", commitMessage: "feat: alpha",
-			summary: "Did the thing. Pair check passed (artifacts/alpha/1/after.png).",
-			limitations: ["No focus ring."], exec, logDir: dir,
-		});
+		const result = await submitItem(itemOpts(dir, path, "alpha", { commitMessage: "feat: alpha", summary: "Did the thing. Pair check passed (artifacts/alpha/1/after.png).", limitations: ["No focus ring."], logDir: dir }));
 		assert.ok(!result.rejected);
 		const reread = parseLedger(await readFile(path, "utf8")).ledger!;
 		const item = reread.features[0];
@@ -148,7 +146,7 @@ test("a passing validation commits and closes the item", async () => {
 test("submit refuses an item that is not in-progress", async () => {
 	const { dir, path, cleanup } = await setupRepo(FIXTURE);
 	try {
-		const error = await submitItem({ ledgerPath: path, repoRoot: dir, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec, logDir: dir }).catch((error) => error as Error);
+		const error = await submitItem(itemOpts(dir, path, "alpha", { commitMessage: "x", summary: "y", limitations: [], logDir: dir })).catch((error) => error as Error);
 		assert.match(error.message, /submit requires in-progress/);
 	} finally { await cleanup(); }
 });
@@ -156,13 +154,13 @@ test("submit refuses an item that is not in-progress", async () => {
 test("submit refuses a clean tree and a moved HEAD", async () => {
 	const { dir, path, cleanup } = await setupRepo(FIXTURE);
 	try {
-		await startItem({ ledgerPath: path, repoRoot: dir, id: "alpha", exec });
-		const clean = await submitItem({ ledgerPath: path, repoRoot: dir, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec, logDir: dir }).catch((error) => error as Error);
+		await startItem(itemOpts(dir, path, "alpha"));
+		const clean = await submitItem(itemOpts(dir, path, "alpha", { commitMessage: "x", summary: "y", limitations: [], logDir: dir })).catch((error) => error as Error);
 		assert.match(clean.message, /no changes/);
 		await writeFile(join(dir, "work.txt"), "work\n");
 		await exec("git", ["add", "-A"], dir);
 		await exec("git", ["commit", "-q", "-m", "extra commit during the work"], dir);
-		const moved = await submitItem({ ledgerPath: path, repoRoot: dir, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec, logDir: dir }).catch((error) => error as Error);
+		const moved = await submitItem(itemOpts(dir, path, "alpha", { commitMessage: "x", summary: "y", limitations: [], logDir: dir })).catch((error) => error as Error);
 		assert.match(moved.message, /HEAD moved/);
 	} finally { await cleanup(); }
 });
@@ -230,7 +228,7 @@ test("a device entry is skipped and a deletion next to it is staged", async () =
 		isDirectory: () => false,
 	});
 	try {
-		await startItem({ ledgerPath: path, repoRoot: dir, id: "alpha", exec });
+		await startItem(itemOpts(dir, path, "alpha"));
 		await ensureParent(join(dir, "src/a.ts"));
 		await writeFile(join(dir, "src/a.ts"), "changed\n");
 		// A tracked file removed in the working tree has no inode, so it is kept by its status letter.
@@ -242,10 +240,7 @@ test("a device entry is skipped and a deletion next to it is staged", async () =
 			if (command === "git" && args[0] === "add") addArgs.push(args);
 			return exec(command, args, cwd);
 		};
-		const result = await submitItem({
-			ledgerPath: path, repoRoot: dir, id: "alpha", commitMessage: "feat: alpha",
-			summary: "Did the thing.", limitations: [], exec: recordingExec, logDir: dir, stat: fakeStat,
-		});
+		const result = await submitItem(itemOpts(dir, path, "alpha", { commitMessage: "feat: alpha", summary: "Did the thing.", limitations: [], exec: recordingExec, logDir: dir, stat: fakeStat, }));
 		assert.ok(!result.rejected);
 		assert.deepEqual(addArgs[0], ["add", "-A", "--", "README.md", "src/a.ts"]);
 		// files.out still comes from the commit diff, so the skipped device is not in it.
@@ -259,14 +254,12 @@ test("a tree with only a device entry reports no changes", async () => {
 	const { dir, path, cleanup } = await setupRepo(FIXTURE);
 	const fakeStat = async () => ({ isFile: () => false, isSymbolicLink: () => false, isDirectory: () => false });
 	try {
-		await startItem({ ledgerPath: path, repoRoot: dir, id: "alpha", exec });
+		await startItem(itemOpts(dir, path, "alpha"));
 		const noiseOnly = async (command: string, args: string[], cwd: string) => {
 			if (command === "git" && args[0] === "status") return { code: 0, stdout: "?? .pi-dotfile", stderr: "" };
 			return exec(command, args, cwd);
 		};
-		const error = await submitItem({
-			ledgerPath: path, repoRoot: dir, id: "alpha", commitMessage: "x", summary: "y", limitations: [], exec: noiseOnly, logDir: dir, stat: fakeStat,
-		}).catch((error) => error as Error);
+		const error = await submitItem(itemOpts(dir, path, "alpha", { commitMessage: "x", summary: "y", limitations: [], exec: noiseOnly, logDir: dir, stat: fakeStat, })).catch((error) => error as Error);
 		assert.match(error.message, /no changes/);
 	} finally {
 		await cleanup();
@@ -382,9 +375,9 @@ test("listItems keeps file order and reports unset commits as null", () => {
 	assert.deepEqual(listItems(ledger!), {
 		branch: "alpha",
 		items: [
-			{ id: "first", status: "todo", short_goal: "First item.", commits: { start: null, end: null } },
-			{ id: "second", status: "in-progress", short_goal: "Second item.", commits: { start: "6be88a3", end: null } },
-			{ id: "third", status: "done", short_goal: "Third item.", commits: { start: "1111111", end: "2222222" } },
+			{ id: "first", status: "todo", short_goal: "First item.", workspace: ".", commits: { start: null, end: null } },
+			{ id: "second", status: "in-progress", short_goal: "Second item.", workspace: ".", commits: { start: "6be88a3", end: null } },
+			{ id: "third", status: "done", short_goal: "Third item.", workspace: ".", commits: { start: "1111111", end: "2222222" } },
 		],
 	});
 });
@@ -404,12 +397,12 @@ test("nextItem takes the in-progress item before an unstarted one", () => {
 		"      status: in-progress",
 		"      short_goal: Third item.",
 	].join("\n"));
-	assert.deepEqual(nextItem(ledger!), { next: { id: "third", status: "in-progress", short_goal: "Third item." }, status: "in-progress" });
+	assert.deepEqual(nextItem(ledger!), { next: { id: "third", status: "in-progress", short_goal: "Third item.", workspace: "." }, status: "in-progress" });
 });
 
 test("nextItem reports in-progress for a mixed ledger (some done, some todo)", () => {
 	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: done\n      short_goal: First item.\n    - id: second\n      status: todo\n      short_goal: Second item.\n");
-	assert.deepEqual(nextItem(ledger!), { next: { id: "second", status: "todo", short_goal: "Second item." }, status: "in-progress" });
+	assert.deepEqual(nextItem(ledger!), { next: { id: "second", status: "todo", short_goal: "Second item.", workspace: "." }, status: "in-progress" });
 });
 
 test("listItems errors on an item with no short_goal value", () => {
@@ -424,7 +417,7 @@ test("nextItem errors on the selected item with no short_goal value", () => {
 
 test("nextItem reports the first todo when nothing is started", () => {
 	const { ledger } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: todo\n      short_goal: First item.\n    - id: second\n      status: todo\n      short_goal: Second item.\n");
-	assert.deepEqual(nextItem(ledger!), { next: { id: "first", status: "todo", short_goal: "First item." }, status: "todo" });
+	assert.deepEqual(nextItem(ledger!), { next: { id: "first", status: "todo", short_goal: "First item.", workspace: "." }, status: "todo" });
 });
 
 test("nextItem reports all items complete", () => {
@@ -449,7 +442,7 @@ test("the harness runs a tool against a temporary repository with no Pi session"
 		assert.ok(!list.isError);
 		const result = JSON.parse(list.content[0].text);
 		assert.equal(result.branch, branch);
-		assert.deepEqual(result.items, [{ id: "alpha", status: "todo", short_goal: "Do the thing.", commits: { start: null, end: null } }]);
+		assert.deepEqual(result.items, [{ id: "alpha", status: "todo", short_goal: "Do the thing.", workspace: ".", commits: { start: null, end: null } }]);
 
 		const next = await api.tools.ledger_next.execute(null, {}, null, null, ctx);
 		assert.ok(!next.isError);
@@ -631,7 +624,7 @@ test("a per-item workspace and branch parse and round-trip", () => {
 	assert.ok(!serializeLedger(plain.ledger!).includes("      workspace:"));
 });
 
-test("resolveRepoRoot reads the repository from the workspace, or returns the workspace itself", async () => {
+test("resolveRepoRoot reads the repository from the workspace, and gives nothing outside one", async () => {
 	const { dir, cleanup } = await setupRepo(FIXTURE);
 	try {
 		// A workspace inside the repository resolves to the repository root.
@@ -639,10 +632,10 @@ test("resolveRepoRoot reads the repository from the workspace, or returns the wo
 		await mkdir(workspace);
 		await writeFile(join(workspace, ".keep"), "x");
 		assert.equal(await resolveRepoRoot(workspace, exec), dir);
-		// Outside a git repository the workspace is the root, so the caller skips the git-backed checks.
+		// Outside a git repository the result is empty, so the caller reports the workspace.
 		const draft = await mkdtemp(join(tmpdir(), "feature-ledger-norepo-"));
 		try {
-			assert.equal(await resolveRepoRoot(draft, exec), draft);
+			assert.equal(await resolveRepoRoot(draft, exec), "");
 		} finally { await rm(draft, { recursive: true }); }
 	} finally { await cleanup(); }
 });
@@ -843,4 +836,137 @@ test("a duplicate id names the file position when an item is skipped", () => {
 		"features[0] is not an item",
 		"features[2] (first): duplicate id",
 	]);
+});
+
+// An item written by hand for the workspace tests. Fields go after short_goal, the order
+// serializeLedger uses.
+function itemLedger(fields: string[]): string {
+	return [
+		"ledger:",
+		"  branch: feature-x",
+		"  features:",
+		"    - id: alpha",
+		"      status: todo",
+		"      goal: Do the thing.",
+		"      short_goal: Do the thing.",
+		...fields,
+		"      acceptance_criteria: [],",
+		"      constraints: [],",
+		"      files: { in: [], out: [] }",
+		"      tests: [],",
+		"      limitations: [],",
+		"      summary: ''",
+		"      commits: {}",
+	].join("\n");
+}
+
+const commitIn = (cwd: string, message: string) => exec("git", ["-c", "user.email=test@example.com", "-c", "user.name=Ledger Test", "commit", "-q", "-m", message], cwd);
+
+test("isInside tells the item's own repository from the rest of the session", () => {
+	const root = "/session/sub-repo-1";
+	assert.ok(isInside(join(root, "notes.md"), root));
+	assert.ok(isInside(root, root));
+	// A path above the repository is outside it, so the change is reported, not committed.
+	assert.ok(!isInside("/session/outside.txt", root));
+	assert.ok(!isInside("/session/../outside.txt", root));
+	// A name that only starts with two dots is inside.
+	assert.ok(isInside(join(root, "..notes"), root));
+	// An absolute path on another tree is not inside.
+	assert.ok(!isInside("/other/sub-repo-1/x", root));
+});
+
+test("the read views report the workspace per item and echo a branch only when the file has it", () => {
+	const withItem = parseLedger(itemLedger(["      workspace: sub-repo-1", "      branch: feature-x"])).ledger!;
+	assert.equal(listItems(withItem).items[0].workspace, "sub-repo-1");
+	assert.equal(nextItem(withItem).next!.workspace, "sub-repo-1");
+	assert.equal(listItems(withItem).branch, "feature-x");
+	// The ledger default is used when the item has no workspace; with no default either, the session root.
+	const plain = parseLedger(itemLedger([])).ledger!;
+	assert.equal(listItems(plain).items[0].workspace, ".");
+	assert.equal(nextItem(plain).next!.workspace, ".");
+	// A ledger with no branch field reports none: the branch is an author label, not a git read.
+	const noBranch = parseLedger(itemLedger([]).replace("  branch: feature-x", "")).ledger!;
+	assert.equal(listItems(noBranch).branch, undefined);
+});
+
+test("a per-item branch that does not match the repository is an error at ledger_start", async () => {
+	const { dir, branch, cleanup } = await setupRepo(itemLedger(["      branch: other-branch"]));
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_start.execute(null, { id: "alpha" }, null, null, createFakeContext(dir));
+		assert.ok(result.isError);
+		assert.match(result.content[0].text, new RegExp(`item alpha says branch other-branch, but .* is on ${branch}`));
+	} finally { await cleanup(); }
+});
+
+test("an item works in its own workspace: files.out reads from the session root and outside changes are a warning", async () => {
+	const { dir, cleanup } = await setupRepo(itemLedger(["      workspace: sub-repo-1", "      validation_scripts:", "        - test -e ws-marker"]));
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		const ctx = createFakeContext(dir);
+		const ws = join(dir, "sub-repo-1");
+		await mkdir(ws);
+		await exec("git", ["init", "-q"], ws);
+		await writeFile(join(ws, "ws-marker"), "x\n");
+		await writeFile(join(ws, "seed.txt"), "s\n");
+		await exec("git", ["add", "-A"], ws);
+		await commitIn(ws, "seed");
+
+		const brief = await api.tools.ledger_start.execute(null, { id: "alpha" }, null, null, ctx);
+		assert.ok(!brief.isError, brief.content[0].text);
+		assert.match(brief.content[0].text, new RegExp(`Workspace: ${ws}`));
+
+		await writeFile(join(ws, "notes.md"), "note\n");
+		await writeFile(join(dir, "outside.txt"), "not committed\n");
+		const result = await api.tools.ledger_submit.execute(null, { id: "alpha", commit_message: "test: work in the item workspace", summary: "Recorded the workspace." }, null, null, ctx);
+		assert.ok(!result.isError, result.content[0].text);
+		// The validation script only passes from the workspace, so its success shows where it ran.
+		assert.match(result.content[0].text, /files\.out:\n- sub-repo-1\/notes\.md/);
+		assert.match(result.content[0].text, /warning: changes outside .*sub-repo-1 are not committed:\n- outside\.txt/);
+		const committed = await exec("git", ["ls-files"], ws);
+		assert.ok(committed.stdout.includes("notes.md"));
+		// Nothing outside the item's repository is committed.
+		const outside = await exec("git", ["ls-files", "outside.txt"], dir);
+		assert.equal(outside.stdout.trim(), "");
+	} finally { await cleanup(); }
+});
+
+test("nothing is claimed about out-of-repo changes when the session root is not a git repository", async () => {
+	const root = await mkdtemp(join(tmpdir(), "feature-ledger-session-"));
+	const ws = join(root, "sub-repo-1");
+	try {
+		await mkdir(ws);
+		await exec("git", ["init", "-q"], ws);
+		await writeFile(join(ws, "seed.txt"), "s\n");
+		await exec("git", ["add", "-A"], ws);
+		await commitIn(ws, "seed");
+		const api = createFakeApi();
+		featureLedger(api);
+		const ctx = createFakeContext(root);
+		await ensureParent(join(root, "plan", "ledger.yaml"));
+		await writeFile(join(root, "plan", "ledger.yaml"), itemLedger(["      workspace: sub-repo-1"]));
+		await api.tools.ledger_start.execute(null, { id: "alpha" }, null, null, ctx);
+		await writeFile(join(root, "outside.txt"), "x\n");
+		await writeFile(join(ws, "notes.md"), "note\n");
+		const result = await api.tools.ledger_submit.execute(null, { id: "alpha", commit_message: "test: no claim outside a repository", summary: "Recorded nothing." }, null, null, ctx);
+		assert.ok(!result.isError, result.content[0].text);
+		assert.ok(!result.content[0].text.includes("warning"), result.content[0].text);
+		assert.match(result.content[0].text, /files\.out:\n- sub-repo-1\/notes\.md/);
+	} finally { await rm(root, { recursive: true }); }
+});
+
+test("the tool names the workspace when it is not inside a git repository", async () => {
+	const root = await mkdtemp(join(tmpdir(), "feature-ledger-nowork-"));
+	try {
+		await mkdir(join(root, "sub-repo-1"));
+		await ensureParent(join(root, "plan", "ledger.yaml"));
+		await writeFile(join(root, "plan", "ledger.yaml"), itemLedger(["      workspace: sub-repo-1"]));
+		const api = createFakeApi();
+		featureLedger(api);
+		const result = await api.tools.ledger_start.execute(null, { id: "alpha" }, null, null, createFakeContext(root));
+		assert.ok(result.isError);
+		assert.match(result.content[0].text, new RegExp(`no git repository at .*sub-repo-1`));
+	} finally { await rm(root, { recursive: true }); }
 });
