@@ -49,6 +49,12 @@ ledger:
       goal: >
         Show copy actions on result blocks when the row is hovered.
       short_goal: Copy actions on result blocks on hover.
+      # The item's workspace wins over the workspace at the ledger level. A path in files.in or
+      # tests reads from the session root, so it is written with the workspace prefix.
+      workspace: packages/web
+      # branch is a label the author writes. ledger_start compares it with the branch of the
+      # item's repository and errors on a mismatch.
+      branch: chat-ui
       acceptance_criteria:
         - The actions appear on hover and on keyboard focus.
         - Each action is reachable by role with its own name.
@@ -59,7 +65,7 @@ ledger:
           - packages/web/src/features/agent/components/transcript/ResultBlock.tsx
         out: []
       tests:
-        - tests/unit/agent/block-actions.test.tsx
+        - packages/web/tests/unit/agent/block-actions.test.tsx
       limitations: []
       summary: ''
       commits: {}
