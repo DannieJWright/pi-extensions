@@ -85,11 +85,17 @@ export function isInside(path: string, root: string): boolean {
 	return rel.split(sep)[0] !== "..";
 }
 
-// Prefix a path reported by git inside the workspace so it reads from the session root.
-// A workspace that is the session root needs no prefix.
-export function prefixFromRoot(cwd: string, workspace: string, paths: string[]): string[] {
+// Prefix a path reported by git so it reads from the session root. Git prints paths relative to the
+// repository root even when run from a subdirectory, so each path is first converted to be relative to
+// the workspace. A workspace that is the session root needs no prefix. A workspace above the session
+// root cannot be expressed as a path from it, so those entries are absolute.
+export function prefixFromRoot(cwd: string, workspace: string, repoRoot: string, paths: string[]): string[] {
+	const fromWorkspace = (path: string) => relative(workspace, join(repoRoot, path));
 	const prefix = relative(cwd, workspace);
-	return prefix ? paths.map((path) => join(prefix, path)) : paths;
+	if (!prefix) return paths.map(fromWorkspace);
+	// ".." as the first segment means the workspace is above the session root.
+	if (!isAbsolute(prefix) && prefix.split(sep)[0] === "..") return paths.map((path) => join(workspace, fromWorkspace(path)));
+	return paths.map((path) => join(prefix, fromWorkspace(path)));
 }
 
 // Two checks the tool wrapper runs because they need the filesystem or git. The wording follows the
@@ -474,14 +480,17 @@ export async function submitItem(opts: ItemContext & {
 	const end = (await opts.exec("git", ["rev-parse", "--short", "HEAD"], opts.repoRoot)).stdout.trim();
 	const diff = await opts.exec("git", ["diff", "--name-only", item.commits.start, end], opts.repoRoot);
 	// Every entry reads from the session root: a path inside the item's workspace is prefixed with it.
-	const filesOut = prefixFromRoot(opts.cwd, opts.workspace, diff.stdout.split("\n").filter((line) => line !== ""));
+	const filesOut = prefixFromRoot(opts.cwd, opts.workspace, opts.repoRoot, diff.stdout.split("\n").filter((line) => line !== ""));
 	// Changes outside the item's repository are reported as a warning, never committed. Nothing is
-	// claimed when the session root is not a git repository.
+	// claimed when the session root is not a git repository. Porcelain paths read from the repository
+	// root, so the containment check and the printed path both use the session root's repository.
 	const outOfRepo: string[] = [];
-	const session = await opts.exec("git", ["status", "--porcelain", "-z"], opts.cwd);
-	if (session.code === 0) {
-		for (const entry of parsePorcelain(session.stdout)) {
-			if (!isInside(join(opts.cwd, entry.path), opts.repoRoot)) outOfRepo.push(entry.path);
+	const sessionRoot = await resolveRepoRoot(opts.cwd, opts.exec);
+	if (sessionRoot) {
+		const session = await opts.exec("git", ["status", "--porcelain", "-z"], opts.cwd);
+		if (session.code === 0) {
+			const outside = parsePorcelain(session.stdout).filter((entry) => !isInside(join(sessionRoot, entry.path), opts.repoRoot));
+			outOfRepo.push(...prefixFromRoot(opts.cwd, opts.cwd, sessionRoot, outside.map((entry) => entry.path)));
 		}
 	}
 

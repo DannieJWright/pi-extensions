@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
+import { checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputProblem, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, trackedPlanProblem, addablePaths } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -1088,4 +1088,63 @@ test("the start brief names the commit the write path recorded", async () => {
 		assert.match(result.content[0].text, new RegExp(`is in-progress \\(commit ${recorded}\\)`));
 		assert.ok(!result.content[0].text.includes("commit undefined"), result.content[0].text);
 	} finally { await cleanup(); }
+});
+
+test("prefixFromRoot converts a repository-root path to the workspace before prefixing it", () => {
+	// git prints paths relative to the repository root even from a subdirectory, so the conversion comes
+	// first. A workspace that is a subdirectory of the session root must not be prefixed twice.
+	assert.deepEqual(prefixFromRoot("/session", "/session/sub", "/session", ["sub/notes.md", "root.txt"]), ["sub/notes.md", "root.txt"]);
+	// A workspace that is the session root needs no prefix, but the path is still converted when the
+	// repository root is above it.
+	assert.deepEqual(prefixFromRoot("/session/sub", "/session/sub", "/session", ["root.txt", "sub/notes.md"]), ["../root.txt", "notes.md"]);
+	// A workspace above the session root cannot be expressed as a path from it, so entries are absolute.
+	assert.deepEqual(prefixFromRoot("/session", "/work/other", "/work/other", ["file.ts"]), ["/work/other/file.ts"]);
+});
+
+test("files.out reads from the session root when the workspace is a subdirectory of its repository", async () => {
+	const { dir, cleanup } = await setupRepo(itemLedger(["      workspace: sub"]));
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		const ctx = createFakeContext(dir);
+		await mkdir(join(dir, "sub"));
+		await api.tools.ledger_start.execute(null, { id: "alpha" }, null, null, ctx);
+		await writeFile(join(dir, "sub", "notes.md"), "note\n");
+		await writeFile(join(dir, "root.txt"), "root\n");
+		const result = await api.tools.ledger_submit.execute(null, { id: "alpha", commit_message: "test: paths read from the session root", summary: "Recorded the workspace." }, null, null, ctx);
+		assert.ok(!result.isError, result.content[0].text);
+		// The workspace entry is prefixed once, and a file at the repository root is not attributed to
+		// the workspace.
+		assert.match(result.content[0].text, /- sub\/notes\.md/);
+		assert.match(result.content[0].text, /- root\.txt/);
+	} finally { await cleanup(); }
+});
+
+test("the out-of-repo warning reads from the session root, not from the repository root", async () => {
+	// The session root is a subdirectory of the repository setupRepo creates. The item works in a
+	// separate repository, so a change at the repository root is outside the item.
+	const { dir, branch, cleanup } = await setupRepo(itemLedger(["      workspace: ../item-repo"]));
+	const ledger = itemLedger(["      workspace: ../item-repo"]).replace("{BRANCH}", branch);
+	try {
+		const session = join(dir, "session");
+		const ws = join(dir, "item-repo");
+		await mkdir(session);
+		await mkdir(ws);
+		await exec("git", ["init", "-q"], ws);
+		await writeFile(join(ws, "seed.txt"), "s\n");
+		await exec("git", ["add", "-A"], ws);
+		await commitIn(ws, "seed");
+		const path = join(session, "plan", "ledger.yaml");
+		await ensureParent(path);
+		await writeFile(path, ledger);
+		const api = createFakeApi();
+		featureLedger(api);
+		const ctx = createFakeContext(session);
+		await api.tools.ledger_start.execute(null, { id: "alpha", path }, null, null, ctx);
+		await writeFile(join(ws, "notes.md"), "note\n");
+		await writeFile(join(dir, "root.txt"), "root\n");
+		const result = await api.tools.ledger_submit.execute(null, { id: "alpha", path, commit_message: "test: the warning reads from the session root", summary: "Recorded the workspace." }, null, null, ctx);
+		assert.ok(!result.isError, result.content[0].text);
+		assert.match(result.content[0].text, /are not committed:\n- \.\./);
+	} finally { await rm(dir, { recursive: true }); }
 });
