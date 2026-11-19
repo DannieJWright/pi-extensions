@@ -21,7 +21,7 @@ Every tool takes an optional `path`. It is resolved in this order: the argument,
 
 `ledger_start(id)`
 
-- Reads the item and returns the starting information: workspace, goal, acceptance criteria, constraints, `files.in`, and the minimum test expectations. The brief reports the resolved workspace and the repository root it belongs to.
+- Reads the item and returns the starting information: workspace, goal, acceptance criteria, constraints, `files.in`, and the minimum test expectations. The brief does not report the repository root.
 - Sets `status: in-progress`.
 - Records `commits.start` as the current HEAD.
 - Errors when the item names a branch and the item's repository is on a different branch.
@@ -31,13 +31,14 @@ The agent implements and tests the work in the item's workspace. **No commits du
 
 `ledger_submit(id, commit_message, summary, limitations)`
 
-1. Runs every command in `validation_scripts` from the item's workspace root.
-2. If any command fails, the submission is rejected. The tool writes the full output to a file under `/tmp/`, returns the last 20 lines of the failing command, and gives the path to that log. The item stays `in-progress` and nothing is written to the ledger. The agent reads the log, fixes the work, and submits again.
-3. If all pass, the tool commits the working tree inside the item's repository with the given message (artifacts included). Changes outside that repository are printed as a warning and are not committed. Nothing is claimed about them when the session root is not a git repository.
-4. Computes `files.out` from the diff between `commits.start` and the new commit. Entries are prefixed with the workspace so they read from the session root; an item whose workspace is the session root has no prefix.
-5. Writes `summary`, appends `limitations`, records `commits.end`, sets `status: done`.
+1. Checks the item state before anything runs: the item must be `in-progress`, HEAD must still be `commits.start` (the item must be one commit), and the working tree must have changes. The state checks come first, so a clean tree with failing tests reports `no changes` and no script runs.
+2. Runs every command in `validation_scripts` from the item's workspace root.
+3. If any command fails, the submission is rejected. The tool writes the full output to a file under `/tmp/`, returns the last 20 lines of the failing command, and gives the path to that log. The item stays `in-progress` and nothing is written to the ledger. The agent reads the log, fixes the work, and submits again.
+4. If all pass, the tool commits the working tree inside the item's repository with the given message (artifacts included). Changes outside that repository are printed as a warning and are not committed. Nothing is claimed about them when the session root is not a git repository.
+5. Computes `files.out` from the diff between `commits.start` and the new commit. Entries are prefixed with the workspace so they read from the session root; an item whose workspace is the session root has no prefix.
+6. Writes `summary`, appends `limitations`, records `commits.end`, sets `status: done`.
 
-Refuses when the item is not `in-progress`, when the tree has no changes, or when HEAD moved during the work (the item must be one commit).
+The state checks in step 1 are the refusals: an item that is not `in-progress`, a moved HEAD, or a tree with no changes.
 
 All tools write and read the same file, so a parent agent, a subagent, and a new session see the same state.
 

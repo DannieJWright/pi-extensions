@@ -58,13 +58,14 @@ Writing:
 - `ledger_start` — read a feature item and mark it in-progress. Returns the item brief: workspace, goal,
   acceptance criteria, constraints, `files.in`, tests. Errors when the item names a branch and the item's
   repository is on a different branch. Refuses when the item is not `todo`. Records the start commit.
-- `ledger_submit` — validate and commit an item. Runs the item's validation scripts (item override, else the
-  base list) from the item's workspace root; any failure rejects the submit and writes the full output to a log
-  file. On success: `git add -A` inside the item's repository, one commit, `files.out` from the diff prefixed
-  with the workspace so entries read from the session root, summary and limitations recorded, item marked
-  `done`. Changes outside the item's repository are printed as a warning and not committed; nothing is claimed
-  about them when the session root is not a git repository. Refuses an item that is not in-progress, a clean
-  tree, or a moved HEAD.
+- `ledger_submit` — validate and commit an item. Checks the item state first: the item must be in-progress, HEAD
+  must still be the recorded start commit, and the working tree must have changes. Then it runs the item's
+  validation scripts (item override, else the base list) from the item's workspace root; any failure rejects the
+  submit and writes the full output to a log file. On success: `git add -A` inside the item's repository, one
+  commit, `files.out` from the diff prefixed with the workspace so entries read from the session root, summary
+  and limitations recorded, item marked `done`. Changes outside the item's repository are printed as a warning and
+  not committed; nothing is claimed about them when the session root is not a git repository. A clean tree with
+  failing scripts reports no changes, because the state checks run before the scripts.
 
 ## Workspace
 

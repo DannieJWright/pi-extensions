@@ -252,7 +252,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_submit",
 		label: "Ledger submit",
-		description: "Validate and commit a ledger item. Pass id first. Runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done. Validation runs from the item's workspace; the commit is made inside that repository, and changes outside it are reported as a warning line, not committed. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
+		description: "Validate and commit a ledger item. Pass id first. Checks the item state first: the item must be in-progress, HEAD must still be the recorded start commit, and the working tree must have changes. Then it runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done. Validation runs from the item's workspace; the commit is made inside that repository, and changes outside it are reported as a warning line, not committed. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
 		parameters: SUBMIT_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
