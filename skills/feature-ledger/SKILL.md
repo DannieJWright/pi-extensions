@@ -3,23 +3,27 @@ name: feature-ledger
 description: >-
   Track feature work as ordered items in a ledger file. Use at the start of a
   session to read where a feature stands, to hand one item to another agent or
-  subagent, or to turn a plan into a ledger for agents to implement. The ledger is
-  the only shared state between sessions, so the work is resumable and checkable.
+  subagent, or to turn a plan into a ledger for agents to implement. Use the
+  orchestrator workflow only on a direct user request to orchestrate ledger work.
+  The ledger is the only shared state between sessions, so the work is resumable
+  and checkable.
 ---
 
 # Feature Ledger
 
 Track feature work as ordered items. The ledger is the only shared state between sessions and between agents, so the work is resumable and checkable.
 
-For the standard flows, read the one that matches the task:
+For the standard flows, use the route that matches the task:
 
-- Writing a ledger from a plan: `references/writing-flow.md`.
-- Working an item from a ledger: `references/implementation-flow.md`.
+- Checking ledger state: use `ledger_next` or `ledger_list` and report the result; do not start an item unless asked to work on it.
+- Writing a ledger from a plan: read `references/writing-flow.md`.
+- Working an item from a ledger: read `references/implementation-flow.md`.
 
 The agent workflows are opt-in. Do not read or run them just because you loaded this skill, were asked to use the ledger, or are working an item:
 
-- `references/agents/orchestrator-workflow.md` — read only when the user directly requests the orchestrator workflow.
+- `references/agents/orchestrator-workflow.md` — read only when the user directly requests orchestration of ledger work.
 - `references/agents/implementor-workflow.md` — read only when the orchestrator directly instructs a subagent to use the implementor workflow.
+- `subagents/implementor.md` — the orchestrator reads this prompt template only when dispatching or resuming an implementor under the explicitly requested orchestrator workflow.
 
 This file holds the shared conventions.
 
@@ -42,7 +46,7 @@ Field rules:
 - `acceptance_criteria` — bullet points. The key is one word with an underscore so a tool can read it without a quoting rule.
 - `constraints` — what must be kept in mind while working.
 - List entries must be plain strings. A bullet that starts with `key: value` reads as a mapping, not as a string, so quote the whole line when you write it: `- "Read-only: the tool never writes the ledger."`. `ledger_check` reports such an entry as a problem line; a quoted bullet is fine.
-- `validation_scripts` — commands that run the full suite, taken from the project the work happens in: its own defined recipes or scripts, or the agent tools available there (for example `just_test`). Do not write a recipe from another project. Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the item's workspace root) before it accepts a submission. Each command must exit 0. A script may change directory inside the workspace, for example `cd sub-repo-1 && just test all`.
+- `validation_scripts` — commands that run the full suite, taken from the project the work happens in: its own defined recipes or scripts, or the agent tools available there (for example `just_test`). Do not write a recipe from another project. Validation must not create permanent project files; put temporary output in gitignored locations. Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the item's workspace root) before it accepts a submission. Each command must exit 0. A script may change directory inside the workspace, for example `cd sub-repo-1 && just test all`.
 - `files.in` — known relevant files, written before the work starts. This is what a fresh agent reads first. Paths are relative to the session root, or absolute. An entry may name a file an earlier step will create, so it does not have to exist yet. `ledger_check` reports such an entry as a warning, not a problem, so a warning needs no fix.
 - `files.out` — files edited during the work. Written by the submit tool from the commit diff.
 - `tests` — tests created or modified.

@@ -1,6 +1,6 @@
 # Implementation flow
 
-Read this before working an item. Field rules and the shared conventions are in `../SKILL.md`.
+Read this before working an item. Field rules and the shared conventions are in the main skill file.
 
 ## Tools
 

@@ -1,6 +1,6 @@
 # Writing flow
 
-Read this when turning a plan into a ledger. Field rules and the shared conventions are in `../SKILL.md`. `references/ledger.yaml` in this skill is the shape to copy.
+Read this when turning a plan into a ledger. Field rules and the shared conventions are in the main skill file. `references/ledger.yaml` in this skill is the shape to copy.
 
 ## What to write
 
