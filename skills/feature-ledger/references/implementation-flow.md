@@ -1,6 +1,6 @@
 # Implementation flow
 
-Read this before working an item. Field rules and the shared conventions are in `../SKILL.md`.
+Read this before working an item. Field rules and the shared conventions are in the main skill file.
 
 ## Tools
 
@@ -53,7 +53,7 @@ Two exceptions:
 
 ## Work order for an item
 
-1. `ledger_next()` — confirm the item to work, then `ledger_start(id)` for that item. The order is part of the plan: a parent may hold another item in progress, so the first item in the file is not necessarily the item to work. `ledger_start` still refuses an item already in-progress; this rule is about picking the right item, not about locking. For a UI item, capture the before frame (before-after-capture skill).
+1. If no item was assigned, use `ledger_next()` to select the item to work. If a parent assigned an item, use that exact ID; do not select another with `ledger_next`. Call `ledger_start(id)` for the selected or assigned item. `ledger_start` refuses an item already in-progress. For a UI item, capture the before frame (before-after-capture skill).
 2. Implement, in the item's workspace.
 3. Tests: narrow run first, then the full suite once.
 4. For a UI item, capture the after frame and run the pair check. A non-UI item has no pair: record the command output that shows the result.
