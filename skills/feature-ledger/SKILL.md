@@ -23,7 +23,7 @@ The agent workflows are opt-in. Do not read or run them just because you loaded 
 
 - `references/agents/orchestrator-workflow.md` — read only when the user directly requests orchestration of ledger work.
 - `references/agents/implementor-workflow.md` — read only when the orchestrator directly instructs a subagent to use the implementor workflow.
-- `subagents/implementor.md` — the orchestrator reads this prompt template only when dispatching or resuming an implementor under the explicitly requested orchestrator workflow.
+- `agents/implementor-prompt.md` — the orchestrator reads this prompt template only when dispatching an implementor under the explicitly requested orchestrator workflow.
 
 This file holds the shared conventions.
 
