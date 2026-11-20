@@ -11,12 +11,17 @@ description: >-
 
 Track feature work as ordered items. The ledger is the only shared state between sessions and between agents, so the work is resumable and checkable.
 
-Two flows. Read the one that matches the task:
+For the standard flows, read the one that matches the task:
 
 - Writing a ledger from a plan: `references/writing-flow.md`.
 - Working an item from a ledger: `references/implementation-flow.md`.
 
-This file holds only what both flows share.
+The agent workflows are opt-in. Do not read or run them just because you loaded this skill, were asked to use the ledger, or are working an item:
+
+- `references/agents/orchestrator-workflow.md` — read only when the user directly requests the orchestrator workflow.
+- `references/agents/implementor-workflow.md` — read only when the orchestrator directly instructs a subagent to use the implementor workflow.
+
+This file holds the shared conventions.
 
 ## Ledger file
 
