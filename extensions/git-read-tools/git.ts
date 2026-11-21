@@ -53,22 +53,30 @@ async function runGitProcess(args: string[], options: RunOptions, onStdout?: (ch
 }
 
 // Parse NUL-delimited index records without retaining paths or the complete index.
-async function scanSubmodules(cdup: string, options: RunOptions) {
+export function createSubmoduleIndexParser() {
  let header = "", inPath = false, pathLength = 0, invalid = false, hasSubmodule = false;
- const result = await runGitProcess(["ls-files", "--stage", "--full-name", "-z", "--", ...(cdup ? [cdup] : [])], options, (chunk) => {
-  for (const byte of chunk) {
-   if (inPath) {
-    if (byte === 0) { if (!pathLength) invalid = true; inPath = false; pathLength = 0; }
-    else pathLength = 1;
-   } else if (byte === 9) {
-    if (!/^(?:100644|100755|120000|160000) (?:[0-9a-f]{40}|[0-9a-f]{64}) [0-3]$/.test(header)) invalid = true;
-    if (header.startsWith("160000 ")) hasSubmodule = true;
-    header = ""; inPath = true;
-   } else if (byte === 0 || header.length >= 80 || byte > 127) invalid = true;
-   else header += String.fromCharCode(byte);
-  }
- });
- return { result, invalid: invalid || inPath || header.length > 0, hasSubmodule };
+ return {
+  write(chunk: Buffer) {
+   for (const byte of chunk) {
+    if (inPath) {
+     if (byte === 0) { if (!pathLength) invalid = true; inPath = false; pathLength = 0; }
+     else pathLength = 1;
+    } else if (byte === 9) {
+     if (!/^(?:100644|100755|120000|160000) (?:[0-9a-f]{40}|[0-9a-f]{64}) [0-3]$/.test(header)) invalid = true;
+     if (header.startsWith("160000 ")) hasSubmodule = true;
+     header = ""; inPath = true;
+    } else if (byte === 0 || header.length >= 80 || byte > 127) invalid = true;
+    else header += String.fromCharCode(byte);
+   }
+  },
+  finish() { return { invalid: invalid || inPath || header.length > 0, hasSubmodule }; },
+ };
+}
+
+async function scanSubmodules(cdup: string, options: RunOptions) {
+ const parser = createSubmoduleIndexParser();
+ const result = await runGitProcess(["ls-files", "--stage", "--full-name", "-z", "--", ...(cdup ? [cdup] : [])], options, parser.write);
+ return { result, ...parser.finish() };
 }
 
 function validate(kind: Kind, input: Input): { paths: string[]; refs: string[]; args: string[] } {

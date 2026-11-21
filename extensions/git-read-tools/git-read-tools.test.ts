@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectGit, runGit } from "./git.ts";
+import { createSubmoduleIndexParser, inspectGit, runGit } from "./git.ts";
 import extension from "./index.ts";
 
 function git(cwd: string, ...args: string[]) { return execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" }, encoding: "utf8" }).trim(); }
@@ -99,6 +99,39 @@ test("large index is scanned without truncation, including for a single-path dif
  const guarded = await inspectGit("diff", { paths: [path] }, { cwd: dir });
  assert.equal(guarded.isError, true); assert.match(text(guarded), /refused: index contains submodules/);
 }));
+
+test("submodule index parser handles arbitrary chunk boundaries and fails closed", () => {
+ const hash = "a".repeat(40), hash256 = "b".repeat(64);
+ const ordinary = `100644 ${hash} 0\tname-🦊\twith\ncontrols\0`;
+ const submodule = `160000 ${hash} 0\tsubmodule/🦊\0`;
+ const cases = [
+  { name: "empty index", data: "", invalid: false, hasSubmodule: false },
+  { name: "ordinary records and submodule", data: `${ordinary}100755 ${hash256} 3\texecutable\0${submodule}120000 ${hash} 1\tlink\0`, invalid: false, hasSubmodule: true },
+  { name: "ordinary records only", data: `${ordinary}120000 ${hash} 2\tlink\0`, invalid: false, hasSubmodule: false },
+  { name: "invalid mode", data: `100600 ${hash} 0\tpath\0`, invalid: true, hasSubmodule: false },
+  { name: "invalid hash", data: `100644 ${"g".repeat(40)} 0\tpath\0`, invalid: true, hasSubmodule: false },
+  { name: "invalid stage", data: `100644 ${hash} 4\tpath\0`, invalid: true, hasSubmodule: false },
+  { name: "empty path", data: `100644 ${hash} 0\t\0${ordinary}`, invalid: true, hasSubmodule: false },
+  { name: "unterminated path", data: `100644 ${hash} 0\tpath`, invalid: true, hasSubmodule: false },
+  { name: "unterminated header after submodule", data: `${submodule}100644 ${hash}`, invalid: true, hasSubmodule: true },
+  { name: "NUL in header", data: `100644\0 ${hash} 0\tpath\0`, invalid: true, hasSubmodule: false },
+  { name: "non-ASCII header", data: `100644 ${hash} 0é\tpath\0`, invalid: true, hasSubmodule: false },
+  { name: "oversized header", data: `${"x".repeat(81)}\tpath\0`, invalid: true, hasSubmodule: false },
+  { name: "malformed submodule header", data: `160000 bad 0\tpath\0`, invalid: true, hasSubmodule: true },
+ ];
+ for (const { name, data, invalid, hasSubmodule } of cases) {
+  const bytes = Buffer.from(data), expected = { invalid, hasSubmodule };
+  // Every pair of boundaries splits headers, delimiters and path bytes, including UTF-8 bytes.
+  for (let first = 0; first <= bytes.length; first++) for (let second = first; second <= bytes.length; second++) {
+   const parser = createSubmoduleIndexParser();
+   parser.write(bytes.subarray(0, first)); parser.write(bytes.subarray(first, second)); parser.write(bytes.subarray(second));
+   assert.deepEqual(parser.finish(), expected, `${name}: boundaries ${first}, ${second}`);
+  }
+  const parser = createSubmoduleIndexParser();
+  for (const byte of bytes) parser.write(Buffer.from([byte]));
+  assert.deepEqual(parser.finish(), expected, `${name}: one byte per chunk`);
+ }
+});
 
 test("submodule scan fails closed on malformed output, errors, timeout and cancellation", async () => fixture(async (dir) => {
  const script = join(dir, "fake-git");
