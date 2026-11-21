@@ -1,9 +1,6 @@
 # permission-mode generator
 
-Reads `~/.pi/agent/permission-mode/permission-mode.src.jsonc` and writes
-`~/.pi/agent/permission-mode/permission-mode.json`. You edit the source; the output is generated.
-Do not hand-edit the output. The source, the output, and the drift baseline live in the same
-directory; the repo keeps only `configs/permission-mode.example.src.jsonc` as the starting point.
+Reads `~/.pi/agent/permissions.src.jsonc` and generates `~/.pi/agent/permission-mode/permission-mode.json` and, when `subagents` is present, the `subagents` key of `~/.pi/agent/settings.json`. Edit the source, not the generated values. The starting sample is `configs/permissions.example.src.jsonc`. For an old source, follow [MIGRATION.md](MIGRATION.md).
 
 ## Use
 
@@ -11,27 +8,28 @@ directory; the repo keeps only `configs/permission-mode.example.src.jsonc` as th
 just perm                 # gen: write the output when it is clean
 just perm check           # compare the output with the last generated result, write nothing
 just perm gen --force     # overwrite a drifted output
-just perm test            # run the merge-rule tests
+just perm migrate         # import the old source and current subagents settings
+just perm test            # run generator, migration, merge and lock tests
 ```
 
 Flags after `--` pass through, for example `just perm test -- --only merge`.
 
 The extension runs the same code path at startup and on `/reload`. It writes when the output is
 clean, reports a diff when the output has drifted, and says nothing when there is no change.
-Because the extension factory runs before any `session_start`, pi-permission-modes reads the file
-in the same session.
+The factory completes before `session_start`, so pi-permission-modes reads the generated file in the same session. The installed pi-subagents reads settings during agent discovery and refreshes its discovery cache on `session_start`; its subsequent discovery observes the generated settings. Pi's own settings manager loads before extension factories and `/reload` reloads the manager before factories, so other Pi settings consumers may need another `/reload` or a new session. Project `.pi/settings.json` overrides user subagent settings.
 
 ## Source format
 
-Three blocks: `output` (the file header: `$schema`, `defaultMode`, `cycleOrder`), `fragments`,
-`modes`. `//` and `/* */` comments and trailing commas are allowed; comments are not carried into
-the output.
+The top level has `permissionModes` and an optional `subagents`. Permission modes contain `output`, `fragments` and `modes`. Subagents contains `settings`, `fragments` and `agents`: `agents` becomes `settings.json`'s `subagents.agentOverrides`; an absent `agents` stays absent. Omitting `subagents` leaves settings and its baseline untouched. `subagents.config` is not yet supported and errors rather than being ignored. `//` and `/* */` comments and trailing commas are allowed; comments are not carried into the output. A value exactly shaped `{ "$file": "relative/path" }` reads that file as text relative to the source before merging.
 
 ```jsonc
 {
-  "output": { "defaultMode": "default", "cycleOrder": ["default", "plan"] },
-  "fragments": { "common": { "permission": { "read": "allow" } } },
-  "modes": { "default": { "extends": ["common"], "label": "Default" } }
+  "permissionModes": {
+    "output": { "defaultMode": "default", "cycleOrder": ["default", "plan"] },
+    "fragments": { "common": { "permission": { "read": "allow" } } },
+    "modes": { "default": { "extends": ["common"], "label": "Default" } }
+  },
+  "subagents": { "settings": {}, "agents": { "worker": { "tools": ["read"] } } }
 }
 ```
 
@@ -56,17 +54,15 @@ Permissions and the sandbox change when the mode switches. The active mode's pro
 
 ## Drift
 
-`.last-generated.json` (in `~/.pi/agent/permission-mode/`) holds the last result the generator wrote. If `permission-mode.json`
-differs from it, something else changed the file — a hand edit, or an "Allow forever" approval.
-The generator prints each differing key path as `last generated` versus `file` and does not
-overwrite. Move the change into the source, or run `just perm gen --force`.
+The modes baseline is `~/.pi/agent/permission-mode/.last-generated.json`; `~/.pi/agent/.subagents.last-generated.json` records the generated subagents value. Each output is checked independently. A differing existing output without a baseline is not adopted; matching output is adopted by `gen`, not `check`. Move changes into the source or deliberately overwrite with `just perm gen --force`. pi-subagents `disable`, `enable`, `eject` and `reset` modify the owned subagents key. `check` never writes, but concurrent writers may produce transient drift or read errors.\n\nEach output and baseline is atomically replaced, but the pair is not an atomic transaction. An interrupted update leaves a `.generator-pending` marker; inspect the output and source, then use `gen --force` to recover. Never remove the marker merely to suppress a warning. A missing marker after external tampering defeats this recovery.\n\nGenerator locks are taken in sorted physical-path order for each output and baseline, then Pi's requested-path `settings.json.lock`, then pi-subagents' physical-target `settings.json.write-lock`. Pi uses proper-lockfile's 10-second stale threshold; a paused holder can be reclaimed. Both installed protocols have non-atomic ownership-check/remove races; ownership checks here are best effort and a detected compromise fails closed. Pi checks whether settings exists before taking its lock, so a concurrent creation can race its missing-file write. Pi's requested-path lock does not coordinate distinct aliases of the same target; the physical lease coordinates pi-subagents, not Pi's other aliases. Uncooperative writers and hard links are not coordinated. Atomic rename preserves file mode, not inode identity, hard links, ownership, ACLs or other metadata. Settings writes resolve symlinks to the physical target. Directory or symlink changes by another process during a run remain a race.
 
 ## Files
 
-- `configs/permission-mode.example.src.jsonc` — the committed example source. Copy it to
-  `~/.pi/agent/permission-mode/permission-mode.src.jsonc`; that live file is the only thing you edit.
+- `configs/permissions.example.src.jsonc` — the committed example source. Copy it to `~/.pi/agent/permissions.src.jsonc` for a new installation.
 - `../../lib/jsonc.ts` — comment and trailing-comma handling (shared with the other extensions).
 - `merge.ts` — merge rules, no fs and no pi imports.
-- `generate.ts` — `run()` plus the CLI entry.
+- `generate.ts` — `run()` plus the CLI entry; options are `--src`, `--modes-out`, `--modes-state`, `--settings`, `--subagents-state`, and `--force`.
+- `migrate.ts` — conservative old-source and settings import.
+- `../../lib/settings-lock.ts` — settings and generator output locks.
 - `index.ts` — the pi extension: run at startup and `/reload`, report at `session_start`.
 - `merge.test.ts` — `node:test` tests. Needs Node >= 22.12.

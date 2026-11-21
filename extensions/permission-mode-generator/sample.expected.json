@@ -1,0 +1,787 @@
+{
+  "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
+  "defaultMode": "default",
+  "cycleOrder": [
+    "default",
+    "plan",
+    "build",
+    "plan-local",
+    "build-local",
+    "build-yolo",
+    "yolo"
+  ],
+  "modes": {
+    "default": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        },
+        "external_directory": {
+          "*": "ask",
+          "~/.agent/skills": "allow",
+          "~/.agent/skills/*": "allow",
+          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.pi/agent/skills": "allow",
+          "~/.pi/agent/skills/*": "allow",
+          "~/.pi/agent/npm/node_modules": "allow",
+          "~/.pi/agent/npm/node_modules/*": "allow",
+          "/var/folders": "allow",
+          "/var/folders/*": "allow",
+          "/private/var/folders": "allow",
+          "/private/var/folders/*": "allow",
+          "/tmp/acp-delegate/*": "allow",
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
+        },
+        "read": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "write": {
+          "*": "ask",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "*": "ask",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "ask"
+        },
+        "web_search": "allow",
+        "tool": {
+          "*": "ask",
+          "acp_delegate": "allow",
+          "acp_delegate_wait": "allow",
+          "acp_status": "allow",
+          "acp_read_original_image": "allow",
+          "compress": "allow",
+          "decompress": "allow",
+          "web_enable": "allow",
+          "fetch_content": "allow",
+          "get_search_content": "allow",
+          "source_check": "allow",
+          "search_context": "allow",
+          "acp_delegate_cancel": "allow",
+          "just_test": "allow"
+        },
+        "skill": "allow"
+      },
+      "sandbox": {
+        "enabled": true,
+        "writable": true,
+        "allowWrite": [
+          ".",
+          "/tmp/pi"
+        ],
+        "denyWrite": [],
+        "denyRead": [
+          "~/.ssh",
+          "~/.aws",
+          "~/.gnupg",
+          "~/.netrc",
+          "~/.git-credentials",
+          "~/.pypirc",
+          "~/.gem/credentials",
+          "~/.vault-token",
+          "~/.password-store",
+          "~/.pi/agent/auth.json",
+          "~/.pi/agent/oauth.json",
+          "~/.pi/agent/rehydra/records/records.sqlite",
+          "~/.pi/agent/secrets-protection/records.sqlite"
+        ],
+        "insideRoots": [
+          "/home/nhbody/.agents/skills",
+          "~/.pi/agent/skills",
+          "~/.pi/agent/npm/node_modules",
+          "/tmp/acp-delegate",
+          "/tmp/just-tools/outputs",
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
+        ],
+        "network": {
+          "allowedDomains": [
+            "npmjs.org",
+            "*.npmjs.org",
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "pypi.org",
+            "*.pypi.org",
+            "github.com",
+            "*.github.com",
+            "api.github.com",
+            "raw.githubusercontent.com"
+          ],
+          "deniedDomains": []
+        }
+      },
+      "label": "Default",
+      "color": "muted"
+    },
+    "plan": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        },
+        "external_directory": {
+          "*": "ask",
+          "~/.agent/skills": "allow",
+          "~/.agent/skills/*": "allow",
+          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.pi/agent/skills": "allow",
+          "~/.pi/agent/skills/*": "allow",
+          "~/.pi/agent/npm/node_modules": "allow",
+          "~/.pi/agent/npm/node_modules/*": "allow",
+          "/var/folders": "allow",
+          "/var/folders/*": "allow",
+          "/private/var/folders": "allow",
+          "/private/var/folders/*": "allow",
+          "/tmp/acp-delegate/*": "allow",
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
+        },
+        "read": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "write": {
+          "*": "deny",
+          "*.md": "ask",
+          "*.markdown": "ask",
+          "plan/*.md": "allow",
+          "*/plan/*.md": "allow",
+          "plans/*.md": "allow",
+          "*/plans/*.md": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "*": "deny",
+          "*.md": "ask",
+          "*.markdown": "ask",
+          "plan/*.md": "allow",
+          "*/plan/*.md": "allow",
+          "plans/*.md": "allow",
+          "*/plans/*.md": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "allow"
+        },
+        "web_search": "allow",
+        "tool": {
+          "*": "ask",
+          "acp_delegate": "allow",
+          "acp_delegate_wait": "allow",
+          "acp_status": "allow",
+          "acp_read_original_image": "allow",
+          "compress": "allow",
+          "decompress": "allow",
+          "web_enable": "allow",
+          "fetch_content": "allow",
+          "get_search_content": "allow",
+          "source_check": "allow",
+          "search_context": "allow",
+          "acp_delegate_cancel": "allow",
+          "just_test": "allow"
+        },
+        "skill": "allow"
+      },
+      "sandbox": {
+        "enabled": true,
+        "writable": false,
+        "allowWrite": [
+          ".",
+          "/tmp/pi"
+        ],
+        "denyWrite": [],
+        "denyRead": [
+          "~/.ssh",
+          "~/.aws",
+          "~/.gnupg",
+          "~/.netrc",
+          "~/.git-credentials",
+          "~/.pypirc",
+          "~/.gem/credentials",
+          "~/.vault-token",
+          "~/.password-store",
+          "~/.pi/agent/auth.json",
+          "~/.pi/agent/oauth.json",
+          "~/.pi/agent/rehydra/records/records.sqlite",
+          "~/.pi/agent/secrets-protection/records.sqlite"
+        ],
+        "insideRoots": [
+          "/home/nhbody/.agents/skills",
+          "~/.pi/agent/skills",
+          "~/.pi/agent/npm/node_modules",
+          "/tmp/acp-delegate",
+          "/tmp/just-tools/outputs",
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
+        ],
+        "network": {
+          "allowedDomains": [
+            "npmjs.org",
+            "*.npmjs.org",
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "pypi.org",
+            "*.pypi.org",
+            "github.com",
+            "*.github.com",
+            "api.github.com",
+            "raw.githubusercontent.com"
+          ],
+          "deniedDomains": []
+        }
+      },
+      "label": "Plan Mode",
+      "color": "mdLink",
+      "systemPrompt": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+    },
+    "build": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        },
+        "external_directory": {
+          "*": "ask",
+          "~/.agent/skills": "allow",
+          "~/.agent/skills/*": "allow",
+          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.pi/agent/skills": "allow",
+          "~/.pi/agent/skills/*": "allow",
+          "~/.pi/agent/npm/node_modules": "allow",
+          "~/.pi/agent/npm/node_modules/*": "allow",
+          "/var/folders": "allow",
+          "/var/folders/*": "allow",
+          "/private/var/folders": "allow",
+          "/private/var/folders/*": "allow",
+          "/tmp/acp-delegate/*": "allow",
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
+        },
+        "read": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "write": {
+          "*": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "*": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "allow"
+        },
+        "web_search": "allow",
+        "tool": {
+          "*": "ask",
+          "acp_delegate": "allow",
+          "acp_delegate_wait": "allow",
+          "acp_status": "allow",
+          "acp_read_original_image": "allow",
+          "compress": "allow",
+          "decompress": "allow",
+          "web_enable": "allow",
+          "fetch_content": "allow",
+          "get_search_content": "allow",
+          "source_check": "allow",
+          "search_context": "allow",
+          "acp_delegate_cancel": "allow",
+          "just_test": "allow"
+        },
+        "skill": "allow"
+      },
+      "sandbox": {
+        "enabled": true,
+        "writable": true,
+        "allowWrite": [
+          ".",
+          "/tmp/pi"
+        ],
+        "denyWrite": [],
+        "denyRead": [
+          "~/.ssh",
+          "~/.aws",
+          "~/.gnupg",
+          "~/.netrc",
+          "~/.git-credentials",
+          "~/.pypirc",
+          "~/.gem/credentials",
+          "~/.vault-token",
+          "~/.password-store",
+          "~/.pi/agent/auth.json",
+          "~/.pi/agent/oauth.json",
+          "~/.pi/agent/rehydra/records/records.sqlite",
+          "~/.pi/agent/secrets-protection/records.sqlite"
+        ],
+        "insideRoots": [
+          "/home/nhbody/.agents/skills",
+          "~/.pi/agent/skills",
+          "~/.pi/agent/npm/node_modules",
+          "/tmp/acp-delegate",
+          "/tmp/just-tools/outputs",
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
+        ],
+        "network": {
+          "allowedDomains": [
+            "npmjs.org",
+            "*.npmjs.org",
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "pypi.org",
+            "*.pypi.org",
+            "github.com",
+            "*.github.com",
+            "api.github.com",
+            "raw.githubusercontent.com"
+          ],
+          "deniedDomains": []
+        }
+      },
+      "label": "Build",
+      "color": "accent",
+      "systemPrompt": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+    },
+    "plan-local": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        },
+        "external_directory": {
+          "*": "deny",
+          "~/.agent/skills": "allow",
+          "~/.agent/skills/*": "allow",
+          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.pi/agent/skills": "allow",
+          "~/.pi/agent/skills/*": "allow",
+          "~/.pi/agent/npm/node_modules": "allow",
+          "~/.pi/agent/npm/node_modules/*": "allow",
+          "/var/folders": "allow",
+          "/var/folders/*": "allow",
+          "/private/var/folders": "allow",
+          "/private/var/folders/*": "allow",
+          "/tmp/acp-delegate/*": "allow",
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
+        },
+        "read": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "write": {
+          "*": "deny",
+          "*.md": "ask",
+          "*.markdown": "ask",
+          "plan/*.md": "allow",
+          "*/plan/*.md": "allow",
+          "plans/*.md": "allow",
+          "*/plans/*.md": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "*": "deny",
+          "*.md": "ask",
+          "*.markdown": "ask",
+          "plan/*.md": "allow",
+          "*/plan/*.md": "allow",
+          "plans/*.md": "allow",
+          "*/plans/*.md": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "allow"
+        },
+        "web_search": "allow",
+        "tool": {
+          "*": "ask",
+          "acp_delegate": "allow",
+          "acp_delegate_wait": "allow",
+          "acp_status": "allow",
+          "acp_read_original_image": "allow",
+          "compress": "allow",
+          "decompress": "allow",
+          "web_enable": "allow",
+          "fetch_content": "allow",
+          "get_search_content": "allow",
+          "source_check": "allow",
+          "search_context": "allow",
+          "acp_delegate_cancel": "allow",
+          "just_test": "allow"
+        },
+        "skill": "allow"
+      },
+      "sandbox": {
+        "enabled": true,
+        "writable": false,
+        "allowWrite": [
+          ".",
+          "/tmp/pi"
+        ],
+        "denyWrite": [],
+        "denyRead": [
+          "~/.ssh",
+          "~/.aws",
+          "~/.gnupg",
+          "~/.netrc",
+          "~/.git-credentials",
+          "~/.pypirc",
+          "~/.gem/credentials",
+          "~/.vault-token",
+          "~/.password-store",
+          "~/.pi/agent/auth.json",
+          "~/.pi/agent/oauth.json",
+          "~/.pi/agent/rehydra/records/records.sqlite",
+          "~/.pi/agent/secrets-protection/records.sqlite"
+        ],
+        "insideRoots": [
+          "/home/nhbody/.agents/skills",
+          "~/.pi/agent/skills",
+          "~/.pi/agent/npm/node_modules",
+          "/tmp/acp-delegate",
+          "/tmp/just-tools/outputs",
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
+        ],
+        "network": {
+          "allowedDomains": [
+            "npmjs.org",
+            "*.npmjs.org",
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "pypi.org",
+            "*.pypi.org",
+            "github.com",
+            "*.github.com",
+            "api.github.com",
+            "raw.githubusercontent.com"
+          ],
+          "deniedDomains": []
+        }
+      },
+      "label": "Plan (local)",
+      "color": "mdLink",
+      "systemPrompt": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+    },
+    "build-local": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        },
+        "external_directory": {
+          "*": "deny",
+          "~/.agent/skills": "allow",
+          "~/.agent/skills/*": "allow",
+          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.pi/agent/skills": "allow",
+          "~/.pi/agent/skills/*": "allow",
+          "~/.pi/agent/npm/node_modules": "allow",
+          "~/.pi/agent/npm/node_modules/*": "allow",
+          "/var/folders": "allow",
+          "/var/folders/*": "allow",
+          "/private/var/folders": "allow",
+          "/private/var/folders/*": "allow",
+          "/tmp/acp-delegate/*": "allow",
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
+        },
+        "read": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "write": {
+          "*": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "*": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "allow"
+        },
+        "web_search": "allow",
+        "tool": {
+          "*": "ask",
+          "acp_delegate": "allow",
+          "acp_delegate_wait": "allow",
+          "acp_status": "allow",
+          "acp_read_original_image": "allow",
+          "compress": "allow",
+          "decompress": "allow",
+          "web_enable": "allow",
+          "fetch_content": "allow",
+          "get_search_content": "allow",
+          "source_check": "allow",
+          "search_context": "allow",
+          "acp_delegate_cancel": "allow",
+          "just_test": "allow"
+        },
+        "skill": "allow"
+      },
+      "sandbox": {
+        "enabled": true,
+        "writable": true,
+        "allowWrite": [
+          ".",
+          "/tmp/pi"
+        ],
+        "denyWrite": [],
+        "denyRead": [
+          "~/.ssh",
+          "~/.aws",
+          "~/.gnupg",
+          "~/.netrc",
+          "~/.git-credentials",
+          "~/.pypirc",
+          "~/.gem/credentials",
+          "~/.vault-token",
+          "~/.password-store",
+          "~/.pi/agent/auth.json",
+          "~/.pi/agent/oauth.json",
+          "~/.pi/agent/rehydra/records/records.sqlite",
+          "~/.pi/agent/secrets-protection/records.sqlite"
+        ],
+        "insideRoots": [
+          "/home/nhbody/.agents/skills",
+          "~/.pi/agent/skills",
+          "~/.pi/agent/npm/node_modules",
+          "/tmp/acp-delegate",
+          "/tmp/just-tools/outputs",
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
+        ],
+        "network": {
+          "allowedDomains": [
+            "npmjs.org",
+            "*.npmjs.org",
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "pypi.org",
+            "*.pypi.org",
+            "github.com",
+            "*.github.com",
+            "api.github.com",
+            "raw.githubusercontent.com"
+          ],
+          "deniedDomains": []
+        }
+      },
+      "label": "Build (local)",
+      "color": "accent",
+      "systemPrompt": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+    },
+    "build-yolo": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        },
+        "external_directory": {
+          "*": "deny",
+          "~/.agent/skills": "allow",
+          "~/.agent/skills/*": "allow",
+          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.pi/agent/skills": "allow",
+          "~/.pi/agent/skills/*": "allow",
+          "~/.pi/agent/npm/node_modules": "allow",
+          "~/.pi/agent/npm/node_modules/*": "allow",
+          "/var/folders": "allow",
+          "/var/folders/*": "allow",
+          "/private/var/folders": "allow",
+          "/private/var/folders/*": "allow",
+          "/tmp/acp-delegate/*": "allow",
+          "/tmp/just-tools/outputs/*": "allow",
+          "~/.pi/agent/install/releases/*": "allow",
+          "/home/nhbody/.pi/agent/install/releases/*": "allow"
+        },
+        "read": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "write": {
+          "*": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "edit": {
+          "*": "allow",
+          "~/.pi/agent/skills/*": "ask",
+          "~/.agent/skills/*": "ask",
+          "~/.pi/agent/npm/node_modules/*": "deny",
+          "/var/folders/*": "deny",
+          "/private/var/folders/*": "deny"
+        },
+        "bash": {
+          "*": "allow"
+        },
+        "web_search": "allow",
+        "tool": {
+          "*": "ask",
+          "acp_delegate": "allow",
+          "acp_delegate_wait": "allow",
+          "acp_status": "allow",
+          "acp_read_original_image": "allow",
+          "compress": "allow",
+          "decompress": "allow",
+          "web_enable": "allow",
+          "fetch_content": "allow",
+          "get_search_content": "allow",
+          "source_check": "allow",
+          "search_context": "allow",
+          "acp_delegate_cancel": "allow",
+          "just_test": "allow"
+        },
+        "skill": "allow"
+      },
+      "sandbox": {
+        "enabled": false,
+        "writable": true,
+        "allowWrite": [
+          ".",
+          "/tmp/pi"
+        ],
+        "denyWrite": [],
+        "denyRead": [
+          "~/.ssh",
+          "~/.aws",
+          "~/.gnupg",
+          "~/.netrc",
+          "~/.git-credentials",
+          "~/.pypirc",
+          "~/.gem/credentials",
+          "~/.vault-token",
+          "~/.password-store",
+          "~/.pi/agent/auth.json",
+          "~/.pi/agent/oauth.json",
+          "~/.pi/agent/rehydra/records/records.sqlite",
+          "~/.pi/agent/secrets-protection/records.sqlite"
+        ],
+        "insideRoots": [
+          "/home/nhbody/.agents/skills",
+          "~/.pi/agent/skills",
+          "~/.pi/agent/npm/node_modules",
+          "/tmp/acp-delegate",
+          "/tmp/just-tools/outputs",
+          "/run/user/1000/just",
+          "~/.pi/agent/install/releases",
+          "/home/nhbody/.pi/agent/install/releases/"
+        ],
+        "network": {
+          "allowedDomains": [
+            "npmjs.org",
+            "*.npmjs.org",
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "pypi.org",
+            "*.pypi.org",
+            "github.com",
+            "*.github.com",
+            "api.github.com",
+            "raw.githubusercontent.com"
+          ],
+          "deniedDomains": []
+        }
+      },
+      "label": "Build (yolo)",
+      "color": "error",
+      "systemPrompt": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+    },
+    "yolo": {
+      "permission": {
+        "path": {
+          "*": "allow",
+          "~/.pi/agent/rehydra/*": "deny",
+          "~/.pi/agent/secrets-protection/*": "deny"
+        },
+        "external_directory": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "grep": "allow",
+        "find": "allow",
+        "ls": "allow",
+        "bash": {
+          "*": "allow"
+        },
+        "web_search": "allow",
+        "tool": "allow",
+        "skill": "allow"
+      },
+      "label": "YOLO",
+      "color": "error",
+      "sandbox": {
+        "enabled": false,
+        "writable": true
+      },
+      "bypassProtectedPaths": true
+    }
+  }
+}

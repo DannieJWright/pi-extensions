@@ -5,6 +5,7 @@
 // so "*" must come first. When a mode overrides an inherited key, the key keeps its position;
 // new keys are appended at the end. Use "$replace": true to write a full map in your own order.
 {
+  "permissionModes": {
   "output": {
     "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
     "defaultMode": "default",
@@ -258,5 +259,6 @@
         "skill": "allow"
       }
     }
+  }
   }
 }

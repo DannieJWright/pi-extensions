@@ -15,7 +15,7 @@ interface ExtensionApi {
 }
 
 export default async function (pi: ExtensionApi): Promise<void> {
-	const result = run({ ...defaultPaths, action: "gen", force: false });
+	const result = await run({ ...defaultPaths, action: "gen", force: false });
 	const report = formatResult(result, defaultPaths);
 
 	pi.on("session_start", async (_event, ctx) => {

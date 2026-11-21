@@ -1,0 +1,122 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { physicalPath, withOutputLocks } from "./settings-lock.ts";
+
+function fixture(t: test.TestContext): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "settings-lock-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	return dir;
+}
+
+test("holds both settings locks and follows file links, cleaning up on error", async (t) => {
+	const dir = fixture(t), settings = path.join(dir, "settings.json"), target = path.join(dir, "target.json");
+	fs.writeFileSync(target, "{}");
+	fs.symlinkSync("target.json", settings);
+	assert.equal(physicalPath(settings), target);
+	await assert.rejects(withOutputLocks([settings], settings, (owned) => {
+		assert.equal(fs.existsSync(`${settings}.lock`), true);
+		assert.equal(fs.existsSync(`${target}.write-lock/owner.json`), true);
+		owned();
+		throw new Error("injected failure");
+	}), /injected failure/);
+	assert.equal(fs.existsSync(`${settings}.lock`), false);
+	assert.equal(fs.existsSync(`${target}.write-lock`), false);
+});
+
+test("stale proper-lockfile lock is reclaimed and live lease is respected", async (t) => {
+	const dir = fixture(t), file = path.join(dir, "settings.json"), lock = `${file}.lock`;
+	fs.mkdirSync(lock);
+	const old = new Date(Date.now() - 15_000);
+	fs.utimesSync(lock, old, old);
+	await withOutputLocks([file], file, () => assert.equal(fs.existsSync(lock), true));
+	assert.equal(fs.existsSync(lock), false);
+});
+
+test("separate processes serialize a shared output lease", async (t) => {
+	const dir = fixture(t), file = path.join(dir, "out.json");
+	const moduleUrl = new URL("./settings-lock.ts", import.meta.url).href;
+	const program = `import {withOutputLocks} from ${JSON.stringify(moduleUrl)}; import fs from 'node:fs'; await withOutputLocks([process.argv[1]], undefined, async () => { console.log('locked'); await new Promise(r=>setTimeout(r,350)); fs.writeFileSync(process.argv[1], 'first'); });`;
+	const child = spawn(process.execPath, ["--input-type=module", "-e", program, file], { stdio: ["ignore", "pipe", "pipe"] });
+	const exited = once(child, "exit");
+	await once(child.stdout, "data");
+	await withOutputLocks([file], undefined, () => {
+		assert.equal(fs.readFileSync(file, "utf8"), "first");
+		fs.writeFileSync(file, "second");
+	});
+	const [exit] = await exited;
+	assert.equal(exit, 0);
+	assert.equal(fs.readFileSync(file, "utf8"), "second");
+});
+
+test("compromised locks fail closed and do not remove replacement", async (t) => {
+	const dir = fixture(t), file = path.join(dir, "settings.json"), lock = `${file}.lock`;
+	await assert.rejects(withOutputLocks([file], file, (owned) => {
+		fs.rmdirSync(lock);
+		fs.mkdirSync(lock);
+		owned();
+	}), /Lock compromised/);
+	assert.equal(fs.existsSync(lock), true);
+});
+
+test("proper lock remains fresh beyond stale threshold and excludes another process", { timeout: 20_000 }, async (t) => {
+	const dir = fixture(t), file = path.join(dir, "settings.json"), lock = `${file}.lock`;
+	await withOutputLocks([file], file, async (owned) => {
+		const before = fs.statSync(lock).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 10_500));
+		owned();
+		assert.ok(fs.statSync(lock).mtimeMs > before);
+		const child = spawn(process.execPath, ["-e", "try { require('fs').mkdirSync(process.argv[1]); process.exit(1); } catch (e) { process.exit(e.code === 'EEXIST' ? 0 : 2); }", lock]);
+		const [exit] = await once(child, "exit");
+		assert.equal(exit, 0);
+	});
+});
+
+test("other processes holding either settings protocol finish before replacement", async (t) => {
+	for (const protocol of ["proper", "lease"]) {
+		const dir = fixture(t), file = path.join(dir, "settings.json"), lock = `${file}${protocol === "proper" ? ".lock" : ".write-lock"}`;
+		fs.writeFileSync(file, "original");
+		const script = `const fs=require('fs'), os=require('os'), path=require('path'); const lock=process.argv[1], file=process.argv[2]; fs.mkdirSync(lock); if(process.argv[3]==='lease') fs.writeFileSync(path.join(lock,'owner.json'), JSON.stringify({token:'other-process', pid:process.pid, hostname:os.hostname()})); console.log('locked'); setTimeout(()=>{fs.writeFileSync(file,'external'); fs.rmSync(lock,{recursive:true});}, 300);`;
+		const child = spawn(process.execPath, ["-e", script, lock, file, protocol], { stdio: ["ignore", "pipe", "pipe"] });
+		const exit = once(child, "exit");
+		await once(child.stdout, "data");
+		await withOutputLocks([file], file, () => {
+			assert.equal(fs.readFileSync(file, "utf8"), "external");
+			fs.writeFileSync(file, "generator");
+			assert.equal(fs.existsSync(`${file}.lock`), true);
+			assert.equal(fs.existsSync(`${file}.write-lock`), true);
+		});
+		assert.equal((await exit)[0], 0);
+		assert.equal(fs.readFileSync(file, "utf8"), "generator");
+	}
+});
+
+test("dead local lease is fenced and a compromised lease is not cleaned up", async (t) => {
+	const dir = fixture(t), file = path.join(dir, "settings.json"), lock = `${file}.write-lock`;
+	fs.mkdirSync(lock);
+	fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ token: "dead-owner", pid: 2147483647, hostname: os.hostname() }));
+	await withOutputLocks([file], file, () => assert.equal(fs.existsSync(`${lock}.retired-dead-owner/owner.json`), true));
+	assert.equal(fs.existsSync(lock), false);
+	await assert.rejects(withOutputLocks([file], file, (owned) => {
+		fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ token: "replacement", pid: process.pid, hostname: os.hostname() }));
+		owned();
+	}), /Lock compromised/);
+	assert.equal(fs.existsSync(`${lock}/owner.json`), true);
+});
+
+test("replacement is visible to an independent reader before lock release", async (t) => {
+	const { spawnSync } = await import("node:child_process");
+	const dir = fixture(t), file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, "old");
+	await withOutputLocks([file], file, () => {
+		const tmp = path.join(dir, "new");
+		fs.writeFileSync(tmp, "new");
+		fs.renameSync(tmp, file);
+		const observer = spawnSync(process.execPath, ["-e", "const fs=require('fs'); process.exit(fs.existsSync(process.argv[1]+'.lock') && fs.existsSync(process.argv[1]+'.write-lock') && fs.readFileSync(process.argv[1],'utf8')==='new' ? 0 : 1)", file]);
+		assert.equal(observer.status, 0);
+	});
+});
