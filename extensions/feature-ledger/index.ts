@@ -190,7 +190,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_orchestrate",
 		label: "Ledger orchestration",
-		description: `List in file order, select the next eligible item, or release a stopped run's matching identity and token. Release does not change status. Claims do not protect against concurrent writers. ${PATH_DESCRIPTION}`,
+		description: `List in file order, select the next eligible item (its result includes a copy of the item's acceptance_criteria), or release a stopped run's matching identity and token. Release does not change status. Claims do not protect against concurrent writers. ${PATH_DESCRIPTION}`,
 		parameters: ORCHESTRATE_PARAMS,
 		prepareArguments: (args) => normalizeJsonEncoded(ORCHESTRATE_PARAMS, args) as never,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

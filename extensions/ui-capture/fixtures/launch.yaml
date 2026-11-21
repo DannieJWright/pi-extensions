@@ -1,0 +1,48 @@
+feature: dock-floor-from-the-tab-row
+subphase: 1
+description: >
+  What the reader must see. The pair check runs against this.
+server:
+  start: just run --detached          # {port} is replaced when used
+  stop: just run stop                 # required when detached: true
+  detached: true                      # true: start exits, the tool polls ready; false: the tool owns the process
+  port: auto                          # or a number
+  cwd: .
+  env: { PORT: "{port}" }
+  keep: false
+  ready:
+    path: /agent
+    selector: 'section[aria-label="Sessions panel"]'
+    not_text: Loading sessions        # hydration gate: fail while this text shows
+    timeout: 60
+conditions:
+  entry: /agent                       # applied: first navigation
+  viewport: 1400x1000
+  clock: 2026-11-14T10:00:00.000Z
+  locale: en
+  theme: dark                         # applied: colorScheme plus an init script
+  theme_storage: { key: theme }       # optional: localStorage key the app reads
+  storage: {}                         # localStorage set before load; recorded in the sidecar
+  permissions: [clipboard-write]
+  fixture: agent fixture transport    # record only; fixture data is the project's job
+steps:
+  - wait_for: 'section[aria-label="Sessions panel"]'
+  - focus: '[role=separator][aria-label="Resize panel dock"]'
+  - press: ArrowRight
+    until_stable: { target: '[role=separator][aria-label="Resize panel dock"]', attribute: aria-valuenow, max: 40 }
+  - assert: '[role=tablist][aria-label="Panels"] [role=tab]'
+    same_top: true
+  - measure: '[role=tablist][aria-label="Panels"] > *'
+    name: row_controls
+    each: true
+    fields: [box]
+  - read: '[role=tablist][aria-label="Panels"]'
+    computed: paddingLeft
+    name: row_padding
+  - eval: "getComputedStyle(document.documentElement).getPropertyValue('--dock-row-fit')"
+    name: dock_row_fit
+  - screenshot: { name: dock, target: 'section[aria-label="Sessions panel"]', padding: 16 }
+  - screenshot: { name: full }
+diff:
+  screenshot: full                    # required when the spec has more than one screenshot
+  regions: { "tab row": { target: '[role=tablist][aria-label="Panels"]' } }   # or [x, y, w, h]

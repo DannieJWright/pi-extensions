@@ -69,6 +69,7 @@ test:
     run_group "provider-rules test" just -f "${justfile}" provider-rules test
     run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
     run_group "feature-ledger test" just -f "${justfile}" feature-ledger test
+    run_group "ui-capture test" just -f "${justfile}" ui-capture test
     run_group "skills test" just -f "${justfile}" skills test
     run_group "suite isolation" node --test "{{ REPO }}/tests/suite-isolation.test.ts"
 
@@ -270,6 +271,23 @@ feature-ledger action="check" *args="":
             exit 2
             ;;
     esac
+
+# Run deterministic UI capture core tests.
+[arg('action', pattern='test', help='test')]
+[group('test')]
+ui-capture action="test" *args="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    shift; # Shift for `action`
+
+    # `just` passes an empty default for *args, so drop empty entries before forwarding them.
+    extra=()
+    for arg in "$@"; do
+        if [ -n "${arg}" ]; then extra+=("${arg}"); fi
+    done
+
+    node --test "{{ REPO }}/extensions/ui-capture/"*.test.ts ${extra[@]+"${extra[@]}"}
 
 # Run the skill script tests. Actions: test. Use --skill <name> to limit the run to one skill. Pass Node options after `--` (for example `just skills test -- --test-name-pattern=flow`).
 [arg('action', pattern='test', help='test')]

@@ -65,7 +65,9 @@ background shells for this work.
    provide the proof before promising that dry run.
 2. **CLI lifetime.** Use a persistent supervisor or verified ownership record for cross-invocation server
    start/status/logs/stop. Define and test stale records, process identity reuse, shutdown, and `keep` behavior. Never
-   infer ownership from a port. A missing or unverified record must not authorize stopping a process.
+   infer ownership from a port. A missing or unverified record must not authorize stopping a process. Ownership must
+   remain bound to the target through the signal operation: checking a PID or process group and then signalling its
+   numeric ID leaves a reuse race. Apply this rule to stop, restart, startup cleanup, and shutdown.
 3. **Diff images and coordinates.** Require a screenshot name when there is more than one. Record each region's bounds
    in both phases in that screenshot's coordinate space; compare corresponding crops and report moved bounds. Fail
    clearly for missing or out-of-bounds regions or unequal crop dimensions. Define and test the coordinate transforms

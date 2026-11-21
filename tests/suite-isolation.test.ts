@@ -88,6 +88,46 @@ test("the guard blocks accesses under the guarded home while allowing paths outs
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("the guard allows reads of installed package code only, and keeps every write and other path blocked", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "guard packages "));
+	try {
+		const home = join(dir, "home");
+		const log = join(dir, "violations.log");
+		const packages = join(home, ".pi", "agent", "npm", "node_modules");
+		await mkdir(join(packages, "pkg"), { recursive: true });
+		await writeFile(join(packages, "pkg", "index.js"), "export {}");
+		await writeFile(join(home, ".pi", "agent", "settings.json"), "{}");
+		await mkdir(join(home, ".pi", "agent", "install", "releases", "x", "node_modules"), { recursive: true });
+		await writeFile(join(home, ".pi", "agent", "install", "releases", "x", "node_modules", "y"), "x");
+		await mkdir(join(home, ".pi", "agent", "npm", "node_modules-evil"), { recursive: true });
+		await writeFile(join(home, ".pi", "agent", "npm", "node_modules-evil", "x"), "x");
+		await mkdir(join(home, ".pi", "agent", "npm", "node_modulesX"), { recursive: true });
+		await writeFile(join(home, ".pi", "agent", "npm", "node_modulesX", "x"), "x");
+		await writeFile(log, "");
+		const env = { ...guardEnv(home, log, guardSource), TMPDIR: dir };
+		const attempt = (expression: string) => `try { ${expression}; console.log("allowed"); } catch (error) { console.log(error.message.startsWith("personal Pi access") ? "blocked" : error.message); }`;
+		const run = async (attempts: string[]) => (await exec(process.execPath, ["--input-type=module", "--eval", `import fs from 'node:fs';\nimport { resolve } from 'node:path';\n${attempts.join("\n")}`], { env })).stdout.trim().split("\n");
+		const pkgFile = JSON.stringify(join(packages, "pkg", "index.js"));
+		const agent = join(home, ".pi", "agent");
+		assert.deepEqual(await run([
+			attempt(`fs.readFileSync(${pkgFile})`),
+			attempt(`fs.statSync(${pkgFile})`),
+			attempt(`fs.readdirSync(${JSON.stringify(packages)})`),
+			attempt(`fs.openSync(${pkgFile}, "r")`),
+			attempt(`fs.writeFileSync(${pkgFile}, "x")`),
+			attempt(`fs.openSync(${pkgFile}, "w")`),
+			attempt(`fs.rmSync(${pkgFile})`),
+			attempt(`fs.renameSync(${pkgFile}, ${JSON.stringify(join(packages, "pkg", "moved.js"))})`),
+			attempt(`fs.readFileSync(${JSON.stringify(join(agent, "settings.json"))})`),
+			attempt(`fs.readFileSync(resolve(${JSON.stringify(packages)}, "../../settings.json"))`),
+			attempt(`fs.readFileSync(${JSON.stringify(join(agent, "install", "releases", "x", "node_modules", "y"))})`),
+			attempt(`fs.readFileSync(${JSON.stringify(join(agent, "npm", "node_modules-evil", "x"))})`),
+			attempt(`fs.readFileSync(${JSON.stringify(join(agent, "npm", "node_modulesX", "x"))})`),
+		]), ["allowed", "allowed", "allowed", "allowed", "blocked", "blocked", "blocked", "blocked", "blocked", "blocked", "blocked", "blocked", "blocked"]);
+		assert.equal(await readFile(join(packages, "pkg", "index.js"), "utf8"), "export {}");
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("the test recipe installs the isolation guard for every group without running anything", async () => {
 	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
 	const recipe = json.recipes["test"];

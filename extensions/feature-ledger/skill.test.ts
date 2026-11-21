@@ -17,7 +17,7 @@ const implementation = read("references/implementation-flow.md");
 function files(dir: string): string[] {
 	return readdirSync(dir).flatMap((name) => {
 		const path = join(dir, name);
-		return statSync(path).isDirectory() ? files(path) : [relative(root, path)];
+		return statSync(path).isDirectory() ? files(path) : path.endsWith(".test.mjs") ? [] : [relative(root, path)];
 	});
 }
 
