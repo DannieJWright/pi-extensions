@@ -151,3 +151,11 @@ export function buildSubagents(source: JsonObject): JsonObject {
 	}
 	return result;
 }
+
+/** Resolve config against subagents fragments only, before determining owned keys. */
+export function buildSubagentConfig(source: JsonObject): JsonObject {
+	validateKeys(source, "subagents");
+	if (!isObject(source.config)) throw new MergeError("subagents.config: must be an object");
+	const fragments = isObject(source.fragments) ? source.fragments : {};
+	return resolveEntry(source.config, "subagents.config", "subagents", "agents", fragments, {}, new Set<string>());
+}

@@ -162,11 +162,8 @@ test("settings output preserves symlink, physical mode and unrelated keys", asyn
 	assert.deepEqual(JSON.parse(fs.readFileSync(physical, "utf8")), { other: true, subagents: { x: 1 } });
 });
 
-test("rejects aliases and unsupported subagents.config before writing", async (t) => {
+test("rejects aliases before writing", async (t) => {
 	const dir = temporaryDirectory(t), p = pathsFor(dir);
-	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} }, subagents: { config: {} } }));
-	assert.match((await run({ ...p, action: "gen" })).lines.join(), /subagents.config/);
-	assert.equal(fs.existsSync(p.out), false);
 	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
 	fs.symlinkSync(path.basename(p.src), p.out);
 	assert.match((await run({ ...p, action: "gen" })).lines.join(), /colliding paths/);
