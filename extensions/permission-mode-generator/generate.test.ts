@@ -437,7 +437,7 @@ test("generation does not open an existing unreadable searchable ancestor", asyn
 	} finally { fs.openSync = open; fs.chmodSync(ancestor, 0o700); }
 });
 
-test("new output and baseline ancestors are synced bottom-up before marker publication", async (t) => {
+test("new output and baseline ancestors are synced before marker publication", async (t) => {
 	const dir = temporaryDirectory(t), shared = path.join(dir, "new"), outputDir = path.join(shared, "out"), stateParent = path.join(shared, "state"), stateDir = path.join(stateParent, "deep");
 	const p = { ...pathsFor(dir), out: path.join(outputDir, "out.json"), state: path.join(stateDir, "state.json") };
 	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
@@ -452,7 +452,7 @@ test("new output and baseline ancestors are synced bottom-up before marker publi
 	const marker = events.indexOf(`rename:${p.out}.generator-pending`);
 	assert.ok(marker >= 0, events.join("\n"));
 	const beforeMarker = events.slice(0, marker);
-	const expected = [outputDir, shared, dir, stateDir, stateParent, shared].map((item) => `sync:${item}`);
+	const expected = [shared, dir, outputDir, shared, stateParent, shared, stateDir, stateParent].map((item) => `sync:${item}`);
 	let position = -1;
 	for (const event of expected) {
 		position = beforeMarker.indexOf(event, position + 1);
@@ -478,4 +478,57 @@ test("new ancestor sync failure stops before publishing a marker", async (t) => 
 	assert.equal(fs.existsSync(`${p.out}.generator-pending`), false);
 	assert.equal(fs.existsSync(p.out), false);
 	assert.equal(fs.existsSync(p.state), false);
+});
+
+test("retry syncs interrupted directory creation before publishing", async (t) => {
+	for (const failure of ["mkdir", "child-sync", "parent-sync"]) {
+		const dir = temporaryDirectory(t), shared = path.join(dir, "new"), outputDir = path.join(shared, "output");
+		const p = { ...pathsFor(dir), out: path.join(outputDir, "out.json"), state: path.join(outputDir, "state.json") };
+		fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+		const open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync, mkdir = fs.mkdirSync, rename = fs.renameSync;
+		const fds = new Map<number, string>(), events: string[] = [];
+		let created = false, failing = true;
+		fs.openSync = ((file, ...args) => { const fd = open(file, ...args); fds.set(fd, String(file)); return fd; }) as typeof fs.openSync;
+		fs.closeSync = ((fd) => { fds.delete(fd); return close(fd); }) as typeof fs.closeSync;
+		fs.mkdirSync = ((file, ...args) => { const result = mkdir(file, ...args); if (file === shared) { created = true; if (failure === "mkdir" && failing) throw new Error("injected interruption"); } return result; }) as typeof fs.mkdirSync;
+		fs.fsyncSync = ((fd) => { const file = fds.get(fd); events.push(`sync:${file}`); if (failing && created && file === (failure === "child-sync" ? shared : failure === "parent-sync" ? dir : "")) throw new Error("injected interruption"); return sync(fd); }) as typeof fs.fsyncSync;
+		fs.renameSync = ((from, to) => { events.push(`rename:${to}`); return rename(from, to); }) as typeof fs.renameSync;
+		try {
+			assert.equal((await run({ ...p, action: "gen" })).status, "error", failure);
+			assert.equal(fs.existsSync(shared), true);
+			assert.equal(fs.existsSync(p.out), false);
+			// An unresolved parent sync failure must also stop the retry.
+			if (failure === "parent-sync") assert.equal((await run({ ...p, action: "gen" })).status, "error");
+			failing = false; events.length = 0;
+			assert.equal((await run({ ...p, action: "gen" })).status, "wrote", failure);
+			const publication = events.indexOf(`rename:${p.out}.generator-pending`);
+			const childSync = events.indexOf(`sync:${shared}`), parentSync = events.indexOf(`sync:${dir}`, childSync + 1);
+			assert.ok(childSync >= 0 && parentSync > childSync && publication > parentSync, events.join("\n"));
+		} finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; fs.mkdirSync = mkdir; fs.renameSync = rename; }
+	}
+});
+
+test("concurrent creator's unsynced ancestor is synced before publishing", async (t) => {
+	const { spawn } = await import("node:child_process");
+	const { once } = await import("node:events");
+	const dir = temporaryDirectory(t), shared = path.join(dir, "new"), outputDir = path.join(shared, "output");
+	const p = { ...pathsFor(dir), out: path.join(outputDir, "out.json"), state: path.join(outputDir, "state.json") };
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+	const module = new URL("../../lib/settings-lock.ts", import.meta.url).href;
+	const script = `import fs from 'node:fs'; import {mkdirDurably} from ${JSON.stringify(module)}; const mkdir=fs.mkdirSync; fs.mkdirSync=(file,...args)=>{const result=mkdir(file,...args); if(file===process.argv[1]){console.log('created'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30000);} return result;}; mkdirDurably(process.argv[2]);`;
+	const child = spawn(process.execPath, ["--input-type=module", "-e", script, shared, outputDir], { stdio: ["ignore", "pipe", "pipe"] });
+	const exit = once(child, "exit");
+	const open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync, rename = fs.renameSync;
+	const fds = new Map<number, string>(), events: string[] = [];
+	try {
+		const [data] = await once(child.stdout, "data");
+		assert.match(String(data), /created/);
+		fs.openSync = ((file, ...args) => { const fd = open(file, ...args); fds.set(fd, String(file)); return fd; }) as typeof fs.openSync;
+		fs.closeSync = ((fd) => { fds.delete(fd); return close(fd); }) as typeof fs.closeSync;
+		fs.fsyncSync = ((fd) => { events.push(`sync:${fds.get(fd)}`); return sync(fd); }) as typeof fs.fsyncSync;
+		fs.renameSync = ((from, to) => { events.push(`rename:${to}`); return rename(from, to); }) as typeof fs.renameSync;
+		assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+		const childSync = events.indexOf(`sync:${shared}`), parentSync = events.indexOf(`sync:${dir}`, childSync + 1), publication = events.indexOf(`rename:${p.out}.generator-pending`);
+		assert.ok(childSync >= 0 && parentSync > childSync && publication > parentSync, events.join("\n"));
+	} finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; fs.renameSync = rename; child.kill(); await exit; }
 });

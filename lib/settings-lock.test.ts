@@ -5,13 +5,23 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { physicalPath, withOutputLocks } from "./settings-lock.ts";
+import { createHash } from "node:crypto";
+import { mkdirDurably, physicalPath, withOutputLocks } from "./settings-lock.ts";
 
 function fixture(t: test.TestContext): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "settings-lock-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	return dir;
 }
+
+test("mkdir intent name conflicts fail without changing the existing file", (t) => {
+	const dir = fixture(t), name = "new", child = path.join(dir, name);
+	const marker = path.join(dir, `.generator-mkdir-${createHash("sha256").update(name).digest("hex")}`);
+	fs.writeFileSync(marker, "unrelated");
+	assert.throws(() => mkdirDurably(child), /Directory creation intent conflicts with existing path/);
+	assert.equal(fs.readFileSync(marker, "utf8"), "unrelated");
+	assert.equal(fs.existsSync(child), false);
+});
 
 test("holds both settings locks and follows file links, cleaning up on error", async (t) => {
 	const dir = fixture(t), settings = path.join(dir, "settings.json"), target = path.join(dir, "target.json");

@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const STALE_MS = 10_000;
@@ -36,15 +36,50 @@ export function syncDirectory(directory: string): void {
 	try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
-/** Persist newly created directory entries, from the deepest directory to the first existing parent. */
+const mkdirIntent = "pi-permission-generator:mkdir-v1";
+
+function hasMkdirIntent(marker: string): boolean {
+	try {
+		if (fs.readlinkSync(marker) !== mkdirIntent) throw new Error(`Directory creation intent conflicts with existing path: ${marker}`);
+		return true;
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return false;
+		if (errorCode(error) === "EINVAL") throw new Error(`Directory creation intent conflicts with existing path: ${marker}`);
+		throw error;
+	}
+}
+
+/** Persist each created entry, retaining recoverable intent until its parent is synced. */
 export function mkdirDurably(directory: string): void {
-	const target = path.resolve(directory);
-	const firstCreated = fs.mkdirSync(target, { recursive: true });
-	if (firstCreated === undefined) return;
-	const last = path.dirname(firstCreated);
-	for (let current = target;; current = path.dirname(current)) {
-		syncDirectory(current);
-		if (current === last) break;
+	const target = path.resolve(directory), root = path.parse(target).root;
+	let parent = root;
+	for (const name of path.relative(root, target).split(path.sep).filter(Boolean)) {
+		const child = path.join(parent, name);
+		const marker = path.join(parent, `.generator-mkdir-${createHash("sha256").update(name).digest("hex")}`);
+		let exists: boolean;
+		try { fs.statSync(child); exists = true; }
+		catch (error) { if (errorCode(error) !== "ENOENT") throw error; exists = false; }
+		if (!exists) {
+			// The intent must be visible before mkdir, including to a competing creator.
+			for (;;) {
+				try { fs.symlinkSync(mkdirIntent, marker); break; }
+				catch (error) {
+					if (errorCode(error) !== "EEXIST") throw error;
+					if (hasMkdirIntent(marker)) break;
+				}
+			}
+			syncDirectory(parent);
+			try { fs.mkdirSync(child); }
+			catch (error) { if (errorCode(error) !== "EEXIST") throw error; }
+		} else if (!hasMkdirIntent(marker)) {
+			parent = child;
+			continue;
+		}
+		syncDirectory(child);
+		syncDirectory(parent);
+		try { fs.unlinkSync(marker); }
+		catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
+		parent = child;
 	}
 }
 
