@@ -130,17 +130,16 @@ test("settings reports stringify collisions and meaningful model scope key order
 	const edited = '{"subagents":{"numbers":[1e400,-0],"modelScope":{"agents":{" worker ":[2],"worker":[1]}}}}';
 	fs.writeFileSync(p.settings, edited);
 	const baseline = fs.readFileSync(p.subagentsState, "utf8");
-	for (const action of ["check", "gen"] as const) {
-		const result = await run({ ...p, action });
-		assert.equal(result.status, "drift");
-		assert.ok(result.lines.includes("subagents.numbers[0]  last generated=null  file=Infinity"));
-		assert.ok(result.lines.includes("subagents.numbers[1]  last generated=0  file=-0"));
-		assert.ok(result.lines.includes('subagents.modelScope.agents: key order differs  last generated=["worker"," worker "]  file=[" worker ","worker"]'));
+	const result = await run({ ...p, action: "check" });
+	assert.equal(result.status, "drift");
+	assert.ok(result.lines.includes("subagents.numbers[0]  last generated=null  file=Infinity"));
+	assert.ok(result.lines.includes("subagents.numbers[1]  last generated=0  file=-0"));
+	assert.ok(result.lines.includes('subagents.modelScope.agents: key order differs  last generated=["worker"," worker "]  file=[" worker ","worker"]'));
+	for (const force of [false, true]) {
+		assert.equal((await run({ ...p, action: "gen", force })).status, "error");
 		assert.equal(fs.readFileSync(p.settings, "utf8"), edited);
 		assert.equal(fs.readFileSync(p.subagentsState, "utf8"), baseline);
 	}
-	assert.equal((await run({ ...p, action: "gen", force: true })).status, "wrote");
-	assert.equal((await run({ ...p, action: "check" })).status, "clean");
 });
 
 test("first-adoption settings and later source drift report numeric collisions", async (t) => {
@@ -148,20 +147,15 @@ test("first-adoption settings and later source drift report numeric collisions",
 	fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"numbers":[null,0]}}}');
 	const edited = '{"subagents":{"numbers":[1e400,-0]}}';
 	fs.writeFileSync(p.settings, edited);
-	for (const action of ["check", "gen"] as const) {
-		const result = await run({ ...p, action });
-		assert.equal(result.status, "drift");
-		assert.ok(result.lines.includes("subagents.numbers[0]  generated=null  file=Infinity"));
-		assert.ok(result.lines.includes("subagents.numbers[1]  generated=0  file=-0"));
-		assert.equal(fs.readFileSync(p.settings, "utf8"), edited);
-		assert.equal(fs.existsSync(p.subagentsState), false);
-	}
-	assert.equal((await run({ ...p, action: "gen", force: true })).status, "wrote");
-	fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"numbers":[1e400,-0]}}}');
 	const result = await run({ ...p, action: "check" });
 	assert.equal(result.status, "drift");
-	assert.ok(result.lines.includes("subagents.numbers[0]  generated=Infinity  file=null"));
-	assert.ok(result.lines.includes("subagents.numbers[1]  generated=-0  file=0"));
+	assert.ok(result.lines.includes("subagents.numbers[0]  generated=null  file=Infinity"));
+	assert.ok(result.lines.includes("subagents.numbers[1]  generated=0  file=-0"));
+	assert.equal((await run({ ...p, action: "gen", force: true })).status, "error");
+	assert.equal(fs.readFileSync(p.settings, "utf8"), edited);
+	assert.equal(fs.existsSync(p.subagentsState), false);
+	fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"numbers":[1e400,-0]}}}');
+	assert.equal((await run({ ...p, action: "check" })).status, "error");
 });
 
 test("mode output retains JSON serialization equality for numeric collisions", async (t) => {
@@ -171,7 +165,7 @@ test("mode output retains JSON serialization equality for numeric collisions", a
 	const edited = fs.readFileSync(p.out, "utf8").replace("0", "-0").replace("null", "1e400");
 	fs.writeFileSync(p.out, edited);
 	assert.equal((await run({ ...p, action: "check" })).status, "clean");
-	assert.equal((await run({ ...p, action: "gen" })).status, "clean");
+	assert.equal((await run({ ...p, action: "gen" })).status, "error");
 	assert.equal(fs.readFileSync(p.out, "utf8"), edited);
 });
 
@@ -616,4 +610,53 @@ test("concurrent creator's unsynced ancestor is synced before publishing", async
 		const childSync = events.indexOf(`sync:${shared}`), parentSync = events.indexOf(`sync:${dir}`, childSync + 1), publication = events.indexOf(`rename:${p.out}.generator-pending`);
 		assert.ok(childSync >= 0 && parentSync > childSync && publication > parentSync, events.join("\n"));
 	} finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; fs.renameSync = rename; child.kill(); await exit; }
+});
+
+test("unsafe source numbers fail before any output or baseline mutation", async (t) => {
+	for (const section of [
+		'"permissionModes":{"output":{"nested":[VALUE]},"modes":{}}',
+		'"permissionModes":{"modes":{"one":{"nested":[VALUE]}}}',
+		'"permissionModes":{"modes":{}},"subagents":{"settings":{"nested":[VALUE]}}',
+		'"permissionModes":{"modes":{}},"subagents":{"config":{"nested":[VALUE]}}',
+		'"permissionModes":{"modes":{}},"subagents":{"agents":{"worker":{"nested":[VALUE]}}}',
+	]) for (const number of ["-0", "1e400", "-1e400", "1.234567890123456789", "1e-400"]) {
+		const dir = temporaryDirectory(t), p = { ...pathsFor(dir), subagentConfig: path.join(dir, "config") };
+		fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"v":1},"config":{"v":1}}}');
+		assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+		const files = [p.out, p.state, p.settings, p.subagentsState, p.subagentConfig];
+		const before = files.map((file) => fs.readFileSync(file, "utf8"));
+		fs.writeFileSync(p.src, `{${section.replace("VALUE", number)}}`);
+		for (const action of ["check", "gen"] as const) {
+			const result = await run({ ...p, action, force: true });
+			assert.equal(result.status, "error", `${section} ${number}`);
+			assert.match(result.lines.join(), /cannot be preserved/);
+			assert.deepEqual(files.map((file) => fs.readFileSync(file, "utf8")), before);
+		}
+	}
+});
+
+test("unsafe existing nested numbers preflight all active outputs without mutation", async (t) => {
+	for (const target of ["out", "state", "settings", "subagentsState", "subagentConfig"] as const) for (const number of ["-0", "1e400", "9007199254740993"]) {
+		const dir = temporaryDirectory(t), p = { ...pathsFor(dir), subagentConfig: path.join(dir, "config") };
+		fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"v":1},"config":{"v":1}}}');
+		assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+		const original = fs.readFileSync(p[target], "utf8");
+		fs.writeFileSync(p[target], original.replace(/\}\s*$/, `,"unrelated":{"deep":[${number}]}}`));
+		fs.writeFileSync(p.src, '{"permissionModes":{"output":{"changed":true},"modes":{}},"subagents":{"settings":{"v":2},"config":{"v":2}}}');
+		const files = [p.out, p.state, p.settings, p.subagentsState, p.subagentConfig];
+		const before = files.map((file) => fs.readFileSync(file, "utf8"));
+		const result = await run({ ...p, action: "gen", force: true });
+		assert.equal(result.status, "error", `${target} ${number}`);
+		assert.match(result.lines.join(), /cannot be preserved/);
+		assert.deepEqual(files.map((file) => fs.readFileSync(file, "utf8")), before);
+		assert.equal(files.some((file) => fs.existsSync(`${file}.generator-pending`)), false);
+	}
+});
+
+test("equivalent decimal spellings and ordinary finite values generate without drift", async (t) => {
+	const dir = temporaryDirectory(t), p = pathsFor(dir);
+	fs.writeFileSync(p.src, '{"permissionModes":{"output":{"numbers":[0,0.0,1.00,10e-1,1e21,0.1]},"modes":{}},"subagents":{"settings":{"numbers":[0,1.00,0.1]}}}');
+	assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+	assert.equal((await run({ ...p, action: "check" })).status, "clean");
+	assert.equal((await run({ ...p, action: "gen" })).status, "clean");
 });

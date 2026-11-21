@@ -82,3 +82,22 @@ test("publication failure removes temporary source and leaves other files alone"
 	assert.equal(fs.readFileSync(paths.settings, "utf8"), before);
 	assert.deepEqual(fs.readdirSync(path.dirname(paths.src)).sort(), ["old.jsonc", "settings.json"]);
 });
+
+test("migration rejects non-roundtrippable nested numbers before publishing", (t) => {
+	for (const source of ["old", "imported", "unrelated"]) for (const number of ["-0", "1e400", "9007199254740993"]) {
+		const paths = fixture(t);
+		if (source === "old") fs.writeFileSync(paths.oldSrc, `{"output":{"nested":[${number}]},"modes":{}}`);
+		else fs.writeFileSync(paths.settings, source === "imported" ? `{"subagents":{"nested":[${number}]}}` : `{"unrelated":{"nested":[${number}]}}`);
+		const old = fs.readFileSync(paths.oldSrc, "utf8");
+		const settings = fs.existsSync(paths.settings) ? fs.readFileSync(paths.settings, "utf8") : undefined;
+		assert.throws(() => migrate(paths), /cannot be preserved/);
+		assert.equal(fs.existsSync(paths.src), false);
+		assert.equal(fs.readFileSync(paths.oldSrc, "utf8"), old);
+		if (settings !== undefined) assert.equal(fs.readFileSync(paths.settings, "utf8"), settings);
+	}
+});
+
+test("settings comparison distinguishes signed zero recursively", () => {
+	assert.equal(settingsEqual({ x: [0] }, { x: [-0] }), false);
+	assert.equal(settingsEqual({ x: [0] }, { x: [0] }), true);
+});

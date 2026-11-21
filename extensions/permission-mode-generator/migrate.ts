@@ -2,7 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { parseJsonc } from "../../lib/jsonc.ts";
+import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
+import { assertRoundtripValues, parseRoundtripJson } from "./json-roundtrip.ts";
 import { buildSubagents, type JsonObject } from "./merge.ts";
 
 function isObject(value: unknown): value is JsonObject {
@@ -58,6 +59,7 @@ export function migrate(paths: MigrationPaths): void {
 	if (fs.existsSync(paths.src)) throw new Error(`${paths.src} already exists; refusing to overwrite it`);
 	const oldText = fs.readFileSync(paths.oldSrc, "utf8");
 	const old = parseJsonc(oldText, paths.oldSrc);
+	parseRoundtripJson(stripJsonc(oldText), paths.oldSrc);
 	if (!isObject(old)) throw new Error(`${paths.oldSrc}: top level must be an object`);
 	const literal = findFileLiteral(old, "permissionModes");
 	if (literal) throw new Error(`${literal}: legacy $file-shaped literal would change meaning; migrate manually (see MIGRATION.md)`);
@@ -65,7 +67,7 @@ export function migrate(paths: MigrationPaths): void {
 	let subagents: JsonObject | undefined;
 	let settings: unknown;
 	try {
-		settings = JSON.parse(fs.readFileSync(paths.settings, "utf8"));
+		settings = parseRoundtripJson(fs.readFileSync(paths.settings, "utf8"), paths.settings);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
@@ -83,6 +85,7 @@ export function migrate(paths: MigrationPaths): void {
 			throw new Error(`settings.subagents cannot be represented safely (${error instanceof Error ? error.message : String(error)}); migrate manually (see MIGRATION.md)`);
 		}
 	}
+	assertRoundtripValues(subagents, "subagents");
 	const text = `{\n  "permissionModes": ${oldText.trim()}\n${subagents ? `,\n  "subagents": ${JSON.stringify(subagents, null, 2)}\n` : ""}}\n`;
 	fs.mkdirSync(path.dirname(paths.src), { recursive: true });
 	const temp = path.join(path.dirname(paths.src), `.${path.basename(paths.src)}.${randomUUID()}.tmp`);

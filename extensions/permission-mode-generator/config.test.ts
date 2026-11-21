@@ -116,16 +116,20 @@ test("stringify-colliding config values are reported and protected before and af
 		const edited = '{"nested":[1e400,{"zero":-0}],"unrelated":true}';
 		fs.writeFileSync(p.subagentConfig, edited);
 		const baseline = fs.readFileSync(p.subagentsState, "utf8");
-		for (const action of ["check", "gen"] as const) {
-			const result = await run({ ...p, action });
-			assert.equal(result.status, "drift");
-			const label = adopted ? "last generated" : "generated";
-			assert.ok(result.lines.includes(`subagents.config.nested[0]  ${label}=null  file=Infinity`));
-			assert.ok(result.lines.includes(`subagents.config.nested[1].zero  ${label}=0  file=-0`));
+		const result = await run({ ...p, action: "check" });
+		assert.equal(result.status, "drift");
+		const label = adopted ? "last generated" : "generated";
+		assert.ok(result.lines.includes(`subagents.config.nested[0]  ${label}=null  file=Infinity`));
+		assert.ok(result.lines.includes(`subagents.config.nested[1].zero  ${label}=0  file=-0`));
+		for (const force of [false, true]) {
+			const generated = await run({ ...p, action: "gen", force });
+			assert.equal(generated.status, "error");
+			assert.match(generated.lines.join(), /cannot be preserved/);
 			assert.equal(fs.readFileSync(p.subagentConfig, "utf8"), edited);
 			assert.equal(fs.readFileSync(p.subagentsState, "utf8"), baseline);
 		}
-		assert.equal((await run({ ...p, action: "gen", force: true })).status, "wrote");
+		fs.writeFileSync(p.subagentConfig, JSON.stringify({ nested: [null, { zero: 0 }], unrelated: true }));
+		assert.equal((await run({ ...p, action: "gen", force: true })).status, "clean");
 		assert.deepEqual(read(p.subagentConfig), { nested: [null, { zero: 0 }], unrelated: true });
 		assert.equal((await run({ ...p, action: "check" })).status, "clean");
 	}
@@ -137,9 +141,8 @@ test("config check reports source changes that stringify like the adopted file",
 	assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
 	fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"config":{"nested":[1e400,-0]}}}');
 	const result = await run({ ...p, action: "check" });
-	assert.equal(result.status, "drift");
-	assert.ok(result.lines.includes("subagents.config.nested[0]  generated=Infinity  file=null"));
-	assert.ok(result.lines.includes("subagents.config.nested[1]  generated=-0  file=0"));
+	assert.equal(result.status, "error");
+	assert.match(result.lines.join(), /1e400.*cannot be preserved/);
 });
 
 test("settings and config drift and errors preserve each other's baseline", async (t) => {
