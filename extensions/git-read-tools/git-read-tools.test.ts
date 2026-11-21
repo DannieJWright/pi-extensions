@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspectGit, runGit } from "./git.ts";
@@ -72,6 +72,8 @@ test("worktree inspection refuses configured clean and process filters", async (
   const result = await inspectGit(kind, args, { cwd: dir });
   assert.equal(result.isError, true); assert.match(text(result), /refused.*filter drivers/);
  }
+ const nullMode = await inspectGit("diff", { mode: null }, { cwd: dir });
+ assert.equal(nullMode.isError, true); assert.match(text(nullMode), /mode must be unstaged, staged, or range/);
  const limited = await inspectGit("diff", {}, { cwd: dir, outputLimit: 1 });
  assert.equal(limited.isError, true); assert.match(text(limited), /filter configuration check exceeded/);
  assert.equal((await inspectGit("diff", { mode: "staged" }, { cwd: dir })).isError, false);
@@ -80,6 +82,32 @@ test("worktree inspection refuses configured clean and process filters", async (
  git(dir, "config", "filter.evil.process", `touch ${marker}; cat`);
  assert.equal((await inspectGit("diff", {}, { cwd: dir })).isError, true);
  await assert.rejects(readFile(marker), { code: "ENOENT" });
+}));
+
+test("dirty submodule status and diff do not execute submodule clean filters", async () => fixture(async (dir) => {
+ const source = await mkdtemp(join(tmpdir(), "git-submodule-source-"));
+ try {
+  git(source, "init", "-q"); await writeFile(join(source, "file"), "first\n"); git(source, "add", "."); git(source, "commit", "-qm", "first");
+  git(dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "child"); git(dir, "commit", "-qm", "submodule");
+  const child = join(dir, "child"), marker = join(source, "filter-ran");
+  await writeFile(join(child, ".gitattributes"), "* filter=evil\n"); await writeFile(join(child, "file"), "other\n");
+  git(child, "config", "filter.evil.clean", `touch ${marker}; cat`);
+  for (const kind of ["status", "diff"] as const) {
+   await rm(marker, { force: true }); git(dir, kind); assert.ok(await readFile(marker), `raw git ${kind} should execute the filter`); await rm(marker);
+   const result = await inspectGit(kind, {}, { cwd: dir });
+   assert.equal(result.isError, true); assert.match(text(result), /refused: index contains submodules/);
+   await assert.rejects(readFile(marker), { code: "ENOENT" });
+  }
+  await mkdir(join(dir, "nested"));
+  for (const kind of ["status", "diff"] as const) {
+   const nested = await inspectGit(kind, {}, { cwd: join(dir, "nested") });
+   assert.equal(nested.isError, true); assert.match(text(nested), /refused: index contains submodules/);
+  }
+  assert.equal((await inspectGit("diff", { mode: "staged" }, { cwd: dir })).isError, false);
+  const limited = await inspectGit("status", {}, { cwd: dir, outputLimit: 10 });
+  assert.equal(limited.isError, true); assert.match(text(limited), /submodule check exceeded output limit/);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+ } finally { await rm(source, { recursive: true, force: true }); }
 }));
 
 test("missing promisor objects do not trigger lazy fetch", async () => fixture(async (dir) => {
@@ -114,7 +142,7 @@ test("ambiguous ref warnings do not corrupt the resolved hash", async () => fixt
 test("output cap, timeout, cancellation and spawn failure", async () => fixture(async (dir) => {
  await writeFile(join(dir, "-dash"), "x".repeat(20000));
  const large = await unchanged(dir, "diff"); assert.equal(large.isError, false);
- const capped = await inspectGit("diff", {}, { cwd: dir, outputLimit: 100 }); assert.equal(capped.details.truncated, true); assert.match(text(capped), /truncated/);
+ const capped = await inspectGit("diff", {}, { cwd: dir, outputLimit: 500 }); assert.equal(capped.details.truncated, true); assert.match(text(capped), /truncated/);
  const script = join(dir, "slow"); await writeFile(script, "#!/bin/sh\n(sleep 1; touch child-survived) &\nexit 0\n", { mode: 0o755 });
  let started = Date.now(); const timeout = await runGit([], { cwd: dir, executable: script, timeoutMs: 100 }); assert.equal(timeout.timedOut, true); assert.ok(Date.now() - started < 2000);
  const controller = new AbortController(); started = Date.now(); const pending = runGit([], { cwd: dir, executable: script, signal: controller.signal }); setTimeout(() => controller.abort(), 100); assert.equal((await pending).cancelled, true); assert.ok(Date.now() - started < 2000);

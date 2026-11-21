@@ -61,7 +61,7 @@ function validate(kind: Kind, input: Input): { paths: string[]; refs: string[]; 
  };
  let args: string[] = [];
  if (kind === "diff") {
-  const mode = input.mode ?? "unstaged";
+  const mode = input.mode === undefined ? "unstaged" : input.mode;
   if (!["unstaged", "staged", "range"].includes(mode as string)) throw new Error("mode must be unstaged, staged, or range");
   if (mode === "range") { ref(input.from, "from"); ref(input.to, "to"); }
   else if (input.from !== undefined || input.to !== undefined) throw new Error("from and to are only valid for range diffs");
@@ -88,6 +88,17 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
     if (filters.code === 0 && !filters.cancelled && !filters.timedOut && !filters.error) throw new Error("Working-tree inspection refused: repository config contains filter drivers.");
     return report(filters, "Could not check repository filter configuration");
    }
+   // Git may inspect a submodule's working tree using that repository's filters.
+   // Check the whole superproject index even when called from a subdirectory.
+   const root = await runGit(["rev-parse", "--show-cdup"], options);
+   if (root.truncated) throw new Error("Working-tree inspection refused: repository root check exceeded output limit.");
+   if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root");
+   const cdup = root.stdout.trim();
+   if (cdup && !/^(?:\.\.\/)+$/.test(cdup)) throw new Error("Could not locate repository root: unexpected Git output");
+   const index = await runGit(["ls-files", "--stage", "--full-name", "--", ...(cdup ? [cdup] : [])], options);
+   if (index.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
+   if (index.code !== 0 || index.cancelled || index.timedOut || index.error) return report(index, "Could not check repository submodules");
+   if (/^160000 [0-9a-f]+ [0-3]\t/m.test(index.stdout)) throw new Error("Working-tree inspection refused: index contains submodules, whose filters cannot be safely checked.");
   }
   const hashes: string[] = [];
   for (const ref of refs) {
