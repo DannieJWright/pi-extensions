@@ -117,22 +117,22 @@ function validatePaths(paths: Paths): void {
 
 interface OutputSpec {
 	name: string; out: string; state: string; desired: unknown;
-	read(): { current: unknown; baseline: unknown };
+	read(): { current: unknown; baseline: unknown; modified?: boolean; driftLines?: string[] };
 	write(assertOwned: () => void): void;
 	adopt(assertOwned: () => void): void;
 	equal(a: unknown, b: unknown): boolean;
 	needsAdoption?: boolean;
 }
 function processOutput(spec: OutputSpec, action: "gen" | "check", force: boolean, assertOwned: () => void): RunResult {
-	const { current, baseline } = spec.read();
+	const { current, baseline, modified: outputModified, driftLines } = spec.read();
 	const pending = `${physicalPath(spec.out)}.generator-pending`;
 	const interrupted = fs.existsSync(pending);
 	const matching = spec.equal(current, spec.desired);
-	const modified = baseline === MISSING ? current !== MISSING && !matching : !spec.equal(current, baseline);
+	const modified = outputModified ?? (baseline === MISSING ? current !== MISSING && !matching : !spec.equal(current, baseline));
 	if ((interrupted || modified) && !(action === "gen" && force)) {
 		return { status: "drift", lines: [
 			`${spec.name}: ${interrupted ? `unfinished output/baseline update (${pending}); inspect the output and use --force to recover` : "output has unadopted changes"}`,
-			...compareJson(baseline === MISSING ? spec.desired : baseline, current, baseline === MISSING ? "generated" : "last generated", "file", spec.name),
+			...(driftLines ?? compareJson(baseline === MISSING ? spec.desired : baseline, current, baseline === MISSING ? "generated" : "last generated", "file", spec.name)),
 		] };
 	}
 	if (action === "check") return matching && !interrupted
@@ -182,16 +182,22 @@ function configOutput(source: JsonObject, filePath: string, state: string): Outp
 	for (const key of Object.keys(previous)) if (!Object.hasOwn(desired, key)) delete candidate[key];
 	for (const [key, value] of Object.entries(desired)) candidate[key] = value;
 	validatePermissions(candidate);
-	const current: JsonObject = {}, baseline: JsonObject = { ...previous };
+	const current: JsonObject = {}, driftLines: string[] = [];
 	for (const key of new Set([...Object.keys(previous), ...Object.keys(desired)])) {
-		if (Object.hasOwn(existing, key)) current[key] = existing[key];
-		if (!Object.hasOwn(previous, key) && Object.hasOwn(existing, key) && !settingsEqual(existing[key], desired[key], "config")) baseline[key] = desired[key];
-		else if (!Object.hasOwn(previous, key) && Object.hasOwn(existing, key)) baseline[key] = existing[key];
+		const exists = Object.hasOwn(existing, key);
+		if (exists) current[key] = existing[key];
+		if (Object.hasOwn(previous, key)) {
+			if (!exists || !settingsEqual(previous[key], existing[key], "config")) {
+				driftLines.push(...compareJson({ [key]: previous[key] }, exists ? { [key]: existing[key] } : {}, "last generated", "file", "subagents.config"));
+			}
+		} else if (exists && !settingsEqual(desired[key], existing[key], "config")) {
+			driftLines.push(...compareJson({ [key]: desired[key] }, { [key]: existing[key] }, "generated", "file", "subagents.config"));
+		}
 	}
 	return {
 		name: "subagents.config", out: filePath, state, desired, equal: (a, b) => settingsEqual(a, b, "config"),
 		needsAdoption: !isObject(base) || !Object.hasOwn(base, "config") || !settingsEqual(previous, desired, "config"),
-		read: () => ({ current, baseline }),
+		read: () => ({ current, baseline: previous, modified: driftLines.length > 0, driftLines }),
 		write: (owned) => writeJson(filePath, candidate, owned),
 		adopt: (owned) => {
 			const latest = readJson(state);

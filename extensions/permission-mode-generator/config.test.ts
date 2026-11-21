@@ -73,12 +73,37 @@ test("first generation refuses differing owned keys but never adopts unrelated k
 	fs.mkdirSync(path.dirname(p.subagentConfig));
 	fs.writeFileSync(p.subagentConfig, JSON.stringify({ owned: 9, unrelated: { a: 1 } }));
 	source({ config: { owned: 1 } });
-	assert.equal((await run({ ...p, action: "gen" })).status, "drift");
+	for (const action of ["check", "gen"] as const) {
+		const result = await run({ ...p, action });
+		assert.equal(result.status, "drift");
+		assert.ok(result.lines.includes("subagents.config.owned  generated=1  file=9"));
+		assert.equal(result.lines.some((line) => line.includes("last generated")), false);
+	}
 	assert.deepEqual(read(p.subagentConfig), { owned: 9, unrelated: { a: 1 } });
 	assert.equal(Object.hasOwn(read(p.subagentsState), "config"), false);
 	assert.equal((await run({ ...p, action: "gen", force: true })).status, "wrote");
 	assert.deepEqual(read(p.subagentsState).config, { owned: 1 });
 	assert.deepEqual(read(p.subagentConfig), { owned: 1, unrelated: { a: 1 } });
+});
+
+test("config drift reports adopted and new keys with their correct provenance", async (t) => {
+	const { p, source, read } = fixture(t);
+	source({ config: { adopted: 1, removed: 2 } });
+	assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+	source({ config: { adopted: 3, newKey: 4, matching: { a: 1, b: 2 } } });
+	fs.writeFileSync(p.subagentConfig, JSON.stringify({ adopted: 9, newKey: 8, matching: { b: 2, a: 1 }, unrelated: true }));
+	for (const action of ["check", "gen"] as const) {
+		const result = await run({ ...p, action });
+		assert.equal(result.status, "drift");
+		assert.ok(result.lines.includes("subagents.config.adopted  last generated=1  file=9"));
+		assert.ok(result.lines.includes("subagents.config.removed  last generated=2  file=(missing)"));
+		assert.ok(result.lines.includes("subagents.config.newKey  generated=4  file=8"));
+		assert.equal(result.lines.some((line) => line.includes("matching") || line.includes("unrelated")), false);
+	}
+	assert.deepEqual(read(p.subagentsState).config, { adopted: 1, removed: 2 });
+	assert.equal((await run({ ...p, action: "gen", force: true })).status, "wrote");
+	assert.deepEqual(read(p.subagentsState).config, { adopted: 3, newKey: 4, matching: { a: 1, b: 2 } });
+	assert.equal((await run({ ...p, action: "check" })).status, "clean");
 });
 
 test("settings and config drift and errors preserve each other's baseline", async (t) => {
