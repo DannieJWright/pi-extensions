@@ -128,8 +128,27 @@ test("unknown extends is an error", () => {
 test("extends cycle is an error", () => {
 	assert.throws(
 		() => build({ fragments: { a: { extends: ["b"] }, b: { extends: ["a"] } }, modes: { m: { extends: ["a"] } } }),
-		/extends cycle: m -> a -> b -> a/,
+		/extends cycle: permissionModes\.modes\.m -> permissionModes\.fragments\.a -> permissionModes\.fragments\.b -> permissionModes\.fragments\.a/,
 	);
+	assert.throws(
+		() => buildSubagents({ agents: { reviewer: { extends: ["worker"] }, worker: { extends: ["reviewer"] } } }),
+		/extends cycle: subagents\.agents\.reviewer -> subagents\.agents\.worker -> subagents\.agents\.reviewer/,
+	);
+	assert.throws(
+		() => buildSubagents({ fragments: { reviewer: { extends: ["reviewer"] } }, agents: { reviewer: { extends: ["reviewer"] } } }),
+		/extends cycle: subagents\.agents\.reviewer -> subagents\.fragments\.reviewer -> subagents\.fragments\.reviewer/,
+	);
+});
+
+test("entries can extend same-named fragments", () => {
+	assert.deepEqual(buildSubagents({
+		fragments: { reviewer: { tools: ["read"] } },
+		agents: { reviewer: { extends: ["reviewer"], enabled: true } },
+	}), { agentOverrides: { reviewer: { tools: ["read"], enabled: true } } });
+	assert.deepEqual(mode(buildConfig({
+		fragments: { plan: { label: "Plan" } },
+		modes: { plan: { extends: ["plan"], enabled: true } },
+	}), "plan"), { label: "Plan", enabled: true });
 });
 
 test("output block is copied as-is", () => {
@@ -259,6 +278,24 @@ test("sibling resolved fragments replace arrays instead of appending", () => {
 	assert.deepEqual(mode(buildConfig({ fragments, modes: { m: { extends: ["a", "b"] } } }), "m"), { tools: ["b"] });
 	assert.deepEqual(buildSubagents({ fragments, agents: { worker: { extends: ["a", "b"] } } }),
 		{ agentOverrides: { worker: { tools: ["b"] } } });
+});
+
+test("unsafe append names are rejected in inherited fragments before repeated merges", () => {
+	for (const base of ["__proto__", "constructor", "prototype"]) {
+		for (const suffix of ["++", "+++"]) {
+			const key = base + suffix;
+			const source = JSON.parse(`{"fragments":{"base":{"nested":{"${key}":{"polluted":true}}},"derived":{"extends":["base"]}},"modes":{"m":{"extends":["derived"]}},"agents":{"worker":{"extends":["derived"]}}}`);
+			assert.throws(() => buildConfig(source), (error: Error) => {
+				assert.equal(error.message, `permissionModes.fragments.base.nested.${key}: unsafe property name; rename this key`);
+				return true;
+			});
+			assert.throws(() => buildSubagents(source), (error: Error) => {
+				assert.equal(error.message, `subagents.fragments.base.nested.${key}: unsafe property name; rename this key`);
+				return true;
+			});
+			assert.equal(({} as Record<string, unknown>).polluted, undefined);
+		}
+	}
 });
 
 test("unsafe JSON property names are rejected without prototype pollution or data loss", () => {

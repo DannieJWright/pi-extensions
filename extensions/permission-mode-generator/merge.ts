@@ -17,7 +17,7 @@ function validateKeys(value: unknown, path: string): void {
 		value.forEach((item, index) => validateKeys(item, `${path}[${index}]`));
 	} else if (isObject(value)) {
 		for (const [key, child] of Object.entries(value)) {
-			const base = key.endsWith("+") ? key.slice(0, -1) : key;
+			const base = key.replace(/\++$/, "");
 			if (UNSAFE_KEYS.has(base)) throw new MergeError(`${path}.${key}: unsafe property name; rename this key`);
 			validateKeys(child, `${path}.${key}`);
 		}
@@ -71,7 +71,6 @@ function mergeInto(target: JsonObject, source: JsonObject): JsonObject {
 
 /** Resolve an entry only against the fragments and entries of its own section. */
 function resolveEntry(
-	name: string,
 	body: JsonObject,
 	entryPath: string,
 	section: string,
@@ -80,11 +79,11 @@ function resolveEntry(
 	entries: JsonObject,
 	stack: Set<string>,
 ): JsonObject {
-	if (stack.has(name)) {
-		throw new MergeError(`${entryPath}: extends cycle: ${[...stack].join(" -> ")} -> ${name}`);
+	if (stack.has(entryPath)) {
+		throw new MergeError(`${entryPath}: extends cycle: ${[...stack].join(" -> ")} -> ${entryPath}`);
 	}
 	const next = new Set(stack);
-	next.add(name);
+	next.add(entryPath);
 
 	let result: JsonObject = {};
 	const list = Object.hasOwn(body, "extends") ? body.extends : undefined;
@@ -101,7 +100,7 @@ function resolveEntry(
 				throw new MergeError(`${entryPath}: unknown extends "${ref}" (known: ${known})`);
 			}
 			const refPath = `${section}.${inFragments ? "fragments" : entryKind}.${ref}`;
-			result = mergeInto(result, resolveEntry(ref, entry, refPath, section, entryKind, fragments, entries, next));
+			result = mergeInto(result, resolveEntry(entry, refPath, section, entryKind, fragments, entries, next));
 		}
 	}
 
@@ -115,7 +114,7 @@ function resolveEntries(source: JsonObject, section: string, entryKind: string):
 	for (const [name, body] of Object.entries(entries)) {
 		const entryPath = `${section}.${entryKind}.${name}`;
 		if (!isObject(body)) throw new MergeError(`${entryPath}: must be an object`);
-		resolved[name] = resolveEntry(name, body, entryPath, section, entryKind, fragments, entries, new Set<string>());
+		resolved[name] = resolveEntry(body, entryPath, section, entryKind, fragments, entries, new Set<string>());
 	}
 	return resolved;
 }
