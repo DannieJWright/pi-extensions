@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
-import { assertRoundtripValues, parseRoundtripJson } from "./json-roundtrip.ts";
+import { assertRoundtripValues, JsonRoundtripError, parseRoundtripJson } from "./json-roundtrip.ts";
 import { mkdirDurably, physicalPath, syncDirectory, withOutputLocks } from "../../lib/settings-lock.ts";
 import { buildConfig, buildSubagents, buildSubagentConfig, type JsonObject } from "./merge.ts";
 import { migrate, settingsEqual } from "./migrate.ts";
@@ -239,7 +239,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
 			}
 			const sourceText = fs.readFileSync(src, "utf8");
 			const parsed = parseJsonc(sourceText, src);
-			parseRoundtripJson(stripJsonc(sourceText), src);
+			parseRoundtripJson(stripJsonc(sourceText), src, "stripped JSONC");
 			if (!isObject(parsed)) throw new Error(`${src}: top level must be an object`);
 			for (const key of Object.keys(parsed)) if (key !== "permissionModes" && key !== "subagents") throw new Error(`${src}: unknown top-level key ${key}; migrate the old source with just perm migrate (see MIGRATION.md)`);
 			if (!isObject(parsed.permissionModes)) throw new Error("permissionModes: must be an object");
@@ -290,14 +290,19 @@ export async function run(options: RunOptions): Promise<RunResult> {
 		const preflight = ({ specs, configSource }: { specs: OutputSpec[]; configSource?: JsonObject }): void => {
 			const files = new Set([...specs.flatMap((spec) => [spec.out, spec.state]), ...(configSource ? [subagentConfig] : [])]);
 			for (const file of files) {
-				let text: string;
-				try { text = fs.readFileSync(file, "utf8"); }
-				catch (error) { if (code(error) === "ENOENT") continue; throw error; }
-				let value: unknown;
-				try { value = parseRoundtripJson(text, file); }
-				catch (error) { if (error instanceof SyntaxError) continue; throw error; }
-				assertRoundtripValues(value, file);
-				JSON.stringify(value);
+				try {
+					let text: string;
+					try { text = fs.readFileSync(file, "utf8"); }
+					catch (error) { if (code(error) === "ENOENT") continue; throw error; }
+					let value: unknown;
+					try { value = parseRoundtripJson(text, file); }
+					catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+					assertRoundtripValues(value, file);
+					JSON.stringify(value);
+				} catch (error) {
+					if (error instanceof JsonRoundtripError) throw error;
+					throw new Error(`${file}: ${message(error)}`, { cause: error });
+				}
 			}
 		};
 		if (action === "check") return process(loadSpecs(), () => {});

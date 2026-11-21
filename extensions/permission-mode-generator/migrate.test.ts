@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseJsonc } from "../../lib/jsonc.ts";
+import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
 import { buildSubagents } from "./merge.ts";
 import { migrate, settingsEqual } from "./migrate.ts";
 
@@ -95,6 +95,22 @@ test("migration rejects non-roundtrippable nested numbers before publishing", (t
 		assert.equal(fs.readFileSync(paths.oldSrc, "utf8"), old);
 		if (settings !== undefined) assert.equal(fs.readFileSync(paths.settings, "utf8"), settings);
 	}
+});
+
+test("migration labels JSONC number offsets after comments and trailing commas are stripped", (t) => {
+	const paths = fixture(t);
+	const text = '{ // preceding comment\n"output":{"ignored":[1,], /* block comment */ "x":9007199254740993},"modes":{}}';
+	fs.writeFileSync(paths.oldSrc, text);
+	fs.writeFileSync(paths.settings, '{"unrelated":true}');
+	const offset = stripJsonc(text).indexOf("9007199254740993");
+	assert.notEqual(offset, text.indexOf("9007199254740993"));
+	assert.throws(() => migrate(paths), (error: Error) => {
+		assert.ok(error.message.includes(`${paths.oldSrc}: number 9007199254740993 at offset ${offset} in stripped JSONC`));
+		return true;
+	});
+	assert.equal(fs.readFileSync(paths.oldSrc, "utf8"), text);
+	assert.equal(fs.readFileSync(paths.settings, "utf8"), '{"unrelated":true}');
+	assert.deepEqual(fs.readdirSync(path.dirname(paths.src)).sort(), ["old.jsonc", "settings.json"]);
 });
 
 test("settings comparison distinguishes signed zero recursively", () => {

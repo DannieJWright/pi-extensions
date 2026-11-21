@@ -59,7 +59,7 @@ export function migrate(paths: MigrationPaths): void {
 	if (fs.existsSync(paths.src)) throw new Error(`${paths.src} already exists; refusing to overwrite it`);
 	const oldText = fs.readFileSync(paths.oldSrc, "utf8");
 	const old = parseJsonc(oldText, paths.oldSrc);
-	parseRoundtripJson(stripJsonc(oldText), paths.oldSrc);
+	parseRoundtripJson(stripJsonc(oldText), paths.oldSrc, "stripped JSONC");
 	if (!isObject(old)) throw new Error(`${paths.oldSrc}: top level must be an object`);
 	const literal = findFileLiteral(old, "permissionModes");
 	if (literal) throw new Error(`${literal}: legacy $file-shaped literal would change meaning; migrate manually (see MIGRATION.md)`);

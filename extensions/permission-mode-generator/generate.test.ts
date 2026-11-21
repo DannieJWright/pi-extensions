@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { stripJsonc } from "../../lib/jsonc.ts";
 import { resolveFiles, run } from "./generate.ts";
 import { buildConfig, buildSubagents, type JsonObject } from "./merge.ts";
 
@@ -676,6 +677,25 @@ test("overwritten unsafe source numbers in JSONC fail before output mutation", a
 	}
 });
 
+test("source JSONC number diagnostics label offsets after comments and trailing commas are stripped", async (t) => {
+	const dir = temporaryDirectory(t), p = { ...pathsFor(dir), subagentConfig: path.join(dir, "config") };
+	fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"v":1},"config":{"v":1}}}');
+	assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+	const files = [p.out, p.state, p.settings, p.subagentsState, p.subagentConfig];
+	const before = files.map((file) => fs.readFileSync(file, "utf8"));
+	const text = '{ // preceding comment\n"permissionModes":{"output":{"ignored":[1,], /* block comment */ "x":9007199254740993},"modes":{}}}';
+	fs.writeFileSync(p.src, text);
+	const offset = stripJsonc(text).indexOf("9007199254740993");
+	assert.notEqual(offset, text.indexOf("9007199254740993"));
+	for (const action of ["check", "gen"] as const) {
+		const result = await run({ ...p, action, force: true });
+		assert.equal(result.status, "error");
+		assert.ok(result.lines.some((line) => line.includes(`${p.src}: number 9007199254740993 at offset ${offset} in stripped JSONC`)));
+		assert.deepEqual(files.map((file) => fs.readFileSync(file, "utf8")), before);
+		assert.equal(files.some((file) => fs.existsSync(`${file}.generator-pending`)), false);
+	}
+});
+
 test("overwritten unsafe numbers in active files preflight without mutation", async (t) => {
 	for (const target of ["out", "state", "settings", "subagentsState", "subagentConfig"] as const) {
 		const dir = temporaryDirectory(t), p = { ...pathsFor(dir), subagentConfig: path.join(dir, "config") };
@@ -715,6 +735,7 @@ test("deep existing data and unexpected preflight failures leave all outputs unc
 		try {
 			const result = await run({ ...p, action: "gen", force: true });
 			assert.equal(result.status, "error", failure);
+			assert.ok(result.lines.some((line) => line.startsWith(`${p.settings}: `)), failure);
 			assert.match(result.lines.join(), failure.startsWith("read-") ? /injected preflight failure/ : /Maximum call stack size exceeded/);
 		} finally { fs.readFileSync = read; }
 		assert.deepEqual(files.map((file) => fs.readFileSync(file, "utf8")), before);

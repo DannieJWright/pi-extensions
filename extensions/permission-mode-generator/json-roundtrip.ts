@@ -11,8 +11,8 @@ function decimalParts(text: string): string {
 	return `${match[1]}${digits}e${exponent}`;
 }
 
-/** Parse JSON/JSONC after comment removal, rejecting numbers that cannot round-trip. */
-export function parseRoundtripJson(text: string, file: string): unknown {
+/** Parse JSON, or JSONC after stripping, rejecting numbers that cannot round-trip. */
+export function parseRoundtripJson(text: string, file: string, offsetSpace: "JSON" | "stripped JSONC" = "JSON"): unknown {
 	// Retain the recursive parse so excessive nesting fails during preflight.
 	const parsed: unknown = JSON.parse(text, (_key, value) => value);
 	const number = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
@@ -26,7 +26,7 @@ export function parseRoundtripJson(text: string, file: string): unknown {
 			const raw = number.exec(text)![0];
 			const value = Number(raw);
 			if (Object.is(value, -0) || !Number.isFinite(value) || decimalParts(raw) !== decimalParts(JSON.stringify(value))) {
-				throw new JsonRoundtripError(`${file}: number ${raw} at offset ${i} cannot be preserved by JSON serialization; edit it before generating`);
+				throw new JsonRoundtripError(`${file}: number ${raw} at offset ${i}${offsetSpace === "stripped JSONC" ? " in stripped JSONC" : ""} cannot be preserved by JSON serialization; edit it before generating`);
 			}
 			i = number.lastIndex;
 		} else i++;
