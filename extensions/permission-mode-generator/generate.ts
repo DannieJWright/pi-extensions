@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { parseJsonc } from "../../lib/jsonc.ts";
-import { physicalPath, withOutputLocks } from "../../lib/settings-lock.ts";
+import { mkdirDurably, physicalPath, syncDirectory, withOutputLocks } from "../../lib/settings-lock.ts";
 import { buildConfig, buildSubagents, type JsonObject } from "./merge.ts";
 import { migrate, settingsEqual } from "./migrate.ts";
 
@@ -54,17 +54,9 @@ function readJson(file: string): unknown | typeof MISSING {
 	try { return JSON.parse(text); }
 	catch (error) { throw new Error(`${file}: not valid JSON (${message(error)})`); }
 }
-function syncDirectoryTree(directory: string): void {
-	// Lock acquisition may have created ancestors; persist each directory entry too.
-	for (let current = directory;; current = path.dirname(current)) {
-		const fd = fs.openSync(current, "r");
-		try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-		if (path.dirname(current) === current) break;
-	}
-}
 function atomicWrite(file: string, text: string, assertOwned: () => void): void {
 	const target = physicalPath(file);
-	fs.mkdirSync(path.dirname(target), { recursive: true });
+	mkdirDurably(path.dirname(target));
 	let mode = 0o600;
 	try { mode = fs.statSync(target).mode & 0o777; } catch (error) { if (code(error) !== "ENOENT") throw error; }
 	const temp = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`);
@@ -75,7 +67,7 @@ function atomicWrite(file: string, text: string, assertOwned: () => void): void 
 		try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 		assertOwned();
 		fs.renameSync(temp, target);
-		syncDirectoryTree(path.dirname(target));
+		syncDirectory(path.dirname(target));
 	} finally { try { fs.unlinkSync(temp); } catch (error) { if (code(error) !== "ENOENT") throw error; } }
 }
 function writeJson(file: string, value: unknown, assertOwned: () => void): void {
@@ -148,7 +140,7 @@ function processOutput(spec: OutputSpec, action: "gen" | "check", force: boolean
 		spec.adopt(assertOwned);
 		assertOwned();
 		fs.unlinkSync(pending);
-		syncDirectoryTree(path.dirname(pending));
+		syncDirectory(path.dirname(pending));
 		return { status: "wrote", lines: [`${spec.name}: wrote ${spec.out}`] };
 	}
 	if (baseline === MISSING) spec.adopt(assertOwned);

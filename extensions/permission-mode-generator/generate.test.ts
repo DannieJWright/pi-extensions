@@ -416,3 +416,66 @@ test("marker file sync failure never publishes the output", async (t) => {
 	assert.equal(fs.existsSync(p.state), false);
 	assert.equal(fs.existsSync(`${p.out}.generator-pending`), false);
 });
+
+test("generation does not open an existing unreadable searchable ancestor", async (t) => {
+	const dir = temporaryDirectory(t), ancestor = path.join(dir, "search-only"), outputDir = path.join(ancestor, "writable");
+	fs.mkdirSync(outputDir, { recursive: true });
+	const p = { ...pathsFor(dir), out: path.join(outputDir, "out.json"), state: path.join(outputDir, "state.json") };
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+	fs.chmodSync(ancestor, 0o111);
+	const open = fs.openSync; let attempted = false;
+	try {
+		fs.openSync = ((file, ...args) => {
+			if (file === ancestor) { attempted = true; throw Object.assign(new Error("injected EACCES opening searchable ancestor"), { code: "EACCES" }); }
+			return open(file, ...args);
+		}) as typeof fs.openSync;
+		const result = await run({ ...p, action: "gen" });
+		assert.equal(result.status, "wrote", result.lines.join("\n"));
+		assert.equal(attempted, false);
+		assert.equal(fs.existsSync(`${p.out}.generator-pending`), false);
+		assert.equal((await run({ ...p, action: "check" })).status, "clean");
+	} finally { fs.openSync = open; fs.chmodSync(ancestor, 0o700); }
+});
+
+test("new output and baseline ancestors are synced bottom-up before marker publication", async (t) => {
+	const dir = temporaryDirectory(t), shared = path.join(dir, "new"), outputDir = path.join(shared, "out"), stateParent = path.join(shared, "state"), stateDir = path.join(stateParent, "deep");
+	const p = { ...pathsFor(dir), out: path.join(outputDir, "out.json"), state: path.join(stateDir, "state.json") };
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+	const open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync, rename = fs.renameSync;
+	const fds = new Map<number, string>(), events: string[] = [];
+	fs.openSync = ((file, ...args) => { const fd = open(file, ...args); fds.set(fd, String(file)); return fd; }) as typeof fs.openSync;
+	fs.closeSync = ((fd) => { fds.delete(fd); return close(fd); }) as typeof fs.closeSync;
+	fs.fsyncSync = ((fd) => { events.push(`sync:${fds.get(fd)}`); return sync(fd); }) as typeof fs.fsyncSync;
+	fs.renameSync = ((from, to) => { events.push(`rename:${to}`); return rename(from, to); }) as typeof fs.renameSync;
+	try { assert.equal((await run({ ...p, action: "gen" })).status, "wrote"); }
+	finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; fs.renameSync = rename; }
+	const marker = events.indexOf(`rename:${p.out}.generator-pending`);
+	assert.ok(marker >= 0, events.join("\n"));
+	const beforeMarker = events.slice(0, marker);
+	const expected = [outputDir, shared, dir, stateDir, stateParent, shared].map((item) => `sync:${item}`);
+	let position = -1;
+	for (const event of expected) {
+		position = beforeMarker.indexOf(event, position + 1);
+		assert.ok(position >= 0, events.join("\n"));
+	}
+	assert.equal(beforeMarker.includes(`sync:${path.dirname(dir)}`), false, events.join("\n"));
+});
+
+test("new ancestor sync failure stops before publishing a marker", async (t) => {
+	const dir = temporaryDirectory(t), outputDir = path.join(dir, "new", "output");
+	const p = { ...pathsFor(dir), out: path.join(outputDir, "out.json"), state: path.join(outputDir, "state.json") };
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+	const open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync;
+	const fds = new Map<number, string>();
+	fs.openSync = ((file, ...args) => { const fd = open(file, ...args); fds.set(fd, String(file)); return fd; }) as typeof fs.openSync;
+	fs.closeSync = ((fd) => { fds.delete(fd); return close(fd); }) as typeof fs.closeSync;
+	fs.fsyncSync = ((fd) => { if (fds.get(fd) === dir) throw new Error("injected ancestor sync failure"); return sync(fd); }) as typeof fs.fsyncSync;
+	try {
+		const result = await run({ ...p, action: "gen" });
+		assert.equal(result.status, "error");
+		assert.match(result.lines.join(), /injected ancestor sync failure/);
+	} finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; }
+	assert.equal(fs.existsSync(`${p.out}.generator-pending`), false);
+	assert.equal(fs.existsSync(p.out), false);
+	assert.equal(fs.existsSync(p.state), false);
+});

@@ -31,6 +31,23 @@ function dead(owner: Owner): boolean {
 }
 interface HeldLock { assert(): void; release(): void }
 
+export function syncDirectory(directory: string): void {
+	const fd = fs.openSync(directory, "r");
+	try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+/** Persist newly created directory entries, from the deepest directory to the first existing parent. */
+export function mkdirDurably(directory: string): void {
+	const target = path.resolve(directory);
+	const firstCreated = fs.mkdirSync(target, { recursive: true });
+	if (firstCreated === undefined) return;
+	const last = path.dirname(firstCreated);
+	for (let current = target;; current = path.dirname(current)) {
+		syncDirectory(current);
+		if (current === last) break;
+	}
+}
+
 async function lease(lock: string): Promise<HeldLock> {
 	const owner: Owner = { token: randomUUID(), pid: process.pid, hostname: os.hostname(), processStart: processStart(process.pid) };
 	const deadline = Date.now() + 10_000;
@@ -139,15 +156,15 @@ export async function withOutputLocks<T>(files: string[], settingsPath: string |
 	const locks: HeldLock[] = [];
 	try {
 		for (const file of [...new Set(files.map(physicalPath))].sort()) {
-			fs.mkdirSync(path.dirname(file), { recursive: true });
+			mkdirDurably(path.dirname(file));
 			locks.push(await lease(`${file}.generator-lock`));
 		}
 		if (settingsPath) {
 			const requested = path.resolve(settingsPath);
-			fs.mkdirSync(path.dirname(requested), { recursive: true });
+			mkdirDurably(path.dirname(requested));
 			locks.push(await properLock(`${requested}.lock`));
 			const target = physicalPath(requested);
-			fs.mkdirSync(path.dirname(target), { recursive: true });
+			mkdirDurably(path.dirname(target));
 			locks.push(await lease(`${target}.write-lock`));
 		}
 		const assertOwned = () => { for (const lock of locks) lock.assert(); };
