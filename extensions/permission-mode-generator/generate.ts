@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
-import { assertRoundtripValues, JsonRoundtripError, parseRoundtripJson } from "./json-roundtrip.ts";
+import { assertRoundtripValues, parseRoundtripJson } from "./json-roundtrip.ts";
 import { mkdirDurably, physicalPath, syncDirectory, withOutputLocks } from "../../lib/settings-lock.ts";
 import { buildConfig, buildSubagents, buildSubagentConfig, type JsonObject } from "./merge.ts";
 import { migrate, settingsEqual } from "./migrate.ts";
@@ -55,7 +55,7 @@ function readJson(file: string, safe = false): unknown | typeof MISSING {
 	try { text = fs.readFileSync(file, "utf8"); }
 	catch (error) { if (code(error) === "ENOENT") return MISSING; throw error; }
 	try { return safe ? parseRoundtripJson(text, file) : JSON.parse(text); }
-	catch (error) { if (error instanceof JsonRoundtripError) throw error; throw new Error(`${file}: not valid JSON (${message(error)})`); }
+	catch (error) { if (!(error instanceof SyntaxError)) throw error; throw new Error(`${file}: not valid JSON (${message(error)})`); }
 }
 function atomicWrite(file: string, text: string, assertOwned: () => void): void {
 	const target = physicalPath(file);
@@ -286,12 +286,18 @@ export async function run(options: RunOptions): Promise<RunResult> {
 			return { status, lines };
 		};
 		// Preflight serialization hazards across active inputs before changing any output.
-		// Other errors retain the existing independent-output behavior.
+		// Missing and malformed files retain the existing independent-output behavior.
 		const preflight = ({ specs, configSource }: { specs: OutputSpec[]; configSource?: JsonObject }): void => {
 			const files = new Set([...specs.flatMap((spec) => [spec.out, spec.state]), ...(configSource ? [subagentConfig] : [])]);
 			for (const file of files) {
-				try { parseRoundtripJson(fs.readFileSync(file, "utf8"), file); }
-				catch (error) { if (error instanceof JsonRoundtripError) throw error; }
+				let text: string;
+				try { text = fs.readFileSync(file, "utf8"); }
+				catch (error) { if (code(error) === "ENOENT") continue; throw error; }
+				let value: unknown;
+				try { value = parseRoundtripJson(text, file); }
+				catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+				assertRoundtripValues(value, file);
+				JSON.stringify(value);
 			}
 		};
 		if (action === "check") return process(loadSpecs(), () => {});

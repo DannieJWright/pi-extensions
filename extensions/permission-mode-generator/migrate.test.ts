@@ -101,3 +101,17 @@ test("settings comparison distinguishes signed zero recursively", () => {
 	assert.equal(settingsEqual({ x: [0] }, { x: [-0] }), false);
 	assert.equal(settingsEqual({ x: [0] }, { x: [0] }), true);
 });
+
+test("migration rejects overwritten unsafe numbers in old JSONC and all settings", (t) => {
+	for (const target of ["old", "imported", "unrelated"]) {
+		const paths = fixture(t);
+		if (target === "old") fs.writeFileSync(paths.oldSrc, '{"output":{"x":9007199254740993, /* duplicate */ "x":1},"modes":{}}');
+		else fs.writeFileSync(paths.settings, target === "imported" ? '{"subagents":{"x":9007199254740993,"x":1}}' : '{"unrelated":{"x":9007199254740993,"x":1}}');
+		const old = fs.readFileSync(paths.oldSrc, "utf8");
+		const settings = fs.existsSync(paths.settings) ? fs.readFileSync(paths.settings, "utf8") : undefined;
+		assert.throws(() => migrate(paths), /9007199254740993.*cannot be preserved/);
+		assert.equal(fs.existsSync(paths.src), false);
+		assert.equal(fs.readFileSync(paths.oldSrc, "utf8"), old);
+		if (settings !== undefined) assert.equal(fs.readFileSync(paths.settings, "utf8"), settings);
+	}
+});

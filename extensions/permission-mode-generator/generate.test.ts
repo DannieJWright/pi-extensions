@@ -660,3 +660,76 @@ test("equivalent decimal spellings and ordinary finite values generate without d
 	assert.equal((await run({ ...p, action: "check" })).status, "clean");
 	assert.equal((await run({ ...p, action: "gen" })).status, "clean");
 });
+
+test("overwritten unsafe source numbers in JSONC fail before output mutation", async (t) => {
+	const dir = temporaryDirectory(t), p = { ...pathsFor(dir), subagentConfig: path.join(dir, "config") };
+	fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"v":1},"config":{"v":1}}}');
+	assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+	const files = [p.out, p.state, p.settings, p.subagentsState, p.subagentConfig];
+	const before = files.map((file) => fs.readFileSync(file, "utf8"));
+	fs.writeFileSync(p.src, '{"permissionModes":{"output":{"x":9007199254740993, /* duplicate */ "x":1},"modes":{}}}');
+	for (const action of ["check", "gen"] as const) {
+		const result = await run({ ...p, action, force: true });
+		assert.equal(result.status, "error");
+		assert.match(result.lines.join(), /9007199254740993.*cannot be preserved/);
+		assert.deepEqual(files.map((file) => fs.readFileSync(file, "utf8")), before);
+	}
+});
+
+test("overwritten unsafe numbers in active files preflight without mutation", async (t) => {
+	for (const target of ["out", "state", "settings", "subagentsState", "subagentConfig"] as const) {
+		const dir = temporaryDirectory(t), p = { ...pathsFor(dir), subagentConfig: path.join(dir, "config") };
+		fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"v":1},"config":{"v":1}}}');
+		assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+		fs.writeFileSync(p[target], '{"unrelated":{"x":9007199254740993,"x":1}}');
+		fs.writeFileSync(p.src, '{"permissionModes":{"output":{"changed":true},"modes":{}},"subagents":{"settings":{"v":2},"config":{"v":2}}}');
+		const files = [p.out, p.state, p.settings, p.subagentsState, p.subagentConfig];
+		const before = files.map((file) => fs.readFileSync(file, "utf8"));
+		for (const force of [false, true]) {
+			const result = await run({ ...p, action: "gen", force });
+			assert.equal(result.status, "error", target);
+			assert.match(result.lines.join(), /9007199254740993.*cannot be preserved/);
+			assert.deepEqual(files.map((file) => fs.readFileSync(file, "utf8")), before);
+			assert.equal(files.some((file) => fs.existsSync(`${file}.generator-pending`)), false);
+		}
+	}
+});
+
+test("deep existing data and unexpected preflight failures leave all outputs unchanged", async (t) => {
+	for (const failure of ["deep-safe", "deep-unsafe", "read-error", "read-syntax-error"] as const) {
+		const dir = temporaryDirectory(t), p = { ...pathsFor(dir), subagentConfig: path.join(dir, "config") };
+		fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"v":1},"config":{"v":1}}}');
+		assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+		if (failure !== "read-error" && failure !== "read-syntax-error") {
+			const depth = 20000;
+			fs.writeFileSync(p.settings, `{"unrelated":${"[".repeat(depth)}${failure === "deep-unsafe" ? "9007199254740993" : "1"}${"]".repeat(depth)}}`);
+		}
+		fs.writeFileSync(p.src, '{"permissionModes":{"output":{"changed":true},"modes":{}},"subagents":{"settings":{"v":2},"config":{"v":2}}}');
+		const files = [p.out, p.state, p.settings, p.subagentsState, p.subagentConfig];
+		const before = files.map((file) => fs.readFileSync(file, "utf8"));
+		const read = fs.readFileSync;
+		if (failure === "read-error" || failure === "read-syntax-error") fs.readFileSync = ((file, ...args) => {
+			if (file === p.settings) throw failure === "read-error" ? new Error("injected preflight failure") : new SyntaxError("injected preflight failure");
+			return read(file, ...args);
+		}) as typeof fs.readFileSync;
+		try {
+			const result = await run({ ...p, action: "gen", force: true });
+			assert.equal(result.status, "error", failure);
+			assert.match(result.lines.join(), failure.startsWith("read-") ? /injected preflight failure/ : /Maximum call stack size exceeded/);
+		} finally { fs.readFileSync = read; }
+		assert.deepEqual(files.map((file) => fs.readFileSync(file, "utf8")), before);
+		assert.equal(files.some((file) => fs.existsSync(`${file}.generator-pending`)), false);
+	}
+});
+
+test("malformed settings retain independent output behavior", async (t) => {
+	const dir = temporaryDirectory(t), p = pathsFor(dir);
+	fs.writeFileSync(p.src, '{"permissionModes":{"modes":{}},"subagents":{"settings":{"v":1}}}');
+	fs.writeFileSync(p.settings, '{"broken":');
+	const result = await run({ ...p, action: "gen" });
+	assert.equal(result.status, "error");
+	assert.match(result.lines.join(), /not valid JSON/);
+	assert.equal(fs.existsSync(p.out), true);
+	assert.equal(fs.existsSync(p.state), true);
+	assert.equal(fs.readFileSync(p.settings, "utf8"), '{"broken":');
+});

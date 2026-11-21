@@ -13,15 +13,25 @@ function decimalParts(text: string): string {
 
 /** Parse JSON/JSONC after comment removal, rejecting numbers that cannot round-trip. */
 export function parseRoundtripJson(text: string, file: string): unknown {
-	return JSON.parse(text, (key, value, context: { source?: string }) => {
-		if (typeof value === "number") {
-			const raw = context.source;
-			if (raw === undefined || Object.is(value, -0) || !Number.isFinite(value) || decimalParts(raw) !== decimalParts(JSON.stringify(value))) {
-				throw new JsonRoundtripError(`${file}: number ${raw ?? String(value)} at key ${JSON.stringify(key)} cannot be preserved by JSON serialization; edit it before generating`);
+	// Retain the recursive parse so excessive nesting fails during preflight.
+	const parsed: unknown = JSON.parse(text, (_key, value) => value);
+	const number = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+	for (let i = 0; i < text.length;) {
+		if (text[i] === '"') {
+			// JSON.parse already validated the string; escaped quotes are not terminators.
+			for (i++; text[i] !== '"'; i++) if (text[i] === "\\") i++;
+			i++;
+		} else if (text[i] === "-" || (text[i] >= "0" && text[i] <= "9")) {
+			number.lastIndex = i;
+			const raw = number.exec(text)![0];
+			const value = Number(raw);
+			if (Object.is(value, -0) || !Number.isFinite(value) || decimalParts(raw) !== decimalParts(JSON.stringify(value))) {
+				throw new JsonRoundtripError(`${file}: number ${raw} at offset ${i} cannot be preserved by JSON serialization; edit it before generating`);
 			}
-		}
-		return value;
-	});
+			i = number.lastIndex;
+		} else i++;
+	}
+	return parsed;
 }
 
 /** Guard generated objects at the serialization boundary as well. */
