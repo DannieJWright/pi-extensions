@@ -23,6 +23,22 @@ test("mkdir intent name conflicts fail without changing the existing file", (t) 
 	assert.equal(fs.existsSync(child), false);
 });
 
+test("physicalPath rejects reserved intent components even through aliases or when missing", (t) => {
+	const dir = fixture(t), markerName = `.generator-mkdir-${createHash("sha256").update("new").digest("hex")}`;
+	const marker = path.join(dir, markerName), alias = path.join(dir, "alias");
+	fs.symlinkSync(markerName, alias);
+	fs.symlinkSync("alias", path.join(dir, "chain"));
+	fs.symlinkSync(dir, path.join(dir, "parent-alias"));
+	for (const file of [marker, path.join(marker, "file"), alias, path.join(dir, "chain"), path.join(dir, "parent-alias", markerName)]) {
+		assert.throws(() => physicalPath(file), /reserved directory creation intent name/, file);
+	}
+	fs.writeFileSync(marker, "existing");
+	assert.throws(() => physicalPath(alias), /reserved directory creation intent name/);
+	assert.throws(() => mkdirDurably(path.join(dir, markerName, "child")), /reserved directory creation intent name/);
+	assert.equal(fs.readFileSync(marker, "utf8"), "existing");
+	assert.equal(physicalPath(path.join(dir, ".generator-mkdir-not-a-hash")), path.join(dir, ".generator-mkdir-not-a-hash"));
+});
+
 test("holds both settings locks and follows file links, cleaning up on error", async (t) => {
 	const dir = fixture(t), settings = path.join(dir, "settings.json"), target = path.join(dir, "target.json");
 	fs.writeFileSync(target, "{}");

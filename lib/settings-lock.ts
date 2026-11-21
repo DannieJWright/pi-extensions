@@ -37,6 +37,11 @@ export function syncDirectory(directory: string): void {
 }
 
 const mkdirIntent = "pi-permission-generator:mkdir-v1";
+const mkdirIntentName = /^\.generator-mkdir-[a-f0-9]{64}$/;
+
+function rejectMkdirIntentName(name: string, file: string): void {
+	if (mkdirIntentName.test(name)) throw new Error(`Path uses reserved directory creation intent name: ${file}`);
+}
 
 function hasMkdirIntent(marker: string): boolean {
 	try {
@@ -53,7 +58,9 @@ function hasMkdirIntent(marker: string): boolean {
 export function mkdirDurably(directory: string): void {
 	const target = path.resolve(directory), root = path.parse(target).root;
 	let parent = root;
-	for (const name of path.relative(root, target).split(path.sep).filter(Boolean)) {
+	const names = path.relative(root, target).split(path.sep).filter(Boolean);
+	for (const name of names) rejectMkdirIntentName(name, target);
+	for (const name of names) {
 		const child = path.join(parent, name);
 		const marker = path.join(parent, `.generator-mkdir-${createHash("sha256").update(name).digest("hex")}`);
 		let exists: boolean;
@@ -157,33 +164,45 @@ async function properLock(lock: string): Promise<HeldLock> {
 	};
 }
 
-/** Resolve file links and existing directory links, including missing output targets. */
+/** Resolve links component by component, including missing targets, without traversing reserved names. */
 export function physicalPath(file: string): string {
-	let current = path.resolve(file);
-	const seen = new Set<string>();
-	for (;;) {
-		if (seen.has(current)) throw new Error(`Symlink cycle: ${file}`);
-		seen.add(current);
-		try { return fs.realpathSync.native(current); }
-		catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
-		let parent = path.dirname(current);
-		const suffix = [path.basename(current)];
-		while (!fs.existsSync(parent)) {
-			const next = path.dirname(parent);
-			if (next === parent) throw new Error(`Cannot resolve path: ${file}`);
-			suffix.unshift(path.basename(parent)); parent = next;
+	const absolute = path.isAbsolute(file) ? file : `${process.cwd()}${path.sep}${file}`;
+	let current = path.parse(absolute).root;
+	let components = absolute.slice(current.length).split(path.sep);
+	let missing = false, links = 0;
+	while (components.length) {
+		const name = components.shift()!;
+		if (!name || name === ".") continue;
+		if (name === "..") {
+			if (missing) throw new Error(`Cannot resolve path through a missing directory and ..: ${file}`);
+			current = path.dirname(current);
+			continue;
 		}
-		if (suffix.includes("..")) throw new Error(`Cannot resolve path through a missing directory and ..: ${file}`);
-		const candidate = path.join(fs.realpathSync.native(parent), ...suffix);
-		try {
-			const text = fs.readlinkSync(candidate);
-			// Preserve link text so the kernel follows directory links before interpreting "..".
-			current = path.isAbsolute(text) ? text : `${path.dirname(candidate)}${path.sep}${text}`;
-		} catch (error) {
-			if (errorCode(error) === "ENOENT" || errorCode(error) === "EINVAL") return candidate;
-			throw error;
+		rejectMkdirIntentName(name, file);
+		const candidate = path.join(current, name);
+		if (!missing) {
+			try {
+				const stat = fs.lstatSync(candidate);
+				if (stat.isSymbolicLink()) {
+					if (++links > 40) throw new Error(`Symlink cycle or too many links: ${file}`);
+					const text = fs.readlinkSync(candidate);
+					if (path.isAbsolute(text)) current = path.parse(text).root;
+					components = (path.isAbsolute(text) ? text.slice(current.length) : text).split(path.sep).concat(components);
+					continue;
+				}
+				if (components.length && !stat.isDirectory()) {
+					const error = new Error(`Not a directory: ${candidate}`) as NodeJS.ErrnoException;
+					error.code = "ENOTDIR";
+					throw error;
+				}
+			} catch (error) {
+				if (errorCode(error) !== "ENOENT") throw error;
+				missing = true;
+			}
 		}
+		current = candidate;
 	}
+	return current;
 }
 
 /** Coordinate all generator output/baseline paths, then Pi's requested lock and the physical lease. */

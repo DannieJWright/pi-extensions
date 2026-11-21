@@ -508,6 +508,42 @@ test("retry syncs interrupted directory creation before publishing", async (t) =
 	}
 });
 
+test("concurrent mkdir intent cannot be used as an output or baseline, even via aliases", async (t) => {
+	const { spawn } = await import("node:child_process");
+	const { once } = await import("node:events");
+	const { createHash } = await import("node:crypto");
+	const dir = temporaryDirectory(t), p = pathsFor(dir), childDir = path.join(dir, "new");
+	const marker = path.join(dir, `.generator-mkdir-${createHash("sha256").update("new").digest("hex")}`);
+	const alias = path.join(dir, "intent-alias"), parentAlias = path.join(dir, "parent-alias");
+	fs.symlinkSync(path.basename(marker), alias);
+	fs.symlinkSync(dir, parentAlias);
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} }, subagents: { settings: { x: 1 } } }));
+	const module = new URL("../../lib/settings-lock.ts", import.meta.url).href;
+	const script = `import fs from 'node:fs'; import {mkdirDurably} from ${JSON.stringify(module)}; const symlink=fs.symlinkSync; fs.symlinkSync=(target,file,...args)=>{const result=symlink(target,file,...args); if(file===process.argv[2]){console.log('intent'); fs.readSync(0,Buffer.alloc(1),0,1,null);} return result;}; mkdirDurably(process.argv[1]);`;
+	const child = spawn(process.execPath, ["--input-type=module", "-e", script, childDir, marker], { stdio: ["pipe", "pipe", "pipe"] });
+	const exit = once(child, "exit");
+	try {
+		assert.match(String((await once(child.stdout, "data"))[0]), /intent/);
+		for (const key of ["out", "state", "settings", "subagentsState"] as const) {
+			for (const collision of [marker, alias, path.join(parentAlias, path.basename(marker))]) {
+				const result = await run({ ...p, [key]: collision, action: "gen", force: true });
+				assert.equal(result.status, "error", `${key}: ${collision}: ${result.lines}`);
+				assert.match(result.lines.join(), /reserved directory creation intent name/);
+			}
+		}
+		assert.equal(fs.lstatSync(marker).isSymbolicLink(), true);
+		assert.equal(fs.existsSync(path.join(dir, "pi-permission-generator:mkdir-v1")), false);
+		assert.equal(fs.existsSync(p.out), false);
+		assert.equal(fs.existsSync(p.state), false);
+	} finally {
+		child.stdin.end("x");
+		const [code] = await exit;
+		assert.equal(code, 0);
+	}
+	assert.equal(fs.existsSync(marker), false);
+	assert.equal(fs.existsSync(childDir), true);
+});
+
 test("concurrent creator's unsynced ancestor is synced before publishing", async (t) => {
 	const { spawn } = await import("node:child_process");
 	const { once } = await import("node:events");
