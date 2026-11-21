@@ -62,12 +62,63 @@ test("linked worktree and external diff, textconv, fsmonitor helpers remain disa
  } finally { git(dir, "worktree", "remove", "--force", worktree); await rm(parent, { recursive: true, force: true }); }
 }));
 
+test("worktree inspection refuses configured clean and process filters", async () => fixture(async (dir) => {
+ const marker = join(dir, "filter-ran");
+ await writeFile(join(dir, ".gitattributes"), "* filter=evil\n");
+ await writeFile(join(dir, "-dash"), "changed\n");
+ git(dir, "config", "filter.evil.clean", `touch ${marker}; cat`);
+ git(dir, "diff"); await readFile(marker); await rm(marker);
+ for (const [kind, args] of [["diff", {}], ["status", {}]] as const) {
+  const result = await inspectGit(kind, args, { cwd: dir });
+  assert.equal(result.isError, true); assert.match(text(result), /refused.*filter drivers/);
+ }
+ const limited = await inspectGit("diff", {}, { cwd: dir, outputLimit: 1 });
+ assert.equal(limited.isError, true); assert.match(text(limited), /filter configuration check exceeded/);
+ assert.equal((await inspectGit("diff", { mode: "staged" }, { cwd: dir })).isError, false);
+ await assert.rejects(readFile(marker), { code: "ENOENT" });
+ git(dir, "config", "--unset", "filter.evil.clean");
+ git(dir, "config", "filter.evil.process", `touch ${marker}; cat`);
+ assert.equal((await inspectGit("diff", {}, { cwd: dir })).isError, true);
+ await assert.rejects(readFile(marker), { code: "ENOENT" });
+}));
+
+test("missing promisor objects do not trigger lazy fetch", async () => fixture(async (dir) => {
+ const blob = git(dir, "rev-parse", "HEAD:space name");
+ const marker = join(dir, "fetch-ran");
+ git(dir, "config", "remote.origin.url", `ext::touch ${marker}`);
+ git(dir, "config", "remote.origin.promisor", "true");
+ git(dir, "config", "remote.origin.partialclonefilter", "blob:none");
+ git(dir, "config", "protocol.ext.allow", "always");
+ await rm(join(dir, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+ assert.throws(() => git(dir, "show", "HEAD")); await readFile(marker); await rm(marker);
+ const result = await inspectGit("show", { ref: "HEAD" }, { cwd: dir });
+ assert.equal(result.isError, true);
+ await assert.rejects(readFile(marker), { code: "ENOENT" });
+ await assert.rejects(readFile(join(dir, ".git", "objects", blob.slice(0, 2), blob.slice(2))), { code: "ENOENT" });
+}));
+
+test("show renders merge changes relative to first parent", async () => fixture(async (dir) => {
+ git(dir, "checkout", "-qb", "side"); await writeFile(join(dir, "side-file"), "side change\n"); git(dir, "add", "."); git(dir, "commit", "-qm", "side");
+ git(dir, "checkout", "-q", "-"); await writeFile(join(dir, "main-file"), "main change\n"); git(dir, "add", "."); git(dir, "commit", "-qm", "main");
+ git(dir, "merge", "--no-ff", "-qm", "merge", "side");
+ const result = await inspectGit("show", { ref: "HEAD" }, { cwd: dir });
+ assert.equal(result.isError, false); assert.match(text(result), /side change/); assert.doesNotMatch(text(result), /main change/);
+}));
+
+test("ambiguous ref warnings do not corrupt the resolved hash", async () => fixture(async (dir) => {
+ git(dir, "branch", "ambiguous"); git(dir, "tag", "ambiguous");
+ const result = await inspectGit("show", { ref: "ambiguous" }, { cwd: dir });
+ assert.equal(result.isError, false); assert.match(text(result), /first/);
+}));
+
 test("output cap, timeout, cancellation and spawn failure", async () => fixture(async (dir) => {
  await writeFile(join(dir, "-dash"), "x".repeat(20000));
  const large = await unchanged(dir, "diff"); assert.equal(large.isError, false);
  const capped = await inspectGit("diff", {}, { cwd: dir, outputLimit: 100 }); assert.equal(capped.details.truncated, true); assert.match(text(capped), /truncated/);
- const script = join(dir, "slow"); await writeFile(script, "#!/bin/sh\nexec sleep 20\n", { mode: 0o755 });
- const timeout = await runGit([], { cwd: dir, executable: script, timeoutMs: 30 }); assert.equal(timeout.timedOut, true);
- const controller = new AbortController(); const pending = runGit([], { cwd: dir, executable: script, signal: controller.signal }); setTimeout(() => controller.abort(), 30); assert.equal((await pending).cancelled, true);
+ const script = join(dir, "slow"); await writeFile(script, "#!/bin/sh\n(sleep 1; touch child-survived) &\nexit 0\n", { mode: 0o755 });
+ let started = Date.now(); const timeout = await runGit([], { cwd: dir, executable: script, timeoutMs: 100 }); assert.equal(timeout.timedOut, true); assert.ok(Date.now() - started < 2000);
+ const controller = new AbortController(); started = Date.now(); const pending = runGit([], { cwd: dir, executable: script, signal: controller.signal }); setTimeout(() => controller.abort(), 100); assert.equal((await pending).cancelled, true); assert.ok(Date.now() - started < 2000);
+ await new Promise((resolve) => setTimeout(resolve, 1200));
+ if (process.platform !== "win32") await assert.rejects(readFile(join(dir, "child-survived")), { code: "ENOENT" });
  const failed = await inspectGit("status", {}, { cwd: dir, executable: join(dir, "missing") }); assert.equal(failed.isError, true); assert.match(text(failed), /Could not start Git/);
 }));

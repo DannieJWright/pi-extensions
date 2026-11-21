@@ -7,7 +7,7 @@ type Kind = "diff" | "status" | "log" | "show";
 type Input = Record<string, unknown>;
 type RunOptions = { cwd: string; signal?: AbortSignal; timeoutMs?: number; outputLimit?: number; executable?: string };
 
-type ProcessResult = { text: string; code: number | null; truncated: boolean; cancelled: boolean; timedOut: boolean; error?: string };
+type ProcessResult = { text: string; stdout: string; stderr: string; code: number | null; truncated: boolean; cancelled: boolean; timedOut: boolean; error?: string };
 
 // Keep Git's repository/config selection and pathspec interpretation independent of the caller's environment.
 export async function runGit(args: string[], options: RunOptions): Promise<ProcessResult> {
@@ -16,18 +16,35 @@ export async function runGit(args: string[], options: RunOptions): Promise<Proce
  const limit = options.outputLimit ?? OUTPUT_LIMIT;
  return new Promise((resolve) => {
   let child: ReturnType<typeof spawn>;
-  try { child = spawn(options.executable ?? "git", ["--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "color.ui=false", "-c", "diff.external=", "-c", "log.showSignature=false", ...args], { cwd: options.cwd, env, stdio: ["ignore", "pipe", "pipe"], shell: false }); }
-  catch (error) { resolve({ text: "", code: null, truncated: false, cancelled: false, timedOut: false, error: String(error) }); return; }
-  const chunks: Buffer[] = []; let size = 0; let truncated = false; let cancelled = false; let timedOut = false; let error: string | undefined;
-  const stop = () => { if (!child.killed) child.kill("SIGKILL"); };
+  try { child = spawn(options.executable ?? "git", ["--no-lazy-fetch", "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "color.ui=false", "-c", "diff.external=", "-c", "log.showSignature=false", ...args], { cwd: options.cwd, env, stdio: ["ignore", "pipe", "pipe"], shell: false, detached: process.platform !== "win32" }); }
+  catch (error) { resolve({ text: "", stdout: "", stderr: "", code: null, truncated: false, cancelled: false, timedOut: false, error: String(error) }); return; }
+  const chunks: Buffer[] = [], stdout: Buffer[] = [], stderr: Buffer[] = [];
+  let size = 0, truncated = false, cancelled = false, timedOut = false, settled = false;
+  let error: string | undefined;
+  const clean = (parts: Buffer[]) => stripVTControlCharacters(Buffer.concat(parts).toString("utf8")).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+  const finish = (code: number | null) => {
+   if (settled) return;
+   settled = true; clearTimeout(timer); options.signal?.removeEventListener("abort", abort);
+   resolve({ text: clean(chunks), stdout: clean(stdout), stderr: clean(stderr), code, truncated, cancelled, timedOut, error });
+  };
+  const stop = () => {
+   // Kill the POSIX process group and close pipes even if a descendant escaped it.
+   if (process.platform !== "win32" && child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ } }
+   else child.kill("SIGKILL");
+   child.stdout?.destroy(); child.stderr?.destroy(); finish(null);
+  };
   const abort = () => { cancelled = true; stop(); };
   const timer = setTimeout(() => { timedOut = true; stop(); }, options.timeoutMs ?? TIMEOUT_MS);
   options.signal?.addEventListener("abort", abort, { once: true });
-  if (options.signal?.aborted) abort();
-  const collect = (chunk: Buffer) => { const remaining = Math.max(0, limit - size); if (remaining) chunks.push(chunk.subarray(0, remaining)); size += chunk.length; if (size > limit) { truncated = true; stop(); } };
-  child.stdout!.on("data", collect); child.stderr!.on("data", collect);
+  const collect = (target: Buffer[]) => (chunk: Buffer) => {
+   const remaining = Math.max(0, limit - size);
+   if (remaining) { const part = chunk.subarray(0, remaining); chunks.push(part); target.push(part); }
+   size += chunk.length; if (size > limit) { truncated = true; stop(); }
+  };
+  child.stdout!.on("data", collect(stdout)); child.stderr!.on("data", collect(stderr));
   child.on("error", (e) => { error = e.message; });
-  child.on("close", (code) => { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); resolve({ text: stripVTControlCharacters(Buffer.concat(chunks).toString("utf8")).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""), code, truncated, cancelled, timedOut, error }); });
+  child.on("close", (code) => finish(code));
+  if (options.signal?.aborted) abort();
  });
 }
 
@@ -55,18 +72,30 @@ function validate(kind: Kind, input: Input): { paths: string[]; refs: string[]; 
   const limit = input.limit ?? 20;
   if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 100) throw new Error("limit must be an integer from 1 to 100");
   args = ["log", "--no-color", "--no-decorate", "--format=%H %s", `--max-count=${limit}`];
- } else { ref(input.ref, "ref"); args = ["show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=fuller"]; }
+ } else { ref(input.ref, "ref"); args = ["show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=fuller", "--first-parent", "-m"]; }
  return { paths, refs, args };
 }
 
 export async function inspectGit(kind: Kind, input: Input, options: RunOptions) {
  try {
   const { paths, refs, args } = validate(kind, input);
+  // Worktree comparisons and status can run repository-configured clean/process filters.
+  // Refuse rather than silently produce an unfiltered, misleading comparison.
+  if (kind === "status" || (kind === "diff" && (input.mode === undefined || input.mode === "unstaged"))) {
+   const filters = await runGit(["config", "--get-regexp", "^filter\\."], options);
+   if (filters.truncated) throw new Error("Working-tree inspection refused: filter configuration check exceeded output limit.");
+   if (filters.code !== 1 || filters.cancelled || filters.timedOut || filters.error) {
+    if (filters.code === 0 && !filters.cancelled && !filters.timedOut && !filters.error) throw new Error("Working-tree inspection refused: repository config contains filter drivers.");
+    return report(filters, "Could not check repository filter configuration");
+   }
+  }
   const hashes: string[] = [];
   for (const ref of refs) {
    const result = await runGit(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], options);
    if (result.code !== 0 || result.truncated || result.cancelled || result.timedOut || result.error) return report(result, `Could not resolve ref ${ref}`);
-   hashes.push(result.text.trim());
+   const hash = result.stdout.trim();
+   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(hash)) throw new Error(`Could not resolve ref ${ref}: unexpected Git output`);
+   hashes.push(hash);
   }
   const result = await runGit([...args, ...hashes, "--", ...paths], options);
   return report(result, "Git inspection");
