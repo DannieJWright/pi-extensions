@@ -76,25 +76,38 @@ function writeJson(file: string, value: unknown, assertOwned: () => void): void 
 	atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`, assertOwned);
 }
 function jsonEqual(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
+function describeValue(value: unknown): string {
+	if (value === MISSING) return "(missing)";
+	if (typeof value === "number" && (Object.is(value, -0) || !Number.isFinite(value))) return String(Object.is(value, -0) ? "-0" : value);
+	if (Array.isArray(value)) return `[${value.map(describeValue).join(", ")}]`;
+	if (isObject(value)) return `{${Object.entries(value).map(([key, child]) => `${JSON.stringify(key)}:${describeValue(child)}`).join(", ")}}`;
+	return JSON.stringify(value) ?? "undefined";
+}
 function formatValue(value: unknown): string {
-	const text = value === MISSING ? "(missing)" : JSON.stringify(value) ?? "undefined";
+	const text = describeValue(value);
 	return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
-export function compareJson(left: unknown, right: unknown, leftLabel: string, rightLabel: string, prefix = ""): string[] {
+type Comparison = (a: unknown, b: unknown, keyPath: string) => boolean;
+export function compareJson(left: unknown, right: unknown, leftLabel: string, rightLabel: string, prefix = "", equal: Comparison = jsonEqual, keyPath = prefix): string[] {
 	const here = prefix || "(root)";
-	if (jsonEqual(left, right)) return [];
+	if (equal(left, right, keyPath)) return [];
 	if (isObject(left) && isObject(right)) {
 		const lines: string[] = [];
 		for (const key of Object.keys(left)) {
 			if (!Object.hasOwn(right, key)) lines.push(`${here}.${key}  ${leftLabel}=${formatValue(left[key])}  ${rightLabel}=(missing)`);
-			else lines.push(...compareJson(left[key], right[key], leftLabel, rightLabel, `${here}.${key}`));
+			else lines.push(...compareJson(left[key], right[key], leftLabel, rightLabel, `${here}.${key}`, equal, `${keyPath}.${key}`));
 		}
 		for (const key of Object.keys(right)) if (!Object.hasOwn(left, key)) lines.push(`${here}.${key}  ${leftLabel}=(missing)  ${rightLabel}=${formatValue(right[key])}`);
+		const leftKeys = Object.keys(left), rightKeys = Object.keys(right);
+		if (leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.hasOwn(right, key))) {
+			const reordered = Object.fromEntries(leftKeys.map((key) => [key, right[key]]));
+			if (!equal(reordered, right, keyPath)) lines.push(`${here}: key order differs  ${leftLabel}=${JSON.stringify(leftKeys)}  ${rightLabel}=${JSON.stringify(rightKeys)}`);
+		}
 		return lines;
 	}
 	if (Array.isArray(left) && Array.isArray(right)) {
 		const lines: string[] = [];
-		for (let i = 0; i < Math.max(left.length, right.length); i++) lines.push(...compareJson(left[i], right[i], leftLabel, rightLabel, `${here}[${i}]`));
+		for (let i = 0; i < Math.max(left.length, right.length); i++) lines.push(...compareJson(i < left.length ? left[i] : MISSING, i < right.length ? right[i] : MISSING, leftLabel, rightLabel, `${here}[${i}]`, equal, `${keyPath}[${i}]`));
 		return lines;
 	}
 	return [`${here}  ${leftLabel}=${formatValue(left)}  ${rightLabel}=${formatValue(right)}`];
@@ -121,6 +134,8 @@ interface OutputSpec {
 	write(assertOwned: () => void): void;
 	adopt(assertOwned: () => void): void;
 	equal(a: unknown, b: unknown): boolean;
+	reportEqual?: Comparison;
+	reportKeyPath?: string;
 	needsAdoption?: boolean;
 }
 function processOutput(spec: OutputSpec, action: "gen" | "check", force: boolean, assertOwned: () => void): RunResult {
@@ -132,12 +147,12 @@ function processOutput(spec: OutputSpec, action: "gen" | "check", force: boolean
 	if ((interrupted || modified) && !(action === "gen" && force)) {
 		return { status: "drift", lines: [
 			`${spec.name}: ${interrupted ? `unfinished output/baseline update (${pending}); inspect the output and use --force to recover` : "output has unadopted changes"}`,
-			...(driftLines ?? compareJson(baseline === MISSING ? spec.desired : baseline, current, baseline === MISSING ? "generated" : "last generated", "file", spec.name)),
+			...(driftLines ?? compareJson(baseline === MISSING ? spec.desired : baseline, current, baseline === MISSING ? "generated" : "last generated", "file", spec.name, spec.reportEqual, spec.reportKeyPath)),
 		] };
 	}
 	if (action === "check") return matching && !interrupted
 		? { status: "clean", lines: [] }
-		: { status: "drift", lines: [`${spec.name}: output differs from source`, ...compareJson(spec.desired, current, "generated", "file", spec.name)] };
+		: { status: "drift", lines: [`${spec.name}: output differs from source`, ...compareJson(spec.desired, current, "generated", "file", spec.name, spec.reportEqual, spec.reportKeyPath)] };
 	if (!matching || interrupted || modified) {
 		writeJson(pending, { output: spec.out, state: spec.state }, assertOwned);
 		spec.write(assertOwned);
@@ -183,21 +198,24 @@ function configOutput(source: JsonObject, filePath: string, state: string): Outp
 	for (const [key, value] of Object.entries(desired)) candidate[key] = value;
 	validatePermissions(candidate);
 	const current: JsonObject = {}, driftLines: string[] = [];
+	let modified = false;
 	for (const key of new Set([...Object.keys(previous), ...Object.keys(desired)])) {
 		const exists = Object.hasOwn(existing, key);
 		if (exists) current[key] = existing[key];
 		if (Object.hasOwn(previous, key)) {
 			if (!exists || !settingsEqual(previous[key], existing[key], "config")) {
-				driftLines.push(...compareJson({ [key]: previous[key] }, exists ? { [key]: existing[key] } : {}, "last generated", "file", "subagents.config"));
+				modified = true;
+				driftLines.push(...compareJson({ [key]: previous[key] }, exists ? { [key]: existing[key] } : {}, "last generated", "file", "subagents.config", settingsEqual, "config"));
 			}
 		} else if (exists && !settingsEqual(desired[key], existing[key], "config")) {
-			driftLines.push(...compareJson({ [key]: desired[key] }, { [key]: existing[key] }, "generated", "file", "subagents.config"));
+			modified = true;
+			driftLines.push(...compareJson({ [key]: desired[key] }, { [key]: existing[key] }, "generated", "file", "subagents.config", settingsEqual, "config"));
 		}
 	}
 	return {
-		name: "subagents.config", out: filePath, state, desired, equal: (a, b) => settingsEqual(a, b, "config"),
+		name: "subagents.config", out: filePath, state, desired, equal: (a, b) => settingsEqual(a, b, "config"), reportEqual: settingsEqual, reportKeyPath: "config",
 		needsAdoption: !isObject(base) || !Object.hasOwn(base, "config") || !settingsEqual(previous, desired, "config"),
-		read: () => ({ current, baseline: previous, modified: driftLines.length > 0, driftLines }),
+		read: () => ({ current, baseline: previous, modified, driftLines }),
 		write: (owned) => writeJson(filePath, candidate, owned),
 		adopt: (owned) => {
 			const latest = readJson(state);
@@ -232,7 +250,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
 				adopt: (owned) => writeJson(state, rendered, owned),
 			}];
 			if (subagents !== undefined) specs.push({
-				name: "subagents", out: settings, state: subagentsState, desired: subagents, equal: settingsEqual,
+				name: "subagents", out: settings, state: subagentsState, desired: subagents, equal: settingsEqual, reportEqual: settingsEqual,
 				read: () => {
 					const file = readJson(settings), base = readJson(subagentsState);
 					if (file !== MISSING && !isObject(file)) throw new Error(`${settings}: top level must be an object`);
