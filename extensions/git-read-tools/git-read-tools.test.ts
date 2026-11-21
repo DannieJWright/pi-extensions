@@ -84,6 +84,46 @@ test("worktree inspection refuses configured clean and process filters", async (
  await assert.rejects(readFile(marker), { code: "ENOENT" });
 }));
 
+test("large index is scanned without truncation, including for a single-path diff", async () => fixture(async (dir) => {
+ await mkdir(join(dir, "many"));
+ await Promise.all(Array.from({ length: 1400 }, (_, i) => writeFile(join(dir, "many", `ordinary-file-${String(i).padStart(4, "0")}.txt`), "old\n")));
+ await writeFile(join(dir, "many", "tab\tand\nnewline"), "old\n");
+ git(dir, "add", "--", "many"); git(dir, "commit", "-qm", "large index");
+ assert.ok(Buffer.byteLength(git(dir, "ls-files", "--stage")) > 64 * 1024);
+ const status = await inspectGit("status", {}, { cwd: dir });
+ assert.equal(status.isError, false); assert.match(text(status), /##/);
+ const path = `many/ordinary-file-${String(42).padStart(4, "0")}.txt`; await writeFile(join(dir, path), "new content\n");
+ const diff = await inspectGit("diff", { mode: "unstaged", paths: [path] }, { cwd: dir });
+ assert.equal(diff.isError, false); assert.match(text(diff), /new content/);
+ git(dir, "update-index", "--add", "--cacheinfo", `160000,${git(dir, "rev-parse", "HEAD")},zz-submodule`);
+ const guarded = await inspectGit("diff", { paths: [path] }, { cwd: dir });
+ assert.equal(guarded.isError, true); assert.match(text(guarded), /refused: index contains submodules/);
+}));
+
+test("submodule scan fails closed on malformed output, errors, timeout and cancellation", async () => fixture(async (dir) => {
+ const script = join(dir, "fake-git");
+ const writeScript = (body: string) => writeFile(script, `#!/bin/sh\ncase " $* " in\n *" ls-files "*) ${body} ;;\n *) exec git "$@" ;;\nesac\n`, { mode: 0o755 });
+ for (const [body, expected] of [
+  ["printf 'garbage'; exit 0", /unexpected submodule check output/],
+  ["printf '100644 bad 0\\tpath\\000'; exit 0", /unexpected submodule check output/],
+  ["echo failed >&2; exit 2", /Could not check repository submodules:[\s\S]*failed/],
+  ["head -c 200 /dev/zero | tr '\\000' x >&2; exit 0", /submodule check exceeded output limit/],
+  ["sleep 2", /Git timed out/],
+ ] as const) {
+  await writeScript(body);
+  const result = await inspectGit("status", {}, { cwd: dir, executable: script, timeoutMs: 300, outputLimit: 100 });
+  assert.equal(result.isError, true); assert.match(text(result), expected);
+ }
+ await writeScript("touch scan-started; sleep 2");
+ const controller = new AbortController();
+ const pending = inspectGit("status", {}, { cwd: dir, executable: script, signal: controller.signal });
+ for (let i = 0; i < 100; i++) {
+  try { await readFile(join(dir, "scan-started")); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+ }
+ await readFile(join(dir, "scan-started")); controller.abort();
+ const cancelled = await pending; assert.equal(cancelled.isError, true); assert.match(text(cancelled), /Git cancelled/);
+}));
+
 test("dirty submodule status and diff do not execute submodule clean filters", async () => fixture(async (dir) => {
  const source = await mkdtemp(join(tmpdir(), "git-submodule-source-"));
  try {
@@ -99,14 +139,18 @@ test("dirty submodule status and diff do not execute submodule clean filters", a
    await assert.rejects(readFile(marker), { code: "ENOENT" });
   }
   await mkdir(join(dir, "nested"));
-  for (const kind of ["status", "diff"] as const) {
-   const nested = await inspectGit(kind, {}, { cwd: join(dir, "nested") });
-   assert.equal(nested.isError, true); assert.match(text(nested), /refused: index contains submodules/);
+  for (const [kind, args] of [["status", {}], ["diff", {}], ["diff", { mode: "unstaged", paths: ["-dash"] }]] as const) {
+   for (const cwd of [dir, join(dir, "nested")]) {
+    const result = await inspectGit(kind, args, { cwd });
+    assert.equal(result.isError, true); assert.match(text(result), /refused: index contains submodules/);
+    await assert.rejects(readFile(marker), { code: "ENOENT" });
+   }
   }
-  assert.equal((await inspectGit("diff", { mode: "staged" }, { cwd: dir })).isError, false);
-  const limited = await inspectGit("status", {}, { cwd: dir, outputLimit: 10 });
-  assert.equal(limited.isError, true); assert.match(text(limited), /submodule check exceeded output limit/);
-  await assert.rejects(readFile(marker), { code: "ENOENT" });
+  for (const [kind, args] of [["diff", { mode: "staged" }], ["diff", { mode: "range", from: "HEAD", to: "HEAD" }], ["log", {}], ["show", { ref: "HEAD" }]] as const) {
+   const result = await inspectGit(kind, args, { cwd: dir });
+   assert.equal(result.isError, false, text(result));
+   await assert.rejects(readFile(marker), { code: "ENOENT" });
+  }
  } finally { await rm(source, { recursive: true, force: true }); }
 }));
 

@@ -11,6 +11,10 @@ type ProcessResult = { text: string; stdout: string; stderr: string; code: numbe
 
 // Keep Git's repository/config selection and pathspec interpretation independent of the caller's environment.
 export async function runGit(args: string[], options: RunOptions): Promise<ProcessResult> {
+ return runGitProcess(args, options);
+}
+
+async function runGitProcess(args: string[], options: RunOptions, onStdout?: (chunk: Buffer) => void): Promise<ProcessResult> {
  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
  Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_PAGER: "cat", PAGER: "cat", LC_ALL: "C" });
  const limit = options.outputLimit ?? OUTPUT_LIMIT;
@@ -41,11 +45,30 @@ export async function runGit(args: string[], options: RunOptions): Promise<Proce
    if (remaining) { const part = chunk.subarray(0, remaining); chunks.push(part); target.push(part); }
    size += chunk.length; if (size > limit) { truncated = true; stop(); }
   };
-  child.stdout!.on("data", collect(stdout)); child.stderr!.on("data", collect(stderr));
+  child.stdout!.on("data", onStdout ?? collect(stdout)); child.stderr!.on("data", collect(stderr));
   child.on("error", (e) => { error = e.message; });
   child.on("close", (code) => finish(code));
   if (options.signal?.aborted) abort();
  });
+}
+
+// Parse NUL-delimited index records without retaining paths or the complete index.
+async function scanSubmodules(cdup: string, options: RunOptions) {
+ let header = "", inPath = false, pathLength = 0, invalid = false, hasSubmodule = false;
+ const result = await runGitProcess(["ls-files", "--stage", "--full-name", "-z", "--", ...(cdup ? [cdup] : [])], options, (chunk) => {
+  for (const byte of chunk) {
+   if (inPath) {
+    if (byte === 0) { if (!pathLength) invalid = true; inPath = false; pathLength = 0; }
+    else pathLength = 1;
+   } else if (byte === 9) {
+    if (!/^(?:100644|100755|120000|160000) (?:[0-9a-f]{40}|[0-9a-f]{64}) [0-3]$/.test(header)) invalid = true;
+    if (header.startsWith("160000 ")) hasSubmodule = true;
+    header = ""; inPath = true;
+   } else if (byte === 0 || header.length >= 80 || byte > 127) invalid = true;
+   else header += String.fromCharCode(byte);
+  }
+ });
+ return { result, invalid: invalid || inPath || header.length > 0, hasSubmodule };
 }
 
 function validate(kind: Kind, input: Input): { paths: string[]; refs: string[]; args: string[] } {
@@ -95,10 +118,11 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
    if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root");
    const cdup = root.stdout.trim();
    if (cdup && !/^(?:\.\.\/)+$/.test(cdup)) throw new Error("Could not locate repository root: unexpected Git output");
-   const index = await runGit(["ls-files", "--stage", "--full-name", "--", ...(cdup ? [cdup] : [])], options);
-   if (index.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
-   if (index.code !== 0 || index.cancelled || index.timedOut || index.error) return report(index, "Could not check repository submodules");
-   if (/^160000 [0-9a-f]+ [0-3]\t/m.test(index.stdout)) throw new Error("Working-tree inspection refused: index contains submodules, whose filters cannot be safely checked.");
+   const index = await scanSubmodules(cdup, options);
+   if (index.result.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
+   if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules");
+   if (index.invalid) throw new Error("Working-tree inspection refused: unexpected submodule check output.");
+   if (index.hasSubmodule) throw new Error("Working-tree inspection refused: index contains submodules, whose filters cannot be safely checked.");
   }
   const hashes: string[] = [];
   for (const ref of refs) {
