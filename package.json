@@ -9,7 +9,8 @@
       "extensions/just-tools/index.ts",
       "extensions/provider-rules/index.ts",
       "extensions/permission-mode-generator/index.ts",
-      "extensions/feature-ledger/index.ts"
+      "extensions/feature-ledger/index.ts",
+      "extensions/git-read-tools/index.ts"
     ]
   },
   "devDependencies": {
