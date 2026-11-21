@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { buildConfig, buildSubagents } from "./merge.ts";
+import { buildConfig, buildSubagents, MergeError } from "./merge.ts";
 import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
 
 function build(source: Record<string, unknown>): Record<string, unknown> {
@@ -255,6 +255,16 @@ test("subagent settings and agents retain absence, empty, false and merge rules"
 		defaultExtensions: ["ext"], disableBuiltins: false,
 		agentOverrides: { worker: { tools: ["a", "b", "c"], nested: { first: 1, second: 2 }, enabled: false } },
 	});
+});
+
+test("subagent agents rejects present non-object values", () => {
+	for (const agents of [["reviewer"], [], null, "reviewer", 42, false, undefined]) {
+		assert.throws(() => buildSubagents({ agents }), {
+			name: "Error",
+			message: "subagents.agents: must be an object mapping agent names to overrides",
+			constructor: MergeError,
+		});
+	}
 });
 
 test("settings.agentOverrides is rejected whether agents is absent or present", () => {

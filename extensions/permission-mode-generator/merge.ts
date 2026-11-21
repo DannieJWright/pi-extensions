@@ -143,6 +143,11 @@ export function buildSubagents(source: JsonObject): JsonObject {
 		throw new MergeError("subagents.settings.agentOverrides: use subagents.agents instead");
 	}
 	const result: JsonObject = { ...settings };
-	if (Object.hasOwn(source, "agents")) result.agentOverrides = resolveEntries(source, "subagents", "agents");
+	if (Object.hasOwn(source, "agents")) {
+		if (!isObject(source.agents)) {
+			throw new MergeError("subagents.agents: must be an object mapping agent names to overrides");
+		}
+		result.agentOverrides = resolveEntries(source, "subagents", "agents");
+	}
 	return result;
 }
