@@ -1,5 +1,5 @@
-// Source for ~/.pi/agent/permission-mode/permission-mode.json.
-// Edit this file, then run `just perm-gen` in ~/.pi. See README.md for the merge rules.
+// Source: ~/.pi/agent/permissions.src.jsonc. Edit it, then run `just perm` in ~/.pi.
+// Copy prompts/reviewer.md alongside this source; see the generator README for merge rules.
 //
 // Pattern maps (path, external_directory, write, bash, tool, ...): the LAST matching key wins,
 // so "*" must come first. When a mode overrides an inherited key, the key keeps its position;
@@ -133,7 +133,12 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          // Ledger tools bypass file-tool path gates; submit also runs unsandboxed commands.
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow"
           // "": "allow",
           // "": "allow",
         },
@@ -203,7 +208,8 @@
         },
         "bash": {
           "*": "allow"
-        }
+        },
+        "tool": { "ledger_start": "deny", "ledger_submit": "deny" }
       }
     },
 
@@ -215,7 +221,8 @@
       "permission": {
         "write": { "*": "allow" },
         "edit": { "*": "allow" },
-        "bash": { "*": "allow" }
+        "bash": { "*": "allow" },
+        "tool": { "ledger_start": "allow", "ledger_submit": "allow" }
       }
     },
 
@@ -260,5 +267,40 @@
       }
     }
   }
+  },
+  "subagents": {
+    // Optional native child permissions; omit config to leave config.json unchanged:
+    // "config": { "permissions": { "rules": { "edit": "ask" } } },
+    "fragments": {
+      "gitReadTools": {
+        "tools+": ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"],
+        "subagentOnlyExtensions+": ["~/.pi/agent/git/github.com/DannieJWright/pi-extensions/extensions/git-read-tools/index.ts"]
+      },
+      // Operator-supplied worker override: ledger_next, ledger_start, ledger_submit,
+      // ledger_check and mutationTools. ledger_list is added for the sample.
+      // The provider uses ~ for portability; adjust paths for your installation.
+      "ledgerTools": {
+        "extends": ["gitReadTools"],
+        "tools+": ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"],
+        "subagentOnlyExtensions+": ["~/.pi/agent/git/github.com/DannieJWright/pi-extensions/extensions/feature-ledger/index.ts"],
+        "mutationTools+": ["ledger_start", "ledger_submit"]
+      }
+    },
+    "agents": {
+      "reviewer": {
+        "extends": ["gitReadTools"],
+        "tools+": ["read", "grep", "find", "ls", "watchdog_diff", "contact_supervisor"],
+        // Prompt body from pi-subagents 0.89.2, with committed-range guidance updated.
+        "systemPrompt": { "$file": "prompts/reviewer.md" }
+      },
+      "scout": {
+        "extends": ["gitReadTools"],
+        "tools+": ["read", "grep", "find", "ls", "bash", "write", "contact_supervisor"]
+      },
+      "worker": {
+        "extends": ["ledgerTools"],
+        "tools+": ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"]
+      }
+    }
   }
 }

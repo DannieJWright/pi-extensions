@@ -17,6 +17,13 @@ repository.
 - A field that names a command the working project defines, such as `validation_scripts`, may show an example
   like `just_test`. State clearly that it comes from the project being worked on, not from this one.
 
+## Feature-ledger boundaries
+
+Direct ledger operations access their ledger and workspace paths without ordinary file-tool path gating.
+`ledger_submit` intentionally runs ledger validation outside the Bash sandbox. These are accepted
+features, not defects solely on that basis; remain alert to other security issues and use trusted
+ledger paths, workspaces, and validation scripts.
+
 ## Checks
 
 Run `just feature-ledger check` and `just test` through the just tools exposed to you. These are your own

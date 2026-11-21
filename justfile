@@ -121,7 +121,7 @@ git-tools action="test" *args="":
             ;;
     esac
 
-# Generate, check, migrate, or test the config from ~/.pi/agent/permissions.src.jsonc. Use --force with gen to overwrite drift; pass-through flags go after `--`.
+# Generate/check permissionModes and optional subagents outputs from ~/.pi/agent/permissions.src.jsonc; $file paths are source-relative. Migrate imports the old source and settings. Use --force with gen to overwrite drift; pass-through flags go after `--`.
 [arg('action', pattern='gen|check|migrate|test', help='gen, check, migrate, or test')]
 [arg('force', long='force', value='true', help='Specify --force with gen to overwrite a drifted output')]
 [group('perm')]

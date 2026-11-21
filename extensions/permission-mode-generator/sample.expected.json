@@ -74,7 +74,11 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow"
         },
         "skill": "allow"
       },
@@ -205,7 +209,13 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow",
+          "ledger_start": "deny",
+          "ledger_submit": "deny"
         },
         "skill": "allow"
       },
@@ -325,7 +335,13 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow",
+          "ledger_start": "allow",
+          "ledger_submit": "allow"
         },
         "skill": "allow"
       },
@@ -457,7 +473,13 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow",
+          "ledger_start": "deny",
+          "ledger_submit": "deny"
         },
         "skill": "allow"
       },
@@ -577,7 +599,13 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow",
+          "ledger_start": "allow",
+          "ledger_submit": "allow"
         },
         "skill": "allow"
       },
@@ -697,7 +725,13 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow",
+          "ledger_start": "allow",
+          "ledger_submit": "allow"
         },
         "skill": "allow"
       },

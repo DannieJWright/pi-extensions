@@ -1,0 +1,214 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { devNull, homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { run } from "./generate.ts";
+
+const repo = fileURLToPath(new URL("../../", import.meta.url));
+const sample = join(repo, "configs/permissions.example.src.jsonc");
+const gitTools = ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"];
+const ledgerTools = ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"];
+
+async function deploy(dir: string) {
+  const src = join(dir, "permissions.src.jsonc");
+  await cp(sample, src);
+  await mkdir(join(dir, "prompts"));
+  await cp(join(repo, "configs/prompts/reviewer.md"), join(dir, "prompts/reviewer.md"));
+  const options = { src, out: join(dir, "modes.json"), state: join(dir, "state.json"), settings: join(dir, "settings.json"), subagentsState: join(dir, "subagents-state.json"), subagentConfig: join(dir, "extensions/subagent/config.json") };
+  assert.equal((await run({ ...options, action: "gen" })).status, "wrote");
+  assert.equal((await run({ ...options, action: "check" })).status, "clean");
+  return options;
+}
+
+test("deployed sample composes agents, prompt, and mode policies", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "permissions-sample-"));
+  try {
+    const paths = await deploy(dir);
+    const modes = JSON.parse(await readFile(paths.out, "utf8")).modes;
+    const overrides = JSON.parse(await readFile(paths.settings, "utf8")).subagents.agentOverrides;
+    const builtin = {
+      reviewer: ["read", "grep", "find", "ls", "watchdog_diff", "contact_supervisor"],
+      scout: ["read", "grep", "find", "ls", "bash", "write", "contact_supervisor"],
+      worker: ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"],
+    };
+    for (const [name, tools] of Object.entries(builtin)) {
+      assert.deepEqual(new Set(overrides[name].tools), new Set([...tools, ...gitTools, ...(name === "worker" ? ledgerTools : [])]));
+      assert.ok(overrides[name].subagentOnlyExtensions.some((p: string) => p.endsWith("/git-read-tools/index.ts")));
+    }
+    assert.deepEqual(overrides.worker.mutationTools, ["ledger_start", "ledger_submit"]);
+    assert.ok(overrides.worker.subagentOnlyExtensions.some((p: string) => p.endsWith("/feature-ledger/index.ts")));
+    assert.match(overrides.reviewer.systemPrompt, /git_r_diff.*committed ranges/);
+    assert.match(overrides.reviewer.systemPrompt, /Do not use shell commands, mutate the repository/);
+    assert.ok(!overrides.reviewer.systemPrompt.includes("acceptanceRole:"));
+    for (const name of ["default", "plan", "plan-local", "build", "build-local", "build-yolo"]) {
+      assert.equal(modes[name].permission.tool["git_r_*"], "allow");
+      for (const tool of ["ledger_check", "ledger_list", "ledger_next"]) assert.equal(modes[name].permission.tool[tool], "allow");
+    }
+    for (const name of ["plan", "plan-local"]) for (const tool of ["ledger_start", "ledger_submit"]) assert.equal(modes[name].permission.tool[tool], "deny");
+    for (const name of ["build", "build-local", "build-yolo"]) for (const tool of ["ledger_start", "ledger_submit"]) assert.equal(modes[name].permission.tool[tool], "allow");
+    for (const tool of ["ledger_start", "ledger_submit"]) assert.equal(modes.default.permission.tool[tool], undefined);
+    assert.equal(modes.default.permission.tool["*"], "ask");
+    assert.equal(modes.yolo.permission.tool, "allow");
+    await assert.rejects(readFile(paths.subagentConfig, "utf8"), { code: "ENOENT" });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+const piRoot = process.env.PI_PACKAGE_DIR;
+const subRoot = process.env.PI_GIT_TOOLS_SUBAGENTS_ROOT;
+const permRoot = process.env.PI_GIT_TOOLS_PERMISSION_MODES_ROOT;
+
+test("foreground child launch without ambient extension does not impose sample mode rules", { skip: !(piRoot && subRoot) && "set PI_PACKAGE_DIR and PI_GIT_TOOLS_SUBAGENTS_ROOT" }, async () => {
+  const pi = await import(pathToFileURL(join(piRoot!, "dist/index.js")).href);
+  const launchApi = await import(pathToFileURL(join(subRoot!, "src/runs/shared/child-launch.js")).href);
+  const permissions = await import(pathToFileURL(join(subRoot!, "src/runs/shared/permissions.js")).href);
+  const dir = await mkdtemp(join(tmpdir(), "permissions-foreground-"));
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldAgent = process.env.PI_CODING_AGENT_DIR;
+  let session: any;
+  try {
+    const cwd = join(dir, "repo"), agentDir = join(dir, "agent"), home = join(dir, "home");
+    await mkdir(cwd); await mkdir(agentDir); await mkdir(home);
+    process.env.HOME = home; process.env.USERPROFILE = home; process.env.PI_CODING_AGENT_DIR = agentDir;
+    assert.equal(homedir(), home);
+    const paths = await deploy(agentDir);
+    const worker = JSON.parse(await readFile(paths.settings, "utf8")).subagents.agentOverrides.worker;
+    const rules = permissions.resolvePermissionRules(undefined, worker.permissions);
+    const target = join(home, ".pi/agent/git/github.com/DannieJWright/pi-extensions/extensions");
+    await mkdir(target, { recursive: true });
+    await symlink(join(repo, "extensions/git-read-tools"), join(target, "git-read-tools"), "junction");
+    await symlink(join(repo, "extensions/feature-ledger"), join(target, "feature-ledger"), "junction");
+    const launch = launchApi.buildInProcessChildLaunch({ host: "parent", cwd, childAgentName: "worker", childIndex: 0, sessionEnabled: false, inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, tools: worker.tools, subagentOnlyExtensions: worker.subagentOnlyExtensions, permissionRules: rules });
+    assert.equal(launch.session.ambientExtensions, false);
+    assert.equal(launch.config.permissions, undefined);
+    const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+    const loader = new pi.DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: launch.session.extensionPaths, extensionFactories: launch.session.hooks });
+    await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
+    ({ session } = await pi.createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader, sessionManager: pi.SessionManager.inMemory(cwd), tools: launch.session.tools }));
+    pi.initTheme(settingsManager.getTheme()); session.extensionRunner.onError((error: unknown) => { throw error; });
+    await session.extensionRunner.emit({ type: "session_start", reason: "startup" });
+    for (const name of ledgerTools) {
+      assert.ok(session.getActiveToolNames().includes(name), name);
+      const decision = await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: name, toolName: name, input: { path: join(cwd, "ledger.yaml") } });
+      assert.notEqual(decision?.block, true, name);
+    }
+    const readDecision = await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "git_r_status", toolName: "git_r_status", input: {} });
+    assert.notEqual(readDecision?.block, true);
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); session = undefined;
+  } finally {
+    session?.dispose();
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile;
+    if (oldAgent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgent;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("detached subprocess exercises background launch and generated Build permissions", { skip: !(piRoot && subRoot && permRoot) && "set all three runtime package roots" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "permissions-detached-probe-"));
+  try {
+    const cwd = join(dir, "repo"), agentDir = join(dir, "agent"), home = join(dir, "home");
+    await mkdir(cwd); await mkdir(agentDir); await mkdir(home);
+    const paths = await deploy(agentDir);
+    const settings = JSON.parse(await readFile(paths.settings, "utf8"));
+    settings.extensions = [join(repo, "extensions/git-read-tools/index.ts"), join(repo, "extensions/feature-ledger/index.ts"), join(permRoot!, "src/index.ts")];
+    await writeFile(paths.settings, JSON.stringify(settings));
+    await mkdir(join(agentDir, "permission-mode"));
+    const modeConfig = JSON.parse(await readFile(paths.out, "utf8"));
+    for (const mode of Object.values(modeConfig.modes) as any[]) mode.sandbox.enabled = false;
+    await writeFile(join(agentDir, "permission-mode/permission-mode.json"), JSON.stringify(modeConfig));
+    const target = join(home, ".pi/agent/git/github.com/DannieJWright/pi-extensions/extensions");
+    await mkdir(target, { recursive: true });
+    await symlink(join(repo, "extensions/git-read-tools"), join(target, "git-read-tools"), "junction");
+    await symlink(join(repo, "extensions/feature-ledger"), join(target, "feature-ledger"), "junction");
+    execFileSync(process.execPath, [join(repo, "extensions/permission-mode-generator/detached-hook-probe.ts"), cwd, agentDir, piRoot!, subRoot!], {
+      cwd, detached: process.platform !== "win32", timeout: 30000, stdio: "pipe",
+      env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agentDir, PI_PACKAGE_DIR: piRoot!, PI_PERMISSION_MODE: "build", PI_PERMISSION_TMPDIR: dir, TMPDIR: dir, TMP: dir, TEMP: dir },
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("permission-mode loader and direct ledger provider calls use disposable ledger", { skip: !(piRoot && subRoot && permRoot) && "set all three runtime package roots (see README)" }, async () => {
+  const pi = await import(pathToFileURL(join(piRoot!, "dist/index.js")).href);
+  const sub = await import(pathToFileURL(join(subRoot!, "src/runs/shared/child-tool-plan.js")).href);
+  const dir = await mkdtemp(join(tmpdir(), "permissions-worker-"));
+  const cwd = join(dir, "repo"), agentDir = join(dir, "agent"), home = join(dir, "home"), scratch = join(dir, "scratch");
+  const names = ["HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PI_PERMISSION_MODE", "PI_PERMISSION_TMPDIR", "PI_LEDGER_PATH", "CLAUDE_CODE_TMPDIR", "CLAUDE_TMPDIR"];
+  // Ledger provider subprocesses inherit process.env as well as direct fixture Git calls.
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith("GIT_")));
+  const old = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  let session: any;
+  try {
+    await mkdir(cwd); await mkdir(agentDir); await mkdir(home); await mkdir(scratch); await mkdir(join(agentDir, "permission-mode"));
+    for (const name of Object.keys(gitEnv)) delete process.env[name];
+    delete process.env.PI_LEDGER_PATH;
+    process.env.HOME = home; process.env.USERPROFILE = home; process.env.PI_CODING_AGENT_DIR = agentDir; process.env.PI_PERMISSION_TMPDIR = scratch;
+    assert.equal(homedir(), home);
+    const paths = await deploy(agentDir);
+    const settings = JSON.parse(await readFile(paths.settings, "utf8"));
+    const worker = settings.subagents.agentOverrides.worker;
+    settings.extensions = [join(repo, "extensions/git-read-tools/index.ts"), join(repo, "extensions/feature-ledger/index.ts")];
+    await writeFile(paths.settings, JSON.stringify(settings));
+    Object.assign(process.env, { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@localhost", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@localhost", GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: "1" });
+    const target = join(home, ".pi/agent/git/github.com/DannieJWright/pi-extensions/extensions");
+    await mkdir(target, { recursive: true });
+    await symlink(join(repo, "extensions/git-read-tools"), join(target, "git-read-tools"), "junction");
+    await symlink(join(repo, "extensions/feature-ledger"), join(target, "feature-ledger"), "junction");
+    const modeConfig = JSON.parse(await readFile(paths.out, "utf8"));
+    for (const mode of Object.values(modeConfig.modes) as any[]) mode.sandbox.enabled = false;
+    await writeFile(join(agentDir, "permission-mode/permission-mode.json"), JSON.stringify(modeConfig));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull, GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@localhost", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@localhost" } });
+    const template = join(dir, "empty-git-template");
+    await mkdir(template);
+    git("init", "-q", `--template=${template}`); await writeFile(join(cwd, "file"), "first\n"); git("add", "."); git("commit", "-qm", "initial");
+    const ledger = join(cwd, "ledger.yaml");
+    await writeFile(ledger, "ledger:\n  workspace: .\n  validation_scripts: []\n  features:\n    - id: example\n      status: todo\n      goal: Example\n      short_goal: Example\n      acceptance_criteria: []\n      constraints: []\n      files: { in: [], out: [] }\n      tests: []\n      limitations: []\n      summary: ''\n      commits: {}\n");
+    const plan = sub.resolvePiLaunchToolPlan({ tools: worker.tools, subagentOnlyExtensions: worker.subagentOnlyExtensions, cwd, agentName: "worker" });
+    assert.equal(plan.disableAmbientExtensions, false);
+    for (const mode of ["default", "build", "plan"]) {
+      process.env.PI_PERMISSION_MODE = mode;
+      const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+      const loader = new pi.DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [join(permRoot!, "src/index.ts"), ...worker.subagentOnlyExtensions] });
+      await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
+      ({ session } = await pi.createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader, sessionManager: pi.SessionManager.inMemory(cwd), tools: plan.effectiveToolAllowlist }));
+      pi.initTheme(settingsManager.getTheme()); session.extensionRunner.onError((error: unknown) => { throw error; });
+      await session.extensionRunner.emit({ type: "session_start", reason: "startup" });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      for (const name of [...gitTools, ...ledgerTools]) assert.ok(session.getActiveToolNames().includes(name), `${mode}: ${name}`);
+      for (const name of gitTools) {
+        const decision = await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: name, toolName: name, input: {} });
+        assert.notEqual(decision?.block, true, `${mode}: ${name}`);
+      }
+      for (const name of ledgerTools) for (const input of [{ path: ledger }, { path: join(home, ".pi/agent/rehydra/records/records.sqlite") }, {}]) {
+        const decision = await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: name, toolName: name, input });
+        const blocked = (mode === "plan" || mode === "default") && ["ledger_start", "ledger_submit"].includes(name);
+        assert.equal(decision?.block === true, blocked, `${mode}: ${name} ${JSON.stringify(input)}`);
+      }
+      const providers = loader.getExtensions().extensions.filter((e: any) => e.tools.has("ledger_list"));
+      assert.equal(providers.length, 1);
+      assert.equal(loader.getExtensions().extensions.filter((e: any) => e.tools.has("git_r_diff")).length, 1);
+      // Direct provider calls below bypass the permission gate and test only ledger functionality.
+      const provider = providers[0];
+      for (const name of ["ledger_check", "ledger_list", "ledger_next"]) {
+        const result = await provider.tools.get(name).definition.execute("id", { path: ledger }, undefined, undefined, { cwd });
+        assert.notEqual(result.isError, true, `${name}: ${JSON.stringify(result)}`);
+      }
+      if (mode === "build") {
+        const start = await provider.tools.get("ledger_start").definition.execute("id", { id: "example", path: ledger }, undefined, undefined, { cwd });
+        assert.equal(start.isError, undefined, JSON.stringify(start));
+        await writeFile(join(cwd, "changed"), "only in disposable repo\n");
+        const submit = await provider.tools.get("ledger_submit").definition.execute("id", { id: "example", path: ledger, commit_message: "example", summary: "tested" }, undefined, undefined, { cwd });
+        assert.equal(submit.isError, undefined, JSON.stringify(submit));
+        assert.match(submit.content[0].text, /is done/);
+      }
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); session = undefined;
+    }
+  } finally {
+    session?.dispose();
+    for (const name of names) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; }
+    for (const name of Object.keys(process.env)) if (name.startsWith("GIT_")) delete process.env[name];
+    Object.assign(process.env, gitEnv);
+    await rm(dir, { recursive: true, force: true });
+  }
+});

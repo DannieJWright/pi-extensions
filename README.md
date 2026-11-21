@@ -1,10 +1,12 @@
 # pi-extensions
 
-Three Pi extensions as one package:
+Pi extensions as one package:
 
 - `extensions/just-tools/` — exposes the justfile recipes as tools. See its README.
 - `extensions/provider-rules/` — injects per-provider/model prompt rules, and recovers when a local model's response is truncated by thinking. See its README.
 - `extensions/permission-mode-generator/` — generates permission modes and optional subagent settings from `~/.pi/agent/permissions.src.jsonc` (example source in `configs/`). See its README and migration guide.
+- `extensions/feature-ledger/` — provides feature ledger tools.
+- `extensions/git-read-tools/` — provides read-only Git inspection tools.
 
 ## Setup on a new machine
 
@@ -22,6 +24,8 @@ Three Pi extensions as one package:
    cp configs/just-tools.example.jsonc ~/.pi/just-tools.jsonc
    cp configs/provider-rules.example.jsonc ~/.pi/agent/provider-rules.jsonc
    cp configs/permissions.example.src.jsonc ~/.pi/agent/permissions.src.jsonc
+   mkdir -p ~/.pi/agent/prompts
+   cp configs/prompts/reviewer.md ~/.pi/agent/prompts/reviewer.md
    ```
 
 3. Requirements: `just` on PATH, and Node 22.6+ (type stripping) to run the `.ts` entry points and `node --test`. Run `npm install` once for the test devDependency (`@earendil-works/pi-ai`).
@@ -32,7 +36,7 @@ Three Pi extensions as one package:
    import "<path>/pi-extensions/justfile"
    ```
 
-   Sessions started in the repo can run `just` directly. The generator reads `~/.pi/agent/permissions.src.jsonc` and writes `~/.pi/agent/permission-mode/permission-mode.json`, where the separately installed `pi-permission-modes` reads it. It optionally owns the `subagents` key in `~/.pi/agent/settings.json`. Existing installations should follow [the migration guide](extensions/permission-mode-generator/MIGRATION.md) instead of copying the example. Live files and baselines are not committed.
+   Sessions started in the repo can run `just` directly. Run `just perm` to generate from `~/.pi/agent/permissions.src.jsonc`: the `permissionModes` section writes `~/.pi/agent/permission-mode/permission-mode.json`, and `subagents` optionally owns the `subagents` key in `~/.pi/agent/settings.json` and selected keys in `~/.pi/agent/extensions/subagent/config.json`. `$file` resolves relative to the source, so copy the prompt as shown. Existing installations should follow [the migration guide](extensions/permission-mode-generator/MIGRATION.md) and use `just perm migrate` instead of copying the example. The sample incorporates the operator-supplied worker override and adds `ledger_list` and Git read tools; compare and preserve any other existing settings before generating. Adjust extension paths to your install. Live files and baselines are not committed.
 
 Do not keep duplicate copies of these extension files under `~/.pi/agent/extensions` — Pi would load them twice.
 
