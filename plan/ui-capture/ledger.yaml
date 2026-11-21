@@ -1,0 +1,211 @@
+ledger:
+  description: >
+    UI capture tooling: a pi extension that runs the dev server, the scripted steps, and the
+    snapshots outside the bash sandbox, so a subagent does before/after captures with no temp
+    scripts and no permission requests. Plan: plan/2026-11-21_ui-capture-tooling.md.
+  workspace: .
+  branch: snapshot-fixes
+  validation_scripts:
+    - just feature-ledger check
+    - just test
+
+  features:
+    - id: ui-capture-core
+      status: todo
+      goal: >
+        Move the spec parser, the step runner, and the sidecar logic out of
+        skills/before-after-capture/scripts/capture.mjs into a new extension directory
+        extensions/ui-capture/, as TypeScript modules over an injected driver. Add the new spec
+        format and verbs. Sections "Spec format", "Tools / capture_run" steps 4-6 (record and
+        merge only), and "Tests" (spec, steps, sidecar) of plan/2026-11-21_ui-capture-tooling.md.
+        Add a `ui-capture` justfile recipe (action `test`) and add it as a group in `just test`.
+      short_goal: Spec, step runner, and merged sidecar as tested extension modules.
+      acceptance_criteria:
+        - extensions/ui-capture/spec.ts parses a spec with feature, subphase, description, server, conditions, steps, and diff, and returns a stable spec hash.
+        - "Spec validation fails with a clear message for: a missing required field, an unknown verb, a server block with neither url nor start, and detached: true without stop."
+        - The {port} placeholder is replaced in server.start and server.env values.
+        - extensions/ui-capture/steps.ts runs goto, fill, press, hover, click, scroll_to, wait_for, assert, screenshot, focus, read, measure, and eval through a driver interface, and records each result.
+        - press supports repeat and until_stable; until_stable stops when the value stops changing and fails at max.
+        - assert supports equals, inside, and same_top with attribute or computed; a mismatch fails the step with the expected and actual values.
+        - measure supports each and derive (distinct_tops, natural_row_width).
+        - A navigation during a step makes the runner settle and retry that step once; a second failure fails the run.
+        - extensions/ui-capture/sidecar.ts merges a phase into one sidecar.json with phases.before and phases.after, and a later run of one phase does not remove the other phase.
+        - A failed step is still recorded in the sidecar with the step and its error.
+        - The condition match check fails when the conditions, the steps, or the spec hash differ between phases.
+        - The pair_check answers are validated against the schema in the plan; an existing pair_check is not overwritten without force.
+        - `just ui-capture test` runs the extension tests, and `just test` prints a ui-capture group line.
+      constraints:
+        - No new dependencies. Use lib/yaml.ts for YAML.
+        - Tests are deterministic: a fake driver, no real time, no network, no browser.
+        - Do not delete skills/before-after-capture/scripts/ in this item; ui-capture-skill-agent removes it.
+        - Old sidecar layout (sidecar-<phase>.json, before.yaml, after.yaml) is not supported.
+        - Follow the justfile-recipes style already used in justfile (action argument, group, one-line doc comment).
+      files:
+        in:
+          - plan/2026-11-21_ui-capture-tooling.md
+          - skills/before-after-capture/scripts/capture.mjs
+          - skills/before-after-capture/scripts/capture.test.mjs
+          - lib/yaml.ts
+          - justfile
+          - extensions/feature-ledger/README.md
+          - .references/before-after-capture-skill-gaps/before-after-capture-skill-gaps.md
+        out: []
+      tests:
+        - extensions/ui-capture/spec.test.ts
+        - extensions/ui-capture/steps.test.ts
+        - extensions/ui-capture/sidecar.test.ts
+      limitations: []
+      summary: ''
+      commits: {}
+
+    - id: ui-capture-server
+      status: todo
+      goal: >
+        Server control and command trust for the extension. Sections "Decisions" (server config,
+        port, foreign server or lock, command trust, stop at session end), "Tools /
+        capture_server", and "Command trust" of plan/2026-11-21_ui-capture-tooling.md.
+      short_goal: Start, stop, health-check, and trust-check the project dev server.
+      acceptance_criteria:
+        - extensions/ui-capture/server.ts starts a server from a spec server block through an injected process runner, polls the ready probe (path, selector, not_text, timeout), and returns the URL and the log path.
+        - With a url server block, start only checks health and stop never stops it.
+        - port auto picks a free port and replaces {port}; a fixed port with a foreign listener is reported with its URL and the server is not started.
+        - A framework lock message in the server log (for example "Another next dev server is already running") is reported with the PID and URL it names, and no lock file is deleted.
+        - A detached launch is stopped with the spec stop command; an owned process is stopped by a process group kill.
+        - A dead server that the tool started is restarted once, and the result includes the log tail.
+        - status reports alive or dead, the URL, the uptime, and the last log lines; logs returns the log tail.
+        - Servers are tracked per worktree; a shutdown stops only the servers the tool started, except a server with keep true.
+        - extensions/ui-capture/trust.ts allows a command whose first word is just, allows a command that matches a glob in ~/.pi/agent/ui-capture.jsonc allowedCommands after {port} is replaced, and refuses all others with a message that names the exact line to add.
+      constraints:
+        - No new dependencies. Use lib/jsonc.ts for the allowlist file.
+        - Tests use a fake process runner and a fake clock; no real server and no network.
+        - Never kill a process or delete a file that the tool did not create.
+        - There is no interactive prompt for an untrusted command; refuse it.
+      files:
+        in:
+          - plan/2026-11-21_ui-capture-tooling.md
+          - extensions/ui-capture/spec.ts
+          - lib/jsonc.ts
+          - extensions/just-tools/runner.ts
+        out: []
+      tests:
+        - extensions/ui-capture/server.test.ts
+        - extensions/ui-capture/trust.test.ts
+      limitations: []
+      summary: ''
+      commits: {}
+
+    - id: ui-capture-driver
+      status: todo
+      goal: >
+        The Playwright driver and the region diff. Sections "Decisions" (Playwright, Chromium
+        sandbox, pixel diff, paths), "Tools / capture_run" steps 2-3 and 6 (diff), and "Tests"
+        (diff, smoke test) of plan/2026-11-21_ui-capture-tooling.md.
+      short_goal: Playwright driver with conditions and ready gate, plus per-region pixel diff.
+      acceptance_criteria:
+        - extensions/ui-capture/driver.ts resolves Playwright from the project (playwright, then @playwright/test); when neither resolves it fails with a message that names the dev dependency to add.
+        - Chromium launches with its own sandbox and retries with --no-sandbox only on an EPERM launch error.
+        - The context applies viewport, clock, locale, theme (color scheme plus init script), theme_storage, storage, and permissions from conditions.
+        - The driver goes to entry, waits for load, applies the ready gate, and records console errors.
+        - Paths resolve from the git toplevel of the session directory.
+        - extensions/ui-capture/diff.ts returns, per region (selector or [x, y, w, h]), the count and percent of differing pixels, and a diff mask image; decoding uses the page canvas, so no image library is added.
+        - Diff tests use fixture pixel data with a faked decoder.
+        - An opt-in smoke test runs a real capture against a static node:http server and is skipped when Playwright does not resolve.
+      constraints:
+        - No new dependencies. Playwright is not added to this repo's package.json.
+        - The smoke test must pass as skipped in an environment without Playwright.
+      files:
+        in:
+          - plan/2026-11-21_ui-capture-tooling.md
+          - extensions/ui-capture/steps.ts
+          - extensions/ui-capture/sidecar.ts
+          - skills/before-after-capture/scripts/capture.mjs
+          - .references/before-after-capture-skill-gaps/scripts
+        out: []
+      tests:
+        - extensions/ui-capture/driver.test.ts
+        - extensions/ui-capture/diff.test.ts
+        - extensions/ui-capture/smoke.test.ts
+      limitations: []
+      summary: ''
+      commits: {}
+
+    - id: ui-capture-tools
+      status: todo
+      goal: >
+        Register the capture_server, capture_run, and capture_check tools, the session hooks,
+        and a CLI over the same modules. Sections "Tools", "Files" (index.ts, cli.ts, README.md),
+        and "Agent and ledger" (permission entry note) of plan/2026-11-21_ui-capture-tooling.md.
+      short_goal: Register the three capture tools, session shutdown hook, CLI, and README.
+      acceptance_criteria:
+        - extensions/ui-capture/index.ts registers capture_server (action start, stop, status, logs; spec; optional tail), capture_run (spec, phase before or after, optional build label), and capture_check (spec, answers, optional force).
+        - capture_run ensures the server, runs the steps, writes the PNGs to <artifacts>/<feature>/<subphase>/<phase>[-<name>].png, merges the sidecar, and computes the diff and the condition match when both phases exist.
+        - capture_run returns a compact text result (step outcomes, measurements, diff) and the images inline; with both phases it returns before, after, and the diff mask.
+        - The build record is git rev-parse --short HEAD plus a dirty flag.
+        - capture_check refuses when a phase is missing or the spec hash differs between phases.
+        - On session_shutdown the extension stops the servers it started, except keep true.
+        - extensions/ui-capture/cli.ts exposes the same three operations over the same modules.
+        - extensions/ui-capture/README.md documents the tools, the spec format, ~/.pi/agent/ui-capture.jsonc, the CLI, and the permission entry "capture_*" allow.
+        - package.json pi.extensions lists extensions/ui-capture/index.ts.
+      constraints:
+        - Follow the registration pattern of extensions/just-tools/index.ts and extensions/feature-ledger/index.ts.
+        - Do not pass optional fields that a tool does not need.
+        - Do not edit the user permission-mode source file; the README states the entry to add.
+      files:
+        in:
+          - plan/2026-11-21_ui-capture-tooling.md
+          - extensions/just-tools/index.ts
+          - extensions/feature-ledger/index.ts
+          - extensions/ui-capture/spec.ts
+          - extensions/ui-capture/steps.ts
+          - extensions/ui-capture/sidecar.ts
+          - extensions/ui-capture/server.ts
+          - extensions/ui-capture/driver.ts
+          - extensions/ui-capture/diff.ts
+          - package.json
+        out: []
+      tests:
+        - extensions/ui-capture/tools.test.ts
+      limitations: []
+      summary: ''
+      commits: {}
+
+    - id: ui-capture-skill-agent
+      status: todo
+      goal: >
+        Rewrite the before-after-capture skill around the tools, ship the ui-worker subagent,
+        and route before/after ledger items to it. Sections "Agent and ledger", "Skill rewrite",
+        and "Files" (SKILL.md, scripts removal, agents/ui-worker.md, package.json, orchestrator
+        workflow, README.md) of plan/2026-11-21_ui-capture-tooling.md.
+      short_goal: Skill rewrite, ui-worker agent, ledger routing, and old script removal.
+      acceptance_criteria:
+        - skills/before-after-capture/SKILL.md names only the capture tools; it names no script, CLI, or recipe from this repository.
+        - The skill flow is write the spec, capture_run before, implement, capture_run after, look at the returned images, capture_check.
+        - "The skill keeps the existing rules (conditions match, region rendered before the shot, a DOM attribute is not evidence, cleanup before merge) and adds: one spec per pair; no build or e2e run of the same package while the capture server runs; use url to reuse a server the user already runs; never delete another server's lock."
+        - skills/before-after-capture/scripts/ is removed; any test it held that still applies is covered under extensions/ui-capture/.
+        - agents/ui-worker.md defines the worker persona with read, grep, find, ls, bash, edit, write, contact_supervisor, capture_server, capture_run, capture_check, and the just tools, and loads extensions/ui-capture/index.ts and extensions/just-tools/index.ts.
+        - package.json has pi.subagents.agents ["./agents"].
+        - skills/feature-ledger/references/agents/orchestrator-workflow.md routes an item whose acceptance criteria ask for a before/after pair to ui-worker.
+        - README.md lists the ui-capture extension and the ui-worker agent.
+        - just skills test passes without the removed scripts.
+      constraints:
+        - Follow AGENTS.md: a skill file names tools only, never a recipe or script from this repository.
+        - Write in ASD-STE100 Simplified Technical English, matching the other skill files.
+        - Read ~/.pi/agent/npm/node_modules/pi-subagents/agents/worker.md and the pi-subagents agent docs for the agent file format before writing it.
+      files:
+        in:
+          - plan/2026-11-21_ui-capture-tooling.md
+          - skills/before-after-capture/SKILL.md
+          - skills/before-after-capture/scripts/capture.mjs
+          - skills/before-after-capture/scripts/yaml.test.mjs
+          - skills/feature-ledger/references/agents/orchestrator-workflow.md
+          - skills/creating-skills/SKILL.md
+          - AGENTS.md
+          - README.md
+          - package.json
+          - extensions/ui-capture/README.md
+          - /home/nhbody/.pi/agent/npm/node_modules/pi-subagents/agents/worker.md
+        out: []
+      tests: []
+      limitations: []
+      summary: ''
+      commits: {}
