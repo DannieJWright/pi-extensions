@@ -120,3 +120,16 @@ test("replacement is visible to an independent reader before lock release", asyn
 		assert.equal(observer.status, 0);
 	});
 });
+
+test("dangling settings link resolves directory links before .. and holds the installed target lease", async (t) => {
+	const dir = fixture(t), outside = path.join(dir, "outside"), inner = path.join(outside, "inner");
+	fs.mkdirSync(inner, { recursive: true });
+	fs.symlinkSync(inner, path.join(dir, "jump"));
+	const settings = path.join(dir, "settings.json"), target = path.join(outside, "target.json");
+	fs.symlinkSync("jump/../target.json", settings);
+	assert.equal(physicalPath(settings), target);
+	await withOutputLocks([settings], settings, () => {
+		assert.equal(fs.existsSync(`${target}.write-lock/owner.json`), true);
+		assert.equal(fs.existsSync(`${path.join(dir, "target.json")}.write-lock`), false);
+	});
+});

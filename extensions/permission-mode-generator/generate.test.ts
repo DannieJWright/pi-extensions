@@ -297,3 +297,122 @@ test("checks during a concurrent generator never mutate files", async (t) => {
 	assert.equal(mutations, 0);
 	assert.equal((await exit)[0], 0);
 });
+
+test("dangling settings link writes to the filesystem target without touching the lexical target", async (t) => {
+	const dir = temporaryDirectory(t), p = pathsFor(dir), outside = path.join(dir, "outside");
+	fs.mkdirSync(path.join(outside, "inner"), { recursive: true });
+	fs.symlinkSync(path.join(outside, "inner"), path.join(dir, "jump"));
+	fs.symlinkSync("jump/../target.json", p.settings);
+	fs.writeFileSync(path.join(dir, "target.json"), '{"untouched":true}');
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} }, subagents: { settings: { x: 1 } } }));
+	assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(outside, "target.json"), "utf8")), { subagents: { x: 1 } });
+	assert.equal(fs.readFileSync(path.join(dir, "target.json"), "utf8"), '{"untouched":true}');
+	assert.equal(fs.lstatSync(p.settings).isSymbolicLink(), true);
+});
+
+test("queued generator reloads source and file references under the correct lock set", async (t) => {
+	const { spawn } = await import("node:child_process");
+	const { once } = await import("node:events");
+	const { withOutputLocks } = await import("../../lib/settings-lock.ts");
+	const module = new URL("./generate.ts", import.meta.url).href;
+	for (const initiallyHasSubagents of [false, true]) {
+		const dir = temporaryDirectory(t), p = pathsFor(dir), prompt = path.join(dir, "prompt.md");
+		const source = (label: string, hasSubagents: boolean) => ({ permissionModes: { modes: { one: { label, prompt: { $file: "prompt.md" } } } }, ...(hasSubagents ? { subagents: { settings: { label } } } : {}) });
+		fs.writeFileSync(p.src, JSON.stringify(source("old", initiallyHasSubagents)));
+		fs.writeFileSync(prompt, "old prompt");
+		const script = `import fs from 'node:fs'; import {run} from ${JSON.stringify(module)}; const p=JSON.parse(process.argv[1]); const original=fs.readFileSync; let notified=false; fs.readFileSync=function(file,...args){const result=original.call(this,file,...args); if(file===p.src&&!notified){notified=true; console.log('source-read');} return result;}; const result=await run({...p,action:'gen'}); console.log(JSON.stringify(result)); if(result.status==='error')process.exit(2);`;
+		let exit: Promise<unknown[]>;
+		let output = "";
+		await withOutputLocks([p.out], undefined, async () => {
+			const child = spawn(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(p)], { stdio: ["ignore", "pipe", "pipe"] });
+			exit = once(child, "exit");
+			child.stdout.on("data", (data) => { output += data.toString(); });
+			await once(child.stdout, "data");
+			assert.match(output, /source-read/);
+			fs.writeFileSync(p.src, JSON.stringify(source("new", !initiallyHasSubagents)));
+			fs.writeFileSync(prompt, "new prompt");
+		});
+		assert.equal((await exit!)[0], 0, output);
+		assert.deepEqual(JSON.parse(fs.readFileSync(p.out, "utf8")).modes.one, { label: "new", prompt: "new prompt" });
+		assert.deepEqual(JSON.parse(fs.readFileSync(p.state, "utf8")).modes.one, { label: "new", prompt: "new prompt" });
+		if (initiallyHasSubagents) assert.equal(fs.existsSync(p.settings), false);
+		else assert.deepEqual(JSON.parse(fs.readFileSync(p.settings, "utf8")).subagents, { label: "new" });
+	}
+});
+
+test("durably orders marker, output and baseline before removing the marker", async (t) => {
+	const dir = temporaryDirectory(t), p = pathsFor(dir), marker = `${p.out}.generator-pending`;
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+	const open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync, rename = fs.renameSync, unlink = fs.unlinkSync;
+	const fds = new Map<number, string>(), events: string[] = [];
+	fs.openSync = ((file, ...args) => { const fd = open(file, ...args); fds.set(fd, String(file)); return fd; }) as typeof fs.openSync;
+	fs.closeSync = ((fd) => { fds.delete(fd); return close(fd); }) as typeof fs.closeSync;
+	fs.fsyncSync = ((fd) => { events.push(`sync:${fds.get(fd)}`); return sync(fd); }) as typeof fs.fsyncSync;
+	fs.renameSync = ((from, to) => { events.push(`rename:${to}`); return rename(from, to); }) as typeof fs.renameSync;
+	fs.unlinkSync = ((file) => { events.push(`unlink:${file}`); return unlink(file); }) as typeof fs.unlinkSync;
+	try { assert.equal((await run({ ...p, action: "gen" })).status, "wrote"); }
+	finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; fs.renameSync = rename; fs.unlinkSync = unlink; }
+	const markerRename = events.indexOf(`rename:${marker}`), outRename = events.indexOf(`rename:${p.out}`), stateRename = events.indexOf(`rename:${p.state}`), markerUnlink = events.indexOf(`unlink:${marker}`);
+	assert.ok(markerRename >= 0 && markerRename < outRename && outRename < stateRename && stateRename < markerUnlink, events.join("\n"));
+	for (const [begin, end] of [[markerRename, outRename], [outRename, stateRename], [stateRename, markerUnlink]]) {
+		assert.ok(events.slice(begin + 1, end).includes(`sync:${dir}`), events.join("\n"));
+	}
+	for (const [prefix, before] of [[`.out.json.generator-pending.`, markerRename], [`.out.json.`, outRename], [`.state.json.`, stateRename]] as const) {
+		assert.ok(events.slice(0, before).some((event) => event.startsWith(`sync:${path.join(dir, prefix)}`)), events.join("\n"));
+	}
+	assert.ok(events.slice(markerUnlink + 1).includes(`sync:${dir}`));
+});
+
+test("sync failure fails closed before output or leaves an interrupted marker", async (t) => {
+	for (const failedRename of ["marker", "output", "baseline"]) {
+		const dir = temporaryDirectory(t), p = pathsFor(dir), marker = `${p.out}.generator-pending`;
+		fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+		const open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync, rename = fs.renameSync;
+		const fds = new Map<number, string>(); let failNext = false;
+		fs.openSync = ((file, ...args) => { const fd = open(file, ...args); fds.set(fd, String(file)); return fd; }) as typeof fs.openSync;
+		fs.closeSync = ((fd) => { fds.delete(fd); return close(fd); }) as typeof fs.closeSync;
+		fs.renameSync = ((from, to) => { const result = rename(from, to); if (to === ({ marker, output: p.out, baseline: p.state })[failedRename]) failNext = true; return result; }) as typeof fs.renameSync;
+		fs.fsyncSync = ((fd) => { if (failNext && fds.get(fd) === dir) { failNext = false; throw new Error("injected directory sync failure"); } return sync(fd); }) as typeof fs.fsyncSync;
+		try { assert.match((await run({ ...p, action: "gen" })).lines.join(), /injected directory sync failure/); }
+		finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; fs.renameSync = rename; }
+		assert.equal(fs.existsSync(marker), true);
+		if (failedRename === "marker") assert.equal(fs.existsSync(p.out), false);
+		assert.equal((await run({ ...p, action: "gen" })).status, "drift");
+	}
+});
+
+test("older source snapshot cannot overwrite a newer completed generator", async (t) => {
+	const { spawn } = await import("node:child_process");
+	const { once } = await import("node:events");
+	const dir = temporaryDirectory(t), p = pathsFor(dir), gate = path.join(dir, "gate");
+	const source = (label: string) => JSON.stringify({ permissionModes: { modes: { one: { label } } } });
+	fs.writeFileSync(p.src, source("old"));
+	const module = new URL("./generate.ts", import.meta.url).href;
+	const script = `import fs from 'node:fs'; import {run} from ${JSON.stringify(module)}; const p=JSON.parse(process.argv[1]), gate=process.argv[2]; const original=fs.readFileSync; let first=true; fs.readFileSync=function(file,...args){const result=original.call(this,file,...args); if(file===p.src&&first){first=false; console.log('snapshot'); while(!fs.existsSync(gate)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);} return result;}; const result=await run({...p,action:'gen'}); if(result.status==='error') { console.error(result); process.exit(2); }`;
+	const child = spawn(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(p), gate], { stdio: ["ignore", "pipe", "pipe"] });
+	const exit = once(child, "exit");
+	try {
+		await once(child.stdout, "data");
+		fs.writeFileSync(p.src, source("new"));
+		assert.equal((await run({ ...p, action: "gen" })).status, "wrote");
+	} finally { fs.writeFileSync(gate, "go"); }
+	assert.equal((await exit)[0], 0);
+	assert.equal(JSON.parse(fs.readFileSync(p.out, "utf8")).modes.one.label, "new");
+	assert.equal(JSON.parse(fs.readFileSync(p.state, "utf8")).modes.one.label, "new");
+});
+
+test("marker file sync failure never publishes the output", async (t) => {
+	const dir = temporaryDirectory(t), p = pathsFor(dir);
+	fs.writeFileSync(p.src, JSON.stringify({ permissionModes: { modes: {} } }));
+	const open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync;
+	const fds = new Map<number, string>();
+	fs.openSync = ((file, ...args) => { const fd = open(file, ...args); fds.set(fd, String(file)); return fd; }) as typeof fs.openSync;
+	fs.closeSync = ((fd) => { fds.delete(fd); return close(fd); }) as typeof fs.closeSync;
+	fs.fsyncSync = ((fd) => { if (fds.get(fd)?.includes(".out.json.generator-pending.")) throw new Error("injected file sync failure"); return sync(fd); }) as typeof fs.fsyncSync;
+	try { assert.match((await run({ ...p, action: "gen" })).lines.join(), /injected file sync failure/); }
+	finally { fs.openSync = open; fs.closeSync = close; fs.fsyncSync = sync; }
+	assert.equal(fs.existsSync(p.out), false);
+	assert.equal(fs.existsSync(p.state), false);
+	assert.equal(fs.existsSync(`${p.out}.generator-pending`), false);
+});

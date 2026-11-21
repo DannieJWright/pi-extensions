@@ -54,6 +54,14 @@ function readJson(file: string): unknown | typeof MISSING {
 	try { return JSON.parse(text); }
 	catch (error) { throw new Error(`${file}: not valid JSON (${message(error)})`); }
 }
+function syncDirectoryTree(directory: string): void {
+	// Lock acquisition may have created ancestors; persist each directory entry too.
+	for (let current = directory;; current = path.dirname(current)) {
+		const fd = fs.openSync(current, "r");
+		try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+		if (path.dirname(current) === current) break;
+	}
+}
 function atomicWrite(file: string, text: string, assertOwned: () => void): void {
 	const target = physicalPath(file);
 	fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -63,8 +71,11 @@ function atomicWrite(file: string, text: string, assertOwned: () => void): void 
 	try {
 		fs.writeFileSync(temp, text, { flag: "wx", mode });
 		fs.chmodSync(temp, mode);
+		const fd = fs.openSync(temp, "r");
+		try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 		assertOwned();
 		fs.renameSync(temp, target);
+		syncDirectoryTree(path.dirname(target));
 	} finally { try { fs.unlinkSync(temp); } catch (error) { if (code(error) !== "ENOENT") throw error; } }
 }
 function writeJson(file: string, value: unknown, assertOwned: () => void): void {
@@ -137,6 +148,7 @@ function processOutput(spec: OutputSpec, action: "gen" | "check", force: boolean
 		spec.adopt(assertOwned);
 		assertOwned();
 		fs.unlinkSync(pending);
+		syncDirectoryTree(path.dirname(pending));
 		return { status: "wrote", lines: [`${spec.name}: wrote ${spec.out}`] };
 	}
 	if (baseline === MISSING) spec.adopt(assertOwned);
@@ -147,53 +159,65 @@ export async function run(options: RunOptions): Promise<RunResult> {
 	try {
 		const { src, out, state, settings, subagentsState, action } = options;
 		validatePaths({ src, out, state, settings, subagentsState });
-		if (!fs.existsSync(src)) {
-			if (fs.existsSync(oldSrc)) throw new Error(`${src} not found; old source exists at ${oldSrc}. Run just perm migrate; see MIGRATION.md.`);
-			throw new Error(`${src} not found. Copy configs/permissions.example.src.jsonc there first.`);
-		}
-		const parsed = parseJsonc(fs.readFileSync(src, "utf8"), src);
-		if (!isObject(parsed)) throw new Error(`${src}: top level must be an object`);
-		for (const key of Object.keys(parsed)) if (key !== "permissionModes" && key !== "subagents") throw new Error(`${src}: unknown top-level key ${key}; migrate the old source with just perm migrate (see MIGRATION.md)`);
-		if (!isObject(parsed.permissionModes)) throw new Error("permissionModes: must be an object");
-		if (Object.hasOwn(parsed, "subagents") && !isObject(parsed.subagents)) throw new Error("subagents: must be an object");
-		if (isObject(parsed.subagents) && Object.hasOwn(parsed.subagents, "config")) throw new Error("subagents.config is not yet supported; remove it until config output is available");
-		const source = resolveFiles(parsed, src) as JsonObject;
-		const rendered = { $comment: COMMENT_HEADER, ...buildConfig(source.permissionModes as JsonObject) };
-		const subagents = isObject(source.subagents) ? buildSubagents(source.subagents) : undefined;
-		const specs: OutputSpec[] = [{
-			name: "permissionModes", out, state, desired: rendered, equal: jsonEqual,
-			read: () => ({ current: readJson(out), baseline: readJson(state) }),
-			write: (owned) => writeJson(out, rendered, owned),
-			adopt: (owned) => writeJson(state, rendered, owned),
-		}];
-		if (subagents !== undefined) specs.push({
-			name: "subagents", out: settings, state: subagentsState, desired: subagents, equal: settingsEqual,
-			read: () => {
-				const file = readJson(settings), base = readJson(subagentsState);
-				if (file !== MISSING && !isObject(file)) throw new Error(`${settings}: top level must be an object`);
-				if (base !== MISSING && !isObject(base)) throw new Error(`${subagentsState}: top level must be an object`);
-				return { current: isObject(file) && Object.hasOwn(file, "subagents") ? file.subagents : MISSING, baseline: isObject(base) && Object.hasOwn(base, "settings") ? base.settings : MISSING };
-			},
-			write: (owned) => {
-				const file = readJson(settings);
-				if (file !== MISSING && !isObject(file)) throw new Error(`${settings}: top level must be an object`);
-				writeJson(settings, { ...(isObject(file) ? file : {}), subagents }, owned);
-			},
-			adopt: (owned) => {
-				const file = readJson(subagentsState);
-				if (file !== MISSING && !isObject(file)) throw new Error(`${subagentsState}: top level must be an object`);
-				writeJson(subagentsState, { ...(isObject(file) ? file : {}), settings: subagents }, owned);
-			},
-		});
-		const process = (owned: () => void): RunResult => {
+		const loadSpecs = (): OutputSpec[] => {
+			if (!fs.existsSync(src)) {
+				if (fs.existsSync(oldSrc)) throw new Error(`${src} not found; old source exists at ${oldSrc}. Run just perm migrate; see MIGRATION.md.`);
+				throw new Error(`${src} not found. Copy configs/permissions.example.src.jsonc there first.`);
+			}
+			const parsed = parseJsonc(fs.readFileSync(src, "utf8"), src);
+			if (!isObject(parsed)) throw new Error(`${src}: top level must be an object`);
+			for (const key of Object.keys(parsed)) if (key !== "permissionModes" && key !== "subagents") throw new Error(`${src}: unknown top-level key ${key}; migrate the old source with just perm migrate (see MIGRATION.md)`);
+			if (!isObject(parsed.permissionModes)) throw new Error("permissionModes: must be an object");
+			if (Object.hasOwn(parsed, "subagents") && !isObject(parsed.subagents)) throw new Error("subagents: must be an object");
+			if (isObject(parsed.subagents) && Object.hasOwn(parsed.subagents, "config")) throw new Error("subagents.config is not yet supported; remove it until config output is available");
+			const source = resolveFiles(parsed, src) as JsonObject;
+			const rendered = { $comment: COMMENT_HEADER, ...buildConfig(source.permissionModes as JsonObject) };
+			const subagents = isObject(source.subagents) ? buildSubagents(source.subagents) : undefined;
+			const specs: OutputSpec[] = [{
+				name: "permissionModes", out, state, desired: rendered, equal: jsonEqual,
+				read: () => ({ current: readJson(out), baseline: readJson(state) }),
+				write: (owned) => writeJson(out, rendered, owned),
+				adopt: (owned) => writeJson(state, rendered, owned),
+			}];
+			if (subagents !== undefined) specs.push({
+				name: "subagents", out: settings, state: subagentsState, desired: subagents, equal: settingsEqual,
+				read: () => {
+					const file = readJson(settings), base = readJson(subagentsState);
+					if (file !== MISSING && !isObject(file)) throw new Error(`${settings}: top level must be an object`);
+					if (base !== MISSING && !isObject(base)) throw new Error(`${subagentsState}: top level must be an object`);
+					return { current: isObject(file) && Object.hasOwn(file, "subagents") ? file.subagents : MISSING, baseline: isObject(base) && Object.hasOwn(base, "settings") ? base.settings : MISSING };
+				},
+				write: (owned) => {
+					const file = readJson(settings);
+					if (file !== MISSING && !isObject(file)) throw new Error(`${settings}: top level must be an object`);
+					writeJson(settings, { ...(isObject(file) ? file : {}), subagents }, owned);
+				},
+				adopt: (owned) => {
+					const file = readJson(subagentsState);
+					if (file !== MISSING && !isObject(file)) throw new Error(`${subagentsState}: top level must be an object`);
+					writeJson(subagentsState, { ...(isObject(file) ? file : {}), settings: subagents }, owned);
+				},
+			});
+			return specs;
+		};
+		const process = (specs: OutputSpec[], owned: () => void): RunResult => {
 			const results = specs.map((spec) => processOutput(spec, action, !!options.force, owned));
 			const status: RunStatus = results.some((x) => x.status === "drift") ? "drift" : results.some((x) => x.status === "wrote") ? "wrote" : "clean";
 			const lines = results.flatMap((x) => x.lines);
 			if (results.some((x, i) => i === 1 && x.status === "drift")) lines.push("pi-subagents disable, enable, eject and reset modify subagents; move those changes into the source or use --force.");
 			return { status, lines };
 		};
-		if (action === "check") return process(() => {});
-		return await withOutputLocks(specs.flatMap((spec) => [spec.out, spec.state]), subagents === undefined ? undefined : settings, process);
+		if (action === "check") return process(loadSpecs(), () => {});
+		for (;;) {
+			const initial = loadSpecs();
+			const result = await withOutputLocks(initial.flatMap((spec) => [spec.out, spec.state]), initial.length === 1 ? undefined : settings, (owned) => {
+				validatePaths({ src, out, state, settings, subagentsState });
+				const current = loadSpecs();
+				// An added or removed section changes the lock set; retry with the right one.
+				return current.length === initial.length ? process(current, owned) : undefined;
+			});
+			if (result !== undefined) return result;
+		}
 	} catch (error) { return { status: "error", lines: [message(error)] }; }
 }
 export function formatResult(result: RunResult, _paths: Paths): string | null {

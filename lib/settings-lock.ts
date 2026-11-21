@@ -121,10 +121,12 @@ export function physicalPath(file: string): string {
 			if (next === parent) throw new Error(`Cannot resolve path: ${file}`);
 			suffix.unshift(path.basename(parent)); parent = next;
 		}
+		if (suffix.includes("..")) throw new Error(`Cannot resolve path through a missing directory and ..: ${file}`);
 		const candidate = path.join(fs.realpathSync.native(parent), ...suffix);
 		try {
 			const text = fs.readlinkSync(candidate);
-			current = path.isAbsolute(text) ? text : path.resolve(path.dirname(candidate), text);
+			// Preserve link text so the kernel follows directory links before interpreting "..".
+			current = path.isAbsolute(text) ? text : `${path.dirname(candidate)}${path.sep}${text}`;
 		} catch (error) {
 			if (errorCode(error) === "ENOENT" || errorCode(error) === "EINVAL") return candidate;
 			throw error;
