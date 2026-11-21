@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { buildConfig } from "./merge.ts";
+import { buildConfig, buildSubagents } from "./merge.ts";
 import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
 
 function build(source: Record<string, unknown>): Record<string, unknown> {
@@ -217,4 +217,58 @@ test("the shipped source generates the shipped modes", () => {
 		},
 		label: "Plan (local)",
 	});
+});
+
+test("subagent settings and agents retain absence, empty, false and merge rules", () => {
+	assert.deepEqual(buildSubagents({ settings: { disableBuiltins: false } }), { disableBuiltins: false });
+	assert.deepEqual(buildSubagents({ settings: { disableBuiltins: false }, agents: {} }), {
+		disableBuiltins: false, agentOverrides: {},
+	});
+	const result = buildSubagents({
+		settings: { defaultExtensions: ["ext"], disableBuiltins: false },
+		fragments: {
+			base: { tools: ["a"], nested: { first: 1, removed: true }, enabled: true },
+			more: { extends: ["base"], "tools+": ["b"], enabled: false },
+		},
+		agents: { worker: { extends: ["more"], "tools+": ["b", "c"], nested: { removed: null, second: 2 } } },
+	});
+	assert.deepEqual(result, {
+		defaultExtensions: ["ext"], disableBuiltins: false,
+		agentOverrides: { worker: { tools: ["a", "b", "c"], nested: { first: 1, second: 2 }, enabled: false } },
+	});
+});
+
+test("settings.agentOverrides is rejected whether agents is absent or present", () => {
+	for (const extra of [{}, { agents: {} }]) {
+		assert.throws(() => buildSubagents({ settings: { agentOverrides: {} }, ...extra }),
+			/subagents\.settings\.agentOverrides: use subagents\.agents instead/);
+	}
+});
+
+test("extends lookup is section-local and names the failing entry", () => {
+	assert.throws(() => buildConfig({ modes: { plan: { extends: ["reviewer"] } } }),
+		/permissionModes\.modes\.plan: unknown extends "reviewer"/);
+	assert.throws(() => buildSubagents({ agents: { reviewer: { extends: ["plan"] } } }),
+		/subagents\.agents\.reviewer: unknown extends "plan"/);
+	assert.throws(() => buildSubagents({ agents: { reviewer: { extends: ["toString"] } } }),
+		/subagents\.agents\.reviewer: unknown extends "toString"/);
+});
+
+test("sibling resolved fragments replace arrays instead of appending", () => {
+	const fragments = { a: { tools: ["a"] }, b: { tools: ["b"] } };
+	assert.deepEqual(mode(buildConfig({ fragments, modes: { m: { extends: ["a", "b"] } } }), "m"), { tools: ["b"] });
+	assert.deepEqual(buildSubagents({ fragments, agents: { worker: { extends: ["a", "b"] } } }),
+		{ agentOverrides: { worker: { tools: ["b"] } } });
+});
+
+test("unsafe JSON property names are rejected without prototype pollution or data loss", () => {
+	for (const key of ["__proto__", "constructor", "prototype", "__proto__+"]) {
+		const source = JSON.parse(`{"modes":{"m":{"nested":{"${key}":{"polluted":true}}}}}`);
+		assert.throws(() => buildConfig(source), /permissionModes\.modes\.m\.nested\..*: unsafe property name; rename this key/);
+		const agents = JSON.parse(`{"agents":{"worker":{"${key}":{"polluted":true}}}}`);
+		assert.throws(() => buildSubagents(agents), /subagents\.agents\.worker\..*: unsafe property name; rename this key/);
+		assert.equal(({} as Record<string, unknown>).polluted, undefined);
+	}
+	assert.throws(() => buildConfig(JSON.parse('{"fragments":{"__proto__":{}},"modes":{}}')),
+		/permissionModes\.fragments\.__proto__: unsafe property name/);
 });

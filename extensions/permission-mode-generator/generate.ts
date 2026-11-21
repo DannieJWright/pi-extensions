@@ -45,6 +45,27 @@ function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** Resolve file values before merging, relative to the source file rather than the process cwd. */
+export function resolveFiles(value: unknown, sourceFile: string, keyPath = ""): unknown {
+	if (Array.isArray(value)) {
+		return value.map((item, index) => resolveFiles(item, sourceFile, `${keyPath}[${index}]`));
+	}
+	if (!isObject(value)) return value;
+	if (Object.keys(value).length === 1 && Object.hasOwn(value, "$file")) {
+		if (typeof value.$file !== "string") throw new Error(`${keyPath}: $file must be a path string`);
+		const file = path.resolve(path.dirname(sourceFile), value.$file);
+		try {
+			return fs.readFileSync(file, "utf8");
+		} catch (error) {
+			throw new Error(`${keyPath}: cannot read $file ${file}: ${message(error)}`);
+		}
+	}
+	return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+		key,
+		resolveFiles(child, sourceFile, keyPath ? `${keyPath}.${key}` : key),
+	]));
+}
+
 function readJsonFile(file: string): unknown | null {
 	if (!fs.existsSync(file)) return null;
 	const text = fs.readFileSync(file, "utf8");

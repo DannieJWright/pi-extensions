@@ -7,7 +7,7 @@ REPO := justfile_directory()
 _list-recipes:
     just --list
 
-# Run the permission-mode generator check, the just-tools tests, the provider rules check, the feature-ledger check and tests, and the skill script tests. Prints one line per group at the end: name, pass count, fail count. The full output is still written to the log file. Exit is non-zero when any group fails.
+# Run the sample permission-mode check, generator and just-tools tests, provider rules check, feature-ledger check and tests, and skill tests. Prints one line per group; exits non-zero on failure.
 [group('test')]
 test:
     #!/usr/bin/env bash
@@ -45,7 +45,20 @@ test:
         summary+=("${name} pass=${pass} fail=${fail}")
     }
 
-    run_group "perm check" just -f "${justfile}" perm check
+    check_perm_sample() {
+        tmp="$(mktemp -d "${TMPDIR:-/tmp}/perm-sample.XXXXXXXX")"
+        trap 'rm -rf "${tmp}"' EXIT
+        src="{{ REPO }}/configs/permission-mode.example.src.jsonc"
+        out="${tmp}/permission-mode.json"
+        state="${tmp}/state.json"
+        just -f "${justfile}" perm gen -- --src "${src}" --out "${out}" --state "${state}" || return
+        # Independent assertions precede the check: a generator that writes the wrong output must fail.
+        node -e 'const assert = require("node:assert/strict"); const fs = require("node:fs"); const x = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); assert.equal(x.defaultMode, "default"); assert.deepEqual(x.cycleOrder, ["default", "plan", "build", "plan-local", "build-local", "build-yolo", "yolo"]); assert.equal(x.modes.plan.permission.write["*"], "deny"); assert.equal(x.modes["build-local"].permission.external_directory["*"], "deny"); assert.equal(x.modes.yolo.sandbox.enabled, false);' "${out}" || return
+        just -f "${justfile}" perm check -- --src "${src}" --out "${out}" --state "${state}"
+    }
+
+    run_group "perm check" check_perm_sample
+    run_group "perm test" just -f "${justfile}" perm test
     run_group "just-tools test" just -f "${justfile}" just-tools test
     run_group "provider-rules check" just -f "${justfile}" provider-rules check
     run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
