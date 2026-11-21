@@ -37,7 +37,7 @@ export function syncDirectory(directory: string): void {
 }
 
 const mkdirIntent = "pi-permission-generator:mkdir-v1";
-const mkdirIntentName = /^\.generator-mkdir-[a-f0-9]{64}$/;
+const mkdirIntentName = /^\.generator-mkdir-[a-f0-9]{64}$/i;
 
 function rejectMkdirIntentName(name: string, file: string): void {
 	if (mkdirIntentName.test(name)) throw new Error(`Path uses reserved directory creation intent name: ${file}`);

@@ -39,6 +39,28 @@ test("physicalPath rejects reserved intent components even through aliases or wh
 	assert.equal(physicalPath(path.join(dir, ".generator-mkdir-not-a-hash")), path.join(dir, ".generator-mkdir-not-a-hash"));
 });
 
+test("reserved mkdir intent names reject uppercase and mixed-case paths and aliases", (t) => {
+	const dir = fixture(t), markerName = `.generator-mkdir-${"ab".repeat(32)}`;
+	const marker = path.join(dir, markerName);
+	fs.writeFileSync(marker, "existing");
+	const variants = [markerName.toUpperCase(), `.GeNeRaToR-MkDiR-${"aB".repeat(32)}`];
+	for (const [index, name] of variants.entries()) {
+		const alias = path.join(dir, `alias-${index}`);
+		fs.symlinkSync(name, alias);
+		fs.symlinkSync(path.basename(alias), path.join(dir, `chain-${index}`));
+		for (const file of [path.join(dir, name), path.join(dir, name, "file"), alias, path.join(dir, `chain-${index}`)]) {
+			assert.throws(() => physicalPath(file), /reserved directory creation intent name/, file);
+		}
+		const child = path.join(dir, `missing-${index}`, name, "child");
+		assert.throws(() => mkdirDurably(child), /reserved directory creation intent name/, child);
+		assert.equal(fs.existsSync(path.join(dir, `missing-${index}`)), false);
+	}
+	assert.equal(fs.readFileSync(marker, "utf8"), "existing");
+	for (const name of [`.GENERATOR-MKDIR-${"A".repeat(63)}`, `.GENERATOR-MKDIR-${"G".repeat(64)}`]) {
+		assert.equal(physicalPath(path.join(dir, name)), path.join(dir, name));
+	}
+});
+
 test("holds both settings locks and follows file links, cleaning up on error", async (t) => {
 	const dir = fixture(t), settings = path.join(dir, "settings.json"), target = path.join(dir, "target.json");
 	fs.writeFileSync(target, "{}");
