@@ -270,7 +270,10 @@
       },
       "label": "Plan Mode",
       "color": "mdLink",
-      "systemPrompt": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+      "systemPrompt": {
+        "$digest": "9ce7b529c09dfe2d9ee7579dbab33229730de69888e954826c9835c1343624bc",
+        "$reference": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+      }
     },
     "build": {
       "permission": {
@@ -396,7 +399,10 @@
       },
       "label": "Build",
       "color": "accent",
-      "systemPrompt": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+      "systemPrompt": {
+        "$digest": "d8f65883b3a33a94875e024f65dac8068ed1df2573eccd3f46ea732a287f7a62",
+        "$reference": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+      }
     },
     "plan-local": {
       "permission": {
@@ -534,7 +540,10 @@
       },
       "label": "Plan (local)",
       "color": "mdLink",
-      "systemPrompt": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+      "systemPrompt": {
+        "$digest": "9ce7b529c09dfe2d9ee7579dbab33229730de69888e954826c9835c1343624bc",
+        "$reference": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+      }
     },
     "build-local": {
       "permission": {
@@ -660,7 +669,10 @@
       },
       "label": "Build (local)",
       "color": "accent",
-      "systemPrompt": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+      "systemPrompt": {
+        "$digest": "d8f65883b3a33a94875e024f65dac8068ed1df2573eccd3f46ea732a287f7a62",
+        "$reference": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+      }
     },
     "build-yolo": {
       "permission": {
@@ -786,7 +798,10 @@
       },
       "label": "Build (yolo)",
       "color": "error",
-      "systemPrompt": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+      "systemPrompt": {
+        "$digest": "d8f65883b3a33a94875e024f65dac8068ed1df2573eccd3f46ea732a287f7a62",
+        "$reference": "## Build mode is active\n\nImplement the user's current request under this mode's permissions. If the user asks you to implement a plan, read the plan file and start the work; do not wait for /plan approve or a Plan-mode UI prompt. Previous Plan-mode instructions do not restrict this mode. Keep plan files for later review; delete them only if the user asks."
+      }
     },
     "yolo": {
       "permission": {
