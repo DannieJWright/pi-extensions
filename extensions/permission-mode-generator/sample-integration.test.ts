@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { devNull, homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { run } from "./generate.ts";
+import { resolveFiles, run } from "./generate.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const sample = join(repo, "configs/permissions.example.src.jsonc");
@@ -54,6 +55,39 @@ test("deployed sample composes agents, prompt, and mode policies", async () => {
     assert.equal(modes.yolo.permission.tool, "allow");
     await assert.rejects(readFile(paths.subagentConfig, "utf8"), { code: "ENOENT" });
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// The prompt-assembly groups read only the agent fixtures this repository owns, so results do not depend on what is installed.
+test("fixture agent files prove the frontmatter flag against real files inside the repository", async () => {
+  // Entries name the fixtures relative to the source file, which is how the sample configuration references them.
+  const sourceFile = join(repo, "configs", "permissions.example.src.jsonc");
+  const assemble = (files: unknown[]) => (resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files } } } } }, sourceFile) as Record<string, any>).subagents.agents.worker.systemPrompt;
+  const trimmed = (text: string) => text.replace(/\s+$/, ""); // trailing whitespace at a join boundary is normalized
+  const relWith = "../extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md";
+  const relWithout = "../extensions/permission-mode-generator/test-fixtures/agents/agent-without-frontmatter.md";
+  const withFrontmatter = resolve(dirname(sourceFile), relWith);
+  const withoutFrontmatter = resolve(dirname(sourceFile), relWithout);
+  const rawWith = await readFile(withFrontmatter, "utf8");
+  const rawWithout = await readFile(withoutFrontmatter, "utf8");
+  assert.ok(rawWith.startsWith("---\n"));     // one fixture really has a frontmatter block
+  assert.ok(!rawWithout.startsWith("---\n")); // and the other does not
+
+  const reads: string[] = [];
+  const originalRead = fs.readFileSync;
+  fs.readFileSync = ((file: unknown, ...args: unknown[]) => { if (typeof file === "string") reads.push(file); return (originalRead as any)(file, ...args); }) as typeof fs.readFileSync;
+  try {
+    // The same real file through two entries: the flagged entry loses its --- block, the unflagged entry keeps it.
+    const kept = assemble([{ path: relWith }]);
+    const stripped = assemble([{ path: relWith, stripFrontmatter: true }]);
+    assert.equal(kept, trimmed(rawWith));
+    assert.ok(kept.startsWith("---\nname: illustrative-agent"));
+    assert.equal(stripped, trimmed(rawWith.slice(rawWith.indexOf("\n---\n", 1) + 5)));
+    assert.ok(!stripped.includes("name: illustrative-agent"));
+    // A fixture with no frontmatter is returned verbatim either way.
+    assert.equal(assemble([{ path: relWithout, stripFrontmatter: true }]), trimmed(rawWithout));
+    // Every reference resolved into this repository's own fixture directory.
+    assert.deepEqual([...new Set(reads)].sort(), [withFrontmatter, withoutFrontmatter].sort());
+  } finally { fs.readFileSync = originalRead; }
 });
 
 const piRoot = process.env.PI_PACKAGE_DIR;
