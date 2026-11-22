@@ -26,7 +26,7 @@ Pi extensions as one package:
    cp configs/permissions.example.src.jsonc ~/.pi/agent/permissions.src.jsonc
    ```
 
-   No prompt file is copied: the example source references prompt files instead, and the merged result is the effective prompt.
+   No prompt file is copied: the example source references prompt files instead, and the merged result is the effective prompt. A referenced file does not have to live inside this repository, and nothing has to be copied for a reference to work — a relative reference simply resolves against the source file, so run the example where the example puts it or use absolute paths.
 
 3. Requirements: `just` on PATH, and Node 22.6+ (type stripping) to run the `.ts` entry points and `node --test`. Run `npm install` once for the test devDependency (`@earendil-works/pi-ai`).
 
@@ -36,14 +36,17 @@ Pi extensions as one package:
    import "<path>/pi-extensions/justfile"
    ```
 
-   Sessions started in the repo can run `just` directly. A prompt reference resolves relative to the source config, so a path that names an installed package (such as `~/npm/node_modules/pi-subagents/agents/reviewer.md`) has no fixed form: adjust it for your machine, and expect generation on a fresh machine to fail naming that path until the package is present. A relative reference, including the example's fixture path, only resolves while the source config stays where the example puts it. Run `just perm` to generate from `~/.pi/agent/permissions.src.jsonc`: the `permissionModes` section writes `~/.pi/agent/permission-mode/permission-mode.json`, and `subagents` optionally owns the `subagents` key in `~/.pi/agent/settings.json` and selected keys in `~/.pi/agent/extensions/subagent/config.json`. Existing installations should follow [the migration guide](extensions/permission-mode-generator/MIGRATION.md), read [Merge rules](extensions/permission-mode-generator/README.md#merge-rules) and [Shared agent base](extensions/permission-mode-generator/README.md#shared-agent-base) before writing inheritance by hand, and use `just perm migrate` instead of copying the example. The sample incorporates the operator-supplied worker override and adds `ledger_list` and Git read tools; compare and preserve any other existing settings before generating. Adjust extension paths to your install. Live files and baselines are not committed.
+   Sessions started in the repo can run `just` directly. A prompt reference resolves relative to the source config, so a path that names an installed package (such as `~/npm/node_modules/pi-subagents/agents/reviewer.md`) has no fixed form: adjust it for your machine, and expect generation on a fresh machine to fail naming that path until the package is present. Reference paths may be absolute, `~/...` from your home directory, or relative to the source file; `~` expansion applies to the legacy single-key `{ "$file": "..." }` form too. Prompt frontmatter is kept unless an entry sets `stripFrontmatter: true`. A relative reference, including the example's fixture path, only resolves while the source config stays where the example puts it. Run `just perm` to generate from `~/.pi/agent/permissions.src.jsonc`: the `permissionModes` section writes `~/.pi/agent/permission-mode/permission-mode.json`, and `subagents` optionally owns the `subagents` key in `~/.pi/agent/settings.json` and selected keys in `~/.pi/agent/extensions/subagent/config.json`. Existing installations should follow [the migration guide](extensions/permission-mode-generator/MIGRATION.md), read [Merge rules](extensions/permission-mode-generator/README.md#merge-rules) and [Shared agent base](extensions/permission-mode-generator/README.md#shared-agent-base) before writing inheritance by hand, and use `just perm migrate` instead of copying the example. The sample incorporates the operator-supplied worker override and adds `ledger_list` and Git read tools; compare and preserve any other existing settings before generating. Adjust extension paths to your install. Live files and baselines are not committed.
 
 Do not keep duplicate copies of these extension files under `~/.pi/agent/extensions` — Pi would load them twice.
 
 ## Tests
 
 ```sh
-just test                    # permission sample and generator tests, just-tools, provider-rules
+just test                    # each group reported separately: perm generator test, perm sample test, subagent config test,
+                             # just-tools, git-tools, provider-rules check, feature-ledger check and test, skills test
+just perm test               # the same generator, merge, migration and lock tests plus the sample comparison, run together with no group split
 just provider-rules test     # provider rules tests
-just perm test               # permission generator, merge, migration and lock tests
 ```
+
+No test reads an installed package. Unit tests author their own fixtures in temporary directories; the sample group (`perm sample test`) compares against this repository's committed golden fixture and its own agent fixture files under `extensions/permission-mode-generator/test-fixtures/agents/`, so results do not change with what happens to be installed. Checking a real install is a manual step, gated on the version recorded in `NOTICE`, and is not part of `just test`. Third-party sources are named once in `NOTICE`; docs link to it instead of restating them.

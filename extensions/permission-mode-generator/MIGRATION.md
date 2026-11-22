@@ -17,3 +17,9 @@ Copy the old file to the new path and wrap its original object as the value of `
 To undo, stop using the new generator, restore the old source and use the previous package version. Restore backed-up outputs and settings if needed; the new version's generated header and baselines are not a substitute for backups.
 
 Individual output and baseline writes are atomic but not atomic together. After a crash, inspect the output, source and `.generator-pending` marker, then use `just perm gen --force` after deciding which content to keep. See the README for lock, alias, concurrent check and metadata limitations.
+
+## Prompt references
+
+Existing installs that use a single-key `{ "$file": "..." }` value need no change. Migration does not read or rewrite such a value, and it still returns the file content verbatim. The only new behaviour that reaches it is path syntax: `~/...` now expands from your home directory, and a relative path resolves against the source file as before. A hand-written value with sibling keys beside `$file` was treated as ordinary data before and still is, so keep the legacy form single-key.
+
+The multi-part form (`files` plus optional `text`) is additive: use it when you want to combine an external file with your own text. Flag every entry that names a file carrying frontmatter with `stripFrontmatter: true`, because frontmatter is kept unless the flag is set. Nothing in the generated output records where a prompt came from; the configuration names the files it uses, and `NOTICE` is the single record of third-party sources. See [Prompt values](README.md#prompt-values) in the generator README.

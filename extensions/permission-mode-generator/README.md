@@ -22,13 +22,15 @@ The installed pi-subagents launch-contract preflight calls `loadConfig()` during
 
 ## Source format
 
-For a new installation copy both files, keeping the prompt relative to the source:
+For a new installation copy the configuration only. Prompt text is not copied to a fixed location: a prompt value names files, and the assembled result becomes the effective prompt at generation time.
 
 ```sh
-mkdir -p ~/.pi/agent/prompts
 cp configs/permissions.example.src.jsonc ~/.pi/agent/permissions.src.jsonc
-cp configs/prompts/reviewer.md ~/.pi/agent/prompts/reviewer.md
 ```
+
+The example references two files this repository owns — its own addendum (`configs/prompts/reviewer-addendum.md`) and an illustrative agent fixture for the test layer (`test-fixtures/agents/agent-with-frontmatter.md`) — through the multi-part form described in [Prompt values](#prompt-values). A comment in the example shows the real-world form pointing at an installed package (`~/npm/node_modules/pi-subagents/agents/reviewer.md`). An install path is machine-specific, so adjust it as the other paths already in the example must be adjusted; a reference to a package that is not present fails with the named path. Nothing here is a copy of another project's prompt body, so no document restates a third-party source: sources are recorded once in the repository-root `NOTICE`, which `LICENSE` points to rather than repeating. Generation of your own configuration depends on what is installed, so output can change across `pi-subagents` versions; pinning is by the version documented in `NOTICE`, not by a committed copy, and a drift report will show such a change as a difference. Checking against a real install is a manual step gated on that recorded version — it is not part of `just test`.
+
+A relative reference resolves against the source file, so it only works while the source stays where the example puts it. Run the example in place, or name absolute paths for your own files; copying a referenced file somewhere else changes what the reference resolves to.
 
 The sample replaces the whole user `subagents` key. Its worker incorporates the operator-supplied live override (including its ledger extension and mutation tools), adds `ledger_list` and the Git read tools, and uses `~` in the provider path for portability. Preserve and compare your existing settings before using it, and update extension paths to match your installation. The tested loader deduplicates ambient and explicit providers only when both paths resolve to the same file; see [Git tools](../git-read-tools/README.md).
 
@@ -47,11 +49,11 @@ PI_GIT_TOOLS_PERMISSION_MODES_ROOT=/path/to/pi-permission-modes \
 node --test extensions/permission-mode-generator/sample-integration.test.ts
 ```
 
-The first two roots enable the foreground-builder probe; all three enable the background and permission-mode probes. The probes were exercised with Pi 1.6.0 and pi-subagents 0.89.2; other versions may differ. Optional peer dependencies must resolve from the pi-subagents package location. Tests use disposable home, agent settings and repositories, not live settings.
+The first two roots enable the foreground-builder probe; all three enable the background and permission-mode probes. The probes were exercised with Pi 1.6.0 and pi-subagents 0.89.2; other versions may differ. Optional peer dependencies must resolve from the pi-subagents package location. Tests use disposable home, agent settings and repositories, not live settings. The test layer reads only this repository's own fixture files: unit tests author their fixtures in temporary directories, and the golden-fixture comparison reads `sample.expected.json` plus the agent fixtures under `test-fixtures/agents/`. No test reads an installed package, so results do not change with what happens to be installed. Comparing against a real install is a manual step, gated on the version recorded in the repository-root `NOTICE`; the runtime probes below are that manual step and are opt-in.
 
 The background-builder probe starts a separate OS subprocess (detached on non-Windows), builds the installed background runner's child launch, loads the generated Build mode and emits synthetic tool-call events. The foreground probe builds a session without ambient extensions and shows the absence of the sample mode gate. The permission-mode probe checks the Default, Plan and Build gates and invokes ledger providers against a disposable ledger. These are not full pi-subagents detached runner launches, model requests, or end-to-end child tool execution; they do not establish all real launch paths or enforcement by existing native rules.
 
-The top level has `permissionModes` and an optional `subagents`. Permission modes contain `output`, `fragments` and `modes`. Subagents contains `settings`, `config`, `fragments` and `agents`: `agents` becomes `settings.json`'s `subagents.agentOverrides`; an absent `agents` stays absent. Omitting `subagents` leaves settings and its baseline untouched. Omitting `subagents.config` does not read or change config.json and retains its previous baseline; the existing pi-subagents config remains effective. An existing `config` entry owns its resolved top-level keys; previously owned keys removed from the entry are removed from the file, while unrelated keys are preserved. `config.extends` resolves against subagents fragments only. Validation covers `permissions` in the final merged file, including an unowned existing value, and reserves both `bg_wait` and the effective `waitTool.name`. It does not validate every other pi-subagents config key. `//` and `/* */` comments and trailing commas are allowed; comments are not carried into the output. A value exactly shaped `{ "$file": "relative/path" }` reads that file as text relative to the source before merging.
+The top level has `permissionModes` and an optional `subagents`. Permission modes contain `output`, `fragments` and `modes`. Subagents contains `settings`, `config`, `fragments` and `agents`: `agents` becomes `settings.json`'s `subagents.agentOverrides`; an absent `agents` stays absent. Omitting `subagents` leaves settings and its baseline untouched. Omitting `subagents.config` does not read or change config.json and retains its previous baseline; the existing pi-subagents config remains effective. An existing `config` entry owns its resolved top-level keys; previously owned keys removed from the entry are removed from the file, while unrelated keys are preserved. `config.extends` resolves against subagents fragments only. Validation covers `permissions` in the final merged file, including an unowned existing value, and reserves both `bg_wait` and the effective `waitTool.name`. It does not validate every other pi-subagents config key. `//` and `/* */` comments and trailing commas are allowed; comments are not carried into the output. A prompt value may be a string or a reference object; see [Prompt values](#prompt-values) for both forms.
 
 ```jsonc
 {
@@ -63,6 +65,34 @@ The top level has `permissionModes` and an optional `subagents`. Permission mode
   "subagents": { "settings": {}, "agents": { "worker": { "tools": ["read"] } } }
 }
 ```
+
+### Prompt values
+
+One resolver handles prompt values in both scopes: `permissionModes.*.systemPrompt` (modes and fragments) and `subagents.agents.*.systemPrompt`. A value is either a plain string or one of two object forms.
+
+The legacy form is an object with exactly the single key `$file`, whose value is a path string. Its content is returned verbatim, and unknown sibling keys are not rejected there — so keep that form single-key: adding a sibling key makes the object read as ordinary data rather than as a reference.
+
+The multi-part form is an object containing `files` and/or `text`, with at least one present; an empty object is an error. Each `files` entry is a path string or `{ path, stripFrontmatter? }`; `text` must be a string. Keys outside `files` and `text` in this form are rejected with the generator's usual `${keyPath}: ...` message. Precedence: an object that contains `files` or `text` is read as this form even when it also carries `$file`.
+
+```jsonc
+"systemPrompt": {
+  "files": [
+    { "path": "~/npm/node_modules/pi-subagents/agents/reviewer.md", "stripFrontmatter": true },
+    { "path": "prompts/reviewer-addendum.md", "stripFrontmatter": true }
+  ],
+  "text": "optional extra paragraph appended last"
+}
+```
+
+Paths in both forms may be absolute, `~/...` from the user's home directory, or relative to the source file (`../` works through normal resolution). `~` expansion applies to every prompt path, including the legacy single-`$file` form. A skill file or a configuration may name files outside the repository; nothing requires them to live inside it.
+
+Frontmatter is kept by default. Only an entry written with `stripFrontmatter: true` has a leading block delimited by `---` lines at offset 0 removed, and its fields are not interpreted. An opening delimiter with no closing one is an error naming the key path and the file. A file without frontmatter is returned unchanged whether or not the flag is set, so every entry naming a file that does have frontmatter needs the flag — otherwise the frontmatter leaks into the assembled prompt.
+
+Parts are read in order, trailing whitespace at each boundary is normalized, and they are joined with exactly one blank line. The legacy single-`$file` form keeps returning file content verbatim instead of joining anything. A missing referenced file is a hard error naming the key path and the resolved path. Resolution does not mutate the source object.
+
+No provenance record is stored in generated output: the configuration itself names the files each prompt uses, and the repository-root `NOTICE` carries the licensing record. The generator still writes the current single-line `$comment` header, and the sample comparison keeps its exact-equality check on it.
+
+Inheritance semantics are unchanged because references are resolved before merge rules run: modes inherit the assembled string through `extends`, override it with another string or form, and remove it with `null`.
 
 ## Merge rules
 
@@ -110,7 +140,7 @@ are reinterpreted by the generator; see [MIGRATION.md](MIGRATION.md).
 
 ## Mode prompts
 
-Set `systemPrompt` to a string on any mode or fragment. Modes inherit it through `extends`, and can override it with another string or remove it with `null`. The source defines custom prompts for `plan` and `build`; `plan-local` inherits Plan, and `build-local` and `build-yolo` inherit Build. Default and YOLO do not have a custom prompt. Edit the source and regenerate; do not edit the output directly.
+`systemPrompt` on any mode, fragment, or agent is either a string or a reference object; see [Prompt values](#prompt-values). Modes inherit it through `extends`, and can override it with another string or another form, or remove it with `null`. The source defines custom prompts for `plan` and `build`; `plan-local` inherits Plan, and `build-local` and `build-yolo` inherit Build. Default and YOLO do not have a custom prompt. Edit the source and regenerate; do not edit the output directly.
 
 The custom Plan prompt keeps plan files and the `show_plan` display tool, but does not use the special `@plan` value. As a result, pi-permission-modes does not offer automatic plan approval or record a pending plan for `/plan approve`. Switching to Build and requesting implementation is the manual workflow. Neither the generator nor a mode switch deletes plan files. After changing the source, start a new session or run `/reload` to load the regenerated config; regeneration alone does not update a running extension.
 
@@ -130,7 +160,8 @@ Generator locks are taken in sorted physical-path order for each active output (
 
 ## Files
 
-- `configs/permissions.example.src.jsonc` and `configs/prompts/reviewer.md` — the example source and its source-relative `$file` prompt.
+- `configs/permissions.example.src.jsonc` — the example source. It references prompt files instead of carrying a prompt body; its own added text is `configs/prompts/reviewer-addendum.md`, which states precedence over any conflicting statement above it.
+- `test-fixtures/agents/agent-with-frontmatter.md` and `test-fixtures/agents/agent-without-frontmatter.md` — small illustrative agent files owned by this repository, used by the test layer in place of an installed package. Their text is original here; no prompt body from another project is committed, and third-party sources are recorded once in the repository-root `NOTICE`.
 - `../../lib/jsonc.ts` — comment and trailing-comma handling (shared with the other extensions).
 - `merge.ts` — merge rules, no fs and no pi imports.
 - `generate.ts` — `run()` plus the CLI entry; options are `--src`, `--modes-out`, `--modes-state`, `--settings`, `--subagents-state`, `--subagent-config`, and `--force`.
