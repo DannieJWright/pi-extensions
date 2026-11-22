@@ -37,10 +37,11 @@ function isObject(value: unknown): value is JsonObject { return typeof value ===
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function code(error: unknown): string | undefined { return (error as NodeJS.ErrnoException)?.code; }
 
-/** Reference paths are absolute, `~/...` from the user's home directory, or relative to the source file. */
-function referencePath(raw: string, sourceFile: string): string {
-	if (raw === "~") return homedir();
-	if (raw.startsWith("~/")) return path.join(homedir(), raw.slice(2));
+/** Reference paths are absolute, `~/...` from the home root, or relative to the source file. Without a home root, `~` is the user's home directory. Exported so the read-scope guard states the rule once instead of restating it. */
+export function referencePath(raw: string, sourceFile: string, homeRoot?: string): string {
+	const root = homeRoot ?? homedir();
+	if (raw === "~") return root;
+	if (raw.startsWith("~/")) return path.join(root, raw.slice(2));
 	return path.resolve(path.dirname(sourceFile), raw);
 }
 
@@ -60,7 +61,7 @@ const PROMPT_KEYS = new Set(["files", "text"]);
 const ENTRY_KEYS = new Set(["path", "stripFrontmatter"]);
 
 /** A prompt value may name files plus inline text; the assembled result is the effective systemPrompt. */
-function resolvePromptValue(value: JsonObject, sourceFile: string, keyPath: string): string {
+function resolvePromptValue(value: JsonObject, sourceFile: string, keyPath: string, homeRoot?: string): string {
 	const unknown = Object.keys(value).filter((key) => !PROMPT_KEYS.has(key));
 	if (unknown.length) throw new Error(`${keyPath}: prompt reference has unsupported fields: ${unknown.join(", ")}`);
 	const parts: string[] = [];
@@ -78,7 +79,7 @@ function resolvePromptValue(value: JsonObject, sourceFile: string, keyPath: stri
 				if (entry.stripFrontmatter !== undefined && typeof entry.stripFrontmatter !== "boolean") throw new Error(`${entryPath}: stripFrontmatter must be a boolean`);
 				raw = entry.path; strip = entry.stripFrontmatter === true;
 			} else throw new Error(`${entryPath}: each files entry must be a path string or an object with path`);
-			const file = referencePath(raw, sourceFile);
+			const file = referencePath(raw, sourceFile, homeRoot);
 			let content: string;
 			try { content = fs.readFileSync(file, "utf8"); }
 			catch (error) { throw new Error(`${entryPath}: cannot read referenced file ${file}: ${message(error)}`); }
@@ -93,18 +94,18 @@ function resolvePromptValue(value: JsonObject, sourceFile: string, keyPath: stri
 	return parts.join("\n\n");
 }
 
-export function resolveFiles(value: unknown, sourceFile: string, keyPath = ""): unknown {
-	if (Array.isArray(value)) return value.map((item, index) => resolveFiles(item, sourceFile, `${keyPath}[${index}]`));
+export function resolveFiles(value: unknown, sourceFile: string, keyPath = "", homeRoot?: string): unknown {
+	if (Array.isArray(value)) return value.map((item, index) => resolveFiles(item, sourceFile, `${keyPath}[${index}]`, homeRoot));
 	if (!isObject(value)) return value;
 	// Precedence: an object containing files or text is the prompt-reference form. A single-key $file object keeps its existing meaning and is not checked for unknown keys.
-	if (Object.hasOwn(value, "files") || Object.hasOwn(value, "text")) return resolvePromptValue(value, sourceFile, keyPath);
+	if (Object.hasOwn(value, "files") || Object.hasOwn(value, "text")) return resolvePromptValue(value, sourceFile, keyPath, homeRoot);
 	if (Object.keys(value).length === 1 && Object.hasOwn(value, "$file")) {
 		if (typeof value.$file !== "string") throw new Error(`${keyPath}: $file must be a path string`);
-		const file = referencePath(value.$file, sourceFile);
+		const file = referencePath(value.$file, sourceFile, homeRoot);
 		try { return fs.readFileSync(file, "utf8"); }
 		catch (error) { throw new Error(`${keyPath}: cannot read $file ${file}: ${message(error)}`); }
 	}
-	return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, resolveFiles(child, sourceFile, keyPath ? `${keyPath}.${key}` : key)]));
+	return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, resolveFiles(child, sourceFile, keyPath ? `${keyPath}.${key}` : key, homeRoot)]));
 }
 
 const MISSING = Symbol("missing");

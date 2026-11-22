@@ -7,7 +7,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { stripJsonc } from "../../lib/jsonc.ts";
-import { resolveFiles, run } from "./generate.ts";
+import { referencePath, run } from "./generate.ts";
+import { resolveWithinScope, standInHomeRoot, withEnv } from "./test-harness.ts";
 import { buildConfig, buildSubagents, type JsonObject } from "./merge.ts";
 
 function temporaryDirectory(t: test.TestContext): string {
@@ -18,9 +19,9 @@ function temporaryDirectory(t: test.TestContext): string {
 
 test("$file resolves relative to the source before merging in both sections", (t) => {
 	const dir = temporaryDirectory(t);
-	fs.mkdirSync(path.join(dir, "prompts"));
-	fs.writeFileSync(path.join(dir, "prompts", "base.md"), "base prompt\n");
-	fs.writeFileSync(path.join(dir, "prompts", "override.md"), "override prompt\n");
+	// Each prompt-assembly group declares its own stand-in home root under its temporary directory and authors fixture content there, so results never depend on the contents of the real user home.
+	const home = standInHomeRoot(dir, { "prompts/base.md": "base prompt\n", "prompts/override.md": "override prompt\n" });
+	const sourceFile = path.join(home, "source.jsonc");
 	const source = {
 		permissionModes: {
 			fragments: { base: { systemPrompt: { $file: "prompts/base.md" } } },
@@ -39,7 +40,7 @@ test("$file resolves relative to the source before merging in both sections", (t
 			},
 		},
 	};
-	const resolved = resolveFiles(source, path.join(dir, "source.jsonc")) as typeof source;
+	const resolved = resolveWithinScope(source, sourceFile, "", home) as typeof source;
 	const expected = {
 		inherited: { systemPrompt: "base prompt\n" },
 		overridden: { systemPrompt: "override prompt\n" },
@@ -47,96 +48,104 @@ test("$file resolves relative to the source before merging in both sections", (t
 	};
 	assert.deepEqual(buildConfig(resolved.permissionModes).modes, expected);
 	assert.deepEqual(buildSubagents(resolved.subagents).agentOverrides, expected);
-	assert.deepEqual(resolveFiles({ list: [{ $file: "prompts/base.md" }] }, path.join(dir, "source.jsonc")),
+	assert.deepEqual(resolveWithinScope({ list: [{ $file: "prompts/base.md" }] }, sourceFile, "", home),
 		{ list: ["base prompt\n"] });
 	assert.deepEqual(source.permissionModes.fragments.base.systemPrompt, { $file: "prompts/base.md" });
 });
 
 test("missing $file reports its section and key path", (t) => {
-	const dir = temporaryDirectory(t);
+	const home = standInHomeRoot(temporaryDirectory(t));
 	for (const section of ["permissionModes", "subagents"]) {
-		assert.throws(() => resolveFiles({ [section]: { items: [{ prompt: { $file: "missing.md" } }] } }, path.join(dir, "src.jsonc")),
+		assert.throws(() => resolveWithinScope({ [section]: { items: [{ prompt: { $file: "missing.md" } }] } }, path.join(home, "src.jsonc"), "", home),
 			new RegExp(`${section}\\.items\\[0\\]\\.prompt: cannot read \\$file .*missing\\.md`));
 	}
 });
 
 test("prompt references join parts in read order with exactly one blank line", (t) => {
-	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "nested", "source.jsonc");
-	fs.mkdirSync(path.join(dir, "prompts"));
-	fs.writeFileSync(path.join(dir, "prompts", "first.md"), "first part\n   \n");
-	fs.writeFileSync(path.join(dir, "prompts", "second.md"), "second part\t\n");
-	const value = { files: ["../prompts/first.md", path.join(dir, "prompts", "second.md")], text: "added paragraph  " };
+	// Each prompt-assembly group declares its own stand-in home root under its temporary directory and authors fixture content there, so results never depend on the contents of the real user home.
+	const home = standInHomeRoot(temporaryDirectory(t), { "prompts/first.md": "first part\n   \n", "prompts/second.md": "second part\t\n" });
+	const sourceFile = path.join(home, "nested", "source.jsonc");
+	const value = { files: ["../prompts/first.md", path.join(home, "prompts", "second.md")], text: "added paragraph  " };
 	const source = { permissionModes: { modes: { one: { systemPrompt: value } } } };
 	// Entry order is preserved; trailing whitespace at each boundary is normalized before the single blank line.
-	assert.deepEqual(resolveFiles(source, sourceFile), { permissionModes: { modes: { one: { systemPrompt: "first part\n\nsecond part\n\nadded paragraph" } } } });
-	assert.deepEqual(value, { files: ["../prompts/first.md", path.join(dir, "prompts", "second.md")], text: "added paragraph  " });
-	assert.equal((resolveFiles({ subagents: { agents: { worker: { systemPrompt: { text: "text alone" } } } } }, sourceFile) as JsonObject).subagents.agents.worker.systemPrompt, "text alone");
+	assert.deepEqual(resolveWithinScope(source, sourceFile, "", home), { permissionModes: { modes: { one: { systemPrompt: "first part\n\nsecond part\n\nadded paragraph" } } } });
+	assert.deepEqual(value, { files: ["../prompts/first.md", path.join(home, "prompts", "second.md")], text: "added paragraph  " });
+	assert.equal((resolveWithinScope({ subagents: { agents: { worker: { systemPrompt: { text: "text alone" } } } } }, sourceFile, "", home) as JsonObject).subagents.agents.worker.systemPrompt, "text alone");
 });
 
-test("~ expands from the home directory for both prompt forms", (t) => {
+test("~ expands from the declared home root for both prompt forms, not from process.env.HOME", async (t) => {
 	const dir = temporaryDirectory(t);
-	fs.writeFileSync(path.join(dir, "home-prompt.md"), "home content\n");
-	const savedHome = process.env.HOME;
-	process.env.HOME = dir;
-	try {
-		const sourceFile = path.join(dir, "elsewhere", "source.jsonc");
-		assert.equal((resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files: ["~/home-prompt.md"] } } } } }, sourceFile) as JsonObject).subagents.agents.worker.systemPrompt, "home content");
+	const home = standInHomeRoot(dir, { "home-prompt.md": "home content\n" });
+	// The source directory is inside the stand-in root but is not the root itself, so only ~ expansion can reach this fixture.
+	const sourceFile = path.join(home, "elsewhere", "source.jsonc");
+	await withEnv({ HOME: path.join(dir, "not-the-declared-root") }, () => {
+		assert.equal((resolveWithinScope({ subagents: { agents: { worker: { systemPrompt: { files: ["~/home-prompt.md"] } } } } }, sourceFile, "", home) as JsonObject).subagents.agents.worker.systemPrompt, "home content");
 		// The legacy form still returns file content verbatim, only its path resolution gains ~ expansion.
-		assert.equal((resolveFiles({ permissionModes: { fragments: { base: { systemPrompt: { $file: "~/home-prompt.md" } } } } }, sourceFile) as JsonObject).permissionModes.fragments.base.systemPrompt, "home content\n");
-	} finally {
-		if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+		assert.equal((resolveWithinScope({ permissionModes: { fragments: { base: { systemPrompt: { $file: "~/home-prompt.md" } } } } }, sourceFile, "", home) as JsonObject).permissionModes.fragments.base.systemPrompt, "home content\n");
+	});
+	// Omitting the home root keeps the existing behavior: ~ resolves through the environment home.
+	assert.equal(referencePath("~/home-prompt.md", sourceFile), path.join(os.homedir(), "home-prompt.md"));
+});
+
+test("read scope fails naming the key path and the reference outside the repository or the declared stand-in root", (t) => {
+	const dir = temporaryDirectory(t);
+	const home = standInHomeRoot(dir, { "inside.md": "in scope\n" });
+	const sourceFile = path.join(home, "src.jsonc");
+	for (const [keyPath, raw] of [["subagents.agents.worker.systemPrompt.files[0]", "/outside-this-run/outside.md"], ["permissionModes.modes.one.systemPrompt.$file", "../outside-the-stand-in-root.md"]] as const) {
+		const value = raw.startsWith("/") ? { subagents: { agents: { worker: { systemPrompt: { files: [raw] } } } } } : { permissionModes: { modes: { one: { systemPrompt: { $file: raw } } } } };
+		let failure = "";
+		try { resolveWithinScope(value, sourceFile, "", home); } catch (error) { failure = (error as Error).message; }
+		for (const part of [keyPath, JSON.stringify(raw)]) assert.ok(failure.includes(part), `the read-scope failure must name ${part}: ${failure}`);
 	}
+	// A reference inside the declared root stays in scope, so the same shape resolves normally.
+	assert.equal((resolveWithinScope({ permissionModes: { modes: { one: { systemPrompt: { $file: "inside.md" } } } } }, sourceFile, "", home) as JsonObject).permissionModes.modes.one.systemPrompt, "in scope\n");
 });
 
 test("stripFrontmatter removes a leading --- block only when the entry asks for it", (t) => {
 	const dir = temporaryDirectory(t);
-	fs.writeFileSync(path.join(dir, "with-frontmatter.md"), "---\ntitle: illustrative stand-in\n---\nbody line\n");
-	fs.writeFileSync(path.join(dir, "unclosed.md"), "---\ntitle: illustrative stand-in\nbody line\n");
-	const sourceFile = path.join(dir, "src.jsonc");
+	const home = standInHomeRoot(temporaryDirectory(t), { "with-frontmatter.md": "---\ntitle: illustrative stand-in\n---\nbody line\n", "unclosed.md": "---\ntitle: illustrative stand-in\nbody line\n" });
+	const sourceFile = path.join(home, "src.jsonc");
 	const value = { files: [{ path: "with-frontmatter.md" }, { path: "with-frontmatter.md", stripFrontmatter: true }] };
-	assert.equal((resolveFiles({ permissionModes: { modes: { one: { systemPrompt: value } } } }, sourceFile) as JsonObject).permissionModes.modes.one.systemPrompt,
+	assert.equal((resolveWithinScope({ permissionModes: { modes: { one: { systemPrompt: value } } } }, sourceFile, "", home) as JsonObject).permissionModes.modes.one.systemPrompt,
 		"---\ntitle: illustrative stand-in\n---\nbody line\n\nbody line");
-	assert.throws(() => resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files: [{ path: "unclosed.md", stripFrontmatter: true }] } } } } }, sourceFile),
+	assert.throws(() => resolveWithinScope({ subagents: { agents: { worker: { systemPrompt: { files: [{ path: "unclosed.md", stripFrontmatter: true }] } } } } }, sourceFile, "", home),
 		new RegExp(`subagents\\.agents\\.worker\\.systemPrompt\\.files\\[0\\]: frontmatter opened in .*unclosed\\.md has no closing delimiter`));
 });
 
 test("missing prompt references name their key path and resolved path", (t) => {
-	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "src.jsonc");
+	const home = standInHomeRoot(temporaryDirectory(t)), sourceFile = path.join(home, "src.jsonc");
 	for (const entry of ["missing.md", { path: "missing.md", stripFrontmatter: true }]) {
-		assert.throws(() => resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files: [entry] } } } } }, sourceFile),
+		assert.throws(() => resolveWithinScope({ subagents: { agents: { worker: { systemPrompt: { files: [entry] } } } } }, sourceFile, "", home),
 			new RegExp(`subagents\\.agents\\.worker\\.systemPrompt\\.files\\[0\\]: cannot read referenced file .*missing\\.md`));
 	}
 });
 
 test("empty or malformed prompt values report the key path", (t) => {
-	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "src.jsonc");
+	const home = standInHomeRoot(temporaryDirectory(t), { "prompts/x.md": "kept verbatim\n" }), sourceFile = path.join(home, "src.jsonc");
 	const prompt = (value: unknown) => ({ permissionModes: { modes: { one: { systemPrompt: value } } } });
-	assert.throws(() => resolveFiles(prompt({ files: [{}] }), sourceFile), /systemPrompt\.files\[0\]: empty object/);
-	assert.throws(() => resolveFiles(prompt({ text: 1 }), sourceFile), /systemPrompt: text must be a string/);
-	assert.throws(() => resolveFiles(prompt({ files: [] }), sourceFile), /systemPrompt: must contain at least one file or text/);
-	assert.throws(() => resolveFiles(prompt({ files: ["prompts/x.md"], extra: true }), sourceFile), /systemPrompt: prompt reference has unsupported fields: extra/);
-	assert.throws(() => resolveFiles(prompt({ files: [{ path: "prompts/x.md", other: 1 }] }), sourceFile), /systemPrompt\.files\[0\]: unsupported fields: other/);
+	assert.throws(() => resolveWithinScope(prompt({ files: [{}] }), sourceFile, "", home), /systemPrompt\.files\[0\]: empty object/);
+	assert.throws(() => resolveWithinScope(prompt({ text: 1 }), sourceFile, "", home), /systemPrompt: text must be a string/);
+	assert.throws(() => resolveWithinScope(prompt({ files: [] }), sourceFile, "", home), /systemPrompt: must contain at least one file or text/);
+	assert.throws(() => resolveWithinScope(prompt({ files: ["prompts/x.md"], extra: true }), sourceFile, "", home), /systemPrompt: prompt reference has unsupported fields: extra/);
+	assert.throws(() => resolveWithinScope(prompt({ files: [{ path: "prompts/x.md", other: 1 }] }), sourceFile, "", home), /systemPrompt\.files\[0\]: unsupported fields: other/);
 	// A single-key $file object is not subject to unknown-key rejection.
-	fs.mkdirSync(path.join(dir, "prompts"));
-	fs.writeFileSync(path.join(dir, "prompts", "x.md"), "kept verbatim\n");
-	assert.equal((resolveFiles(prompt({ $file: "prompts/x.md" }), sourceFile) as JsonObject).permissionModes.modes.one.systemPrompt, "kept verbatim\n");
+	assert.equal((resolveWithinScope(prompt({ $file: "prompts/x.md" }), sourceFile, "", home) as JsonObject).permissionModes.modes.one.systemPrompt, "kept verbatim\n");
 });
 
 test("a prompt-position object with neither files nor text passes through as ordinary data", (t) => {
-	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "src.jsonc");
+	const home = standInHomeRoot(temporaryDirectory(t)), sourceFile = path.join(home, "src.jsonc");
 	// Only an object carrying files or text is read as the prompt-reference form, so a bare {} stays ordinary data.
 	for (const [section, collection] of [["permissionModes", "modes"], ["subagents", "agents"]] as const) {
 		const source = { [section]: { [collection]: { one: { systemPrompt: {} } } } };
-		assert.deepEqual(resolveFiles(source, sourceFile), source);
+		assert.deepEqual(resolveWithinScope(source, sourceFile, "", home), source);
 	}
 	// The same applies to an empty section, which the generator tests above cover only indirectly.
-	assert.deepEqual(resolveFiles({ permissionModes: { modes: {} } }, sourceFile), { permissionModes: { modes: {} } });
+	assert.deepEqual(resolveWithinScope({ permissionModes: { modes: {} } }, sourceFile, "", home), { permissionModes: { modes: {} } });
 });
 
 test("assembled prompts flow through extends, override and null deletion in both sections", (t) => {
 	const dir = temporaryDirectory(t);
-	fs.mkdirSync(path.join(dir, "prompts"));
-	fs.writeFileSync(path.join(dir, "prompts", "base.md"), "base body\n");
+	const home = standInHomeRoot(dir, { "prompts/base.md": "base body\n" });
 	for (const [section, collection] of [["permissionModes", "modes"], ["subagents", "agents"]] as const) {
 		const assembled = "base body\n\nadded by inline text";
 		const source = { [section]: { fragments: { base: { systemPrompt: { files: ["prompts/base.md"], text: "added by inline text" } } }, [collection]: {
@@ -144,7 +153,7 @@ test("assembled prompts flow through extends, override and null deletion in both
 			overridden: { extends: ["base"], systemPrompt: { text: "replacement form" } },
 			deleted: { extends: ["base"], systemPrompt: null },
 		} } };
-		const resolved = resolveFiles(source, path.join(dir, "source.jsonc")) as Record<string, JsonObject>;
+		const resolved = resolveWithinScope(source, path.join(home, "source.jsonc"), "", home) as Record<string, JsonObject>;
 		assert.equal(resolved[section].fragments.base.systemPrompt, assembled);
 		const merged = section === "permissionModes" ? buildConfig(resolved[section]).modes : buildSubagents(resolved[section]).agentOverrides;
 		assert.deepEqual(merged, { inherited: { systemPrompt: assembled }, overridden: { systemPrompt: "replacement form" }, deleted: {} });
