@@ -72,7 +72,7 @@ One resolver handles prompt values in both scopes: `permissionModes.*.systemProm
 
 The legacy form is an object with exactly the single key `$file`, whose value is a path string. Its content is returned verbatim, and unknown sibling keys are not rejected there — so keep that form single-key: adding a sibling key makes the object read as ordinary data rather than as a reference.
 
-The multi-part form is an object containing `files` and/or `text`, with at least one present; an empty object is an error. Each `files` entry is a path string or `{ path, stripFrontmatter? }`; `text` must be a string. Keys outside `files` and `text` in this form are rejected with the generator's usual `${keyPath}: ...` message. Precedence: an object that contains `files` or `text` is read as this form even when it also carries `$file`.
+The multi-part form is an object containing `files` and/or `text`, with at least one present. Inside this form these are errors naming the key path: an empty `files` entry, `text` that is not a string, or nothing to join (`files` empty with no `text`). A value containing neither `files` nor `text` is not read as this form: at a prompt position it passes through unchanged as ordinary data, per the precedence rule below. Each `files` entry is a path string or `{ path, stripFrontmatter? }`; `text` must be a string. Keys outside `files` and `text` in this form are rejected with the generator's usual `${keyPath}: ...` message. Precedence: an object that contains `files` or `text` is read as this form even when it also carries `$file`.
 
 ```jsonc
 "systemPrompt": {

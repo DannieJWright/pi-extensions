@@ -122,6 +122,17 @@ test("empty or malformed prompt values report the key path", (t) => {
 	assert.equal((resolveFiles(prompt({ $file: "prompts/x.md" }), sourceFile) as JsonObject).permissionModes.modes.one.systemPrompt, "kept verbatim\n");
 });
 
+test("a prompt-position object with neither files nor text passes through as ordinary data", (t) => {
+	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "src.jsonc");
+	// Only an object carrying files or text is read as the prompt-reference form, so a bare {} stays ordinary data.
+	for (const [section, collection] of [["permissionModes", "modes"], ["subagents", "agents"]] as const) {
+		const source = { [section]: { [collection]: { one: { systemPrompt: {} } } } };
+		assert.deepEqual(resolveFiles(source, sourceFile), source);
+	}
+	// The same applies to an empty section, which the generator tests above cover only indirectly.
+	assert.deepEqual(resolveFiles({ permissionModes: { modes: {} } }, sourceFile), { permissionModes: { modes: {} } });
+});
+
 test("assembled prompts flow through extends, override and null deletion in both sections", (t) => {
 	const dir = temporaryDirectory(t);
 	fs.mkdirSync(path.join(dir, "prompts"));
