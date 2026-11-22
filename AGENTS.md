@@ -17,6 +17,17 @@ repository.
 - A field that names a command the working project defines, such as `validation_scripts`, may show an example
   like `just_test`. State clearly that it comes from the project being worked on, not from this one.
 
+## Merge keywords and agent inheritance
+
+Merge-keyword semantics and agent-to-agent inheritance are documented once, in
+[Merge rules](extensions/permission-mode-generator/README.md#merge-rules) and
+[Shared agent base](extensions/permission-mode-generator/README.md#shared-agent-base). Those sections are
+the single source for those rules.
+
+A skill file must not restate them. Its reader is an agent working in another project, and that agent
+does not have this repository's files, so a copy there would be a second version that can drift apart
+from the generator README.
+
 ## Feature-ledger boundaries
 
 Direct ledger operations access their ledger and workspace paths without ordinary file-tool path gating.
