@@ -49,14 +49,13 @@
         ],
         // Bash: paths under these roots are not "escapes" (no prompt, runs sandboxed, read-only).
         "insideRoots": [
-          "/home/nhbody/.agents/skills",
+          "~/.agents/skills",
           "~/.pi/agent/skills", 
           "~/.pi/agent/npm/node_modules",
           "/tmp/acp-delegate",
           "/tmp/just-tools/outputs",
           "/run/user/1000/just",
-          "~/.pi/agent/install/releases",
-          "/home/nhbody/.pi/agent/install/releases/"
+          "~/.pi/agent/install/releases"
         ],
         "network": {
           "allowedDomains": [
@@ -80,7 +79,7 @@
           "*": "ask",
           "~/.agent/skills": "allow",
           "~/.agent/skills/*": "allow",
-          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.agents/skills/*": "allow",
           "~/.pi/agent/skills": "allow",
           "~/.pi/agent/skills/*": "allow",
           "~/.pi/agent/npm/node_modules": "allow",
@@ -91,8 +90,7 @@
           "/private/var/folders/*": "allow",
           "/tmp/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
-          "~/.pi/agent/install/releases/*": "allow",
-          "/home/nhbody/.pi/agent/install/releases/*" : "allow"
+          "~/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
