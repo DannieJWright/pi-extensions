@@ -10,8 +10,29 @@ import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type Exec = (command: string, args: string[], cwd: string) => Promise<ExecResult>;
 
-export const STATUSES = ["todo", "in-progress", "done"] as const;
+export const STATUSES = ["todo", "in-progress", "review", "done"] as const;
 export type ItemStatus = (typeof STATUSES)[number];
+export const FINDING_STATUSES = ["open", "closed"] as const;
+export const FINDING_SEVERITIES = ["blocker", "major", "minor", "nit"] as const;
+export const ASSIGNMENT_ROLES = ["worker", "reviewer"] as const;
+export const DEFAULT_MAX_FAILED_REVIEWS = 5;
+
+export interface Finding {
+	id: string;
+	status: (typeof FINDING_STATUSES)[number];
+	details: string;
+	rationale: string;
+	severity: (typeof FINDING_SEVERITIES)[number];
+	first_found_iteration: number;
+	required_checks: string[];
+}
+
+export interface Assignment {
+	id: string;
+	role: (typeof ASSIGNMENT_ROLES)[number];
+	agent_id: string;
+	claim_token: string;
+}
 
 export interface LedgerItem {
 	id: string;
@@ -20,6 +41,11 @@ export interface LedgerItem {
 	short_goal: string;
 	workspace?: string;
 	branch?: string;
+	review?: boolean;
+	max_failed_reviews?: number;
+	failed_reviews?: number;
+	assignment?: Assignment;
+	findings?: Finding[];
 	acceptance_criteria: string[];
 	constraints: string[];
 	validation_scripts?: string[];
@@ -27,13 +53,14 @@ export interface LedgerItem {
 	tests: string[];
 	limitations: string[];
 	summary: string;
-	commits: { start?: string; end?: string };
+	commits: { start?: string; end?: string; submissions?: string[] };
 }
 
 export interface Ledger {
 	description: string;
 	workspace: string;
 	branch: string;
+	max_failed_reviews?: number;
 	validation_scripts: string[];
 	features: LedgerItem[];
 }
@@ -196,6 +223,87 @@ export async function addablePaths(porcelain: string, repoRoot: string, stat: En
 	return paths;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonnegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function effectiveReviewConfig(ledger: Ledger, item: LedgerItem): { enabled: boolean; max_failed_reviews: number } {
+	if (item.review !== undefined && typeof item.review !== "boolean") throw new Error("review must be a boolean");
+	for (const value of [ledger.max_failed_reviews, item.max_failed_reviews]) {
+		if (value !== undefined && !nonnegativeInteger(value)) throw new Error("max_failed_reviews must be a nonnegative integer");
+	}
+	return { enabled: item.review ?? false, max_failed_reviews: item.max_failed_reviews ?? ledger.max_failed_reviews ?? DEFAULT_MAX_FAILED_REVIEWS };
+}
+
+// Validate the raw document before projecting it into typed model values. Invalid review data is
+// retained for diagnostics, never normalized into an apparently valid default.
+function validateReviewFields(ledger: Record<string, unknown>, problems: string[]): void {
+	const numberField = (record: Record<string, unknown>, key: string, at: string) => {
+		if (key in record && !nonnegativeInteger(record[key])) problems.push(`${at} must be a nonnegative integer`);
+	};
+	numberField(ledger, "max_failed_reviews", "ledger.max_failed_reviews");
+	if (!Array.isArray(ledger.features)) return;
+	for (const [index, raw] of ledger.features.entries()) {
+		if (!isRecord(raw)) continue;
+		const at = (field: string) => problemTarget(index, String(raw.id ?? ""), field);
+		if ("review" in raw && typeof raw.review !== "boolean") problems.push(`${at("review")} must be a boolean`);
+		numberField(raw, "max_failed_reviews", at("max_failed_reviews"));
+		numberField(raw, "failed_reviews", at("failed_reviews"));
+		const iteration = nonnegativeInteger(raw.failed_reviews) ? raw.failed_reviews : 0;
+		if (raw.status === "review" && raw.review !== true) problems.push(`${at("status")} review requires review enabled`);
+		if (raw.status === "todo" && iteration > 0) problems.push(`${at("failed_reviews")} must be zero for todo`);
+		if ("assignment" in raw) {
+			if (!isRecord(raw.assignment)) problems.push(`${at("assignment")} must be a mapping`);
+			else {
+				const assignment = raw.assignment;
+				for (const key of ["id", "agent_id", "claim_token"]) {
+					if (typeof assignment[key] !== "string" || assignment[key].trim() === "") problems.push(`${at(`assignment.${key}`)} must be a non-empty string`);
+				}
+				if (!ASSIGNMENT_ROLES.includes(assignment.role as Assignment["role"])) problems.push(`${at("assignment.role")} must be worker or reviewer`);
+				else {
+					if (assignment.id !== `${raw.id}-${iteration}-${assignment.role}`) problems.push(`${at("assignment.id")} does not match the feature, iteration, and role`);
+					if ((assignment.role === "worker" && raw.status !== "in-progress") || (assignment.role === "reviewer" && raw.status !== "review")) problems.push(`${at("assignment.role")} is incompatible with status ${String(raw.status)}`);
+				}
+			}
+		}
+		if ("findings" in raw) {
+			if (!Array.isArray(raw.findings)) problems.push(`${at("findings")} must be a list`);
+			else {
+				const ids = new Set<string>();
+				if (raw.status === "todo" && raw.findings.length > 0) problems.push(`${at("findings")} must be empty for todo`);
+				for (const [i, finding] of raw.findings.entries()) {
+					const location = `findings[${i}]`;
+					if (!isRecord(finding)) { problems.push(`${at(location)} must be a mapping`); continue; }
+					for (const key of ["id", "details", "rationale"]) {
+						if (typeof finding[key] !== "string" || finding[key].trim() === "") problems.push(`${at(`${location}.${key}`)} must be a non-empty string`);
+					}
+					if (typeof finding.id === "string" && finding.id !== "") {
+						if (ids.has(finding.id)) problems.push(`${at(`${location}.id`)} is a duplicate`);
+						ids.add(finding.id);
+					}
+					if (!FINDING_STATUSES.includes(finding.status as Finding["status"])) problems.push(`${at(`${location}.status`)} must be open or closed`);
+					if (!FINDING_SEVERITIES.includes(finding.severity as Finding["severity"])) problems.push(`${at(`${location}.severity`)} must be blocker, major, minor, or nit`);
+					if (!nonnegativeInteger(finding.first_found_iteration)) problems.push(`${at(`${location}.first_found_iteration`)} must be a nonnegative integer`);
+					else if (finding.first_found_iteration > iteration) problems.push(`${at(`${location}.first_found_iteration`)} exceeds failed_reviews`);
+					if (!Array.isArray(finding.required_checks) || finding.required_checks.some((check: unknown) => typeof check !== "string" || check.trim() === "")) problems.push(`${at(`${location}.required_checks`)} must be a list of non-empty strings`);
+					if (raw.status === "done" && finding.status === "open") problems.push(`${at(location)} cannot be open when done`);
+				}
+			}
+		}
+		if (isRecord(raw.commits) && "submissions" in raw.commits && (!Array.isArray(raw.commits.submissions) || raw.commits.submissions.some((commit: unknown) => typeof commit !== "string" || commit.trim() === ""))) problems.push(`${at("commits.submissions")} must be a list of non-empty strings`);
+	}
+}
+
+function assertReviewFields(ledger: Ledger): void {
+	const problems: string[] = [];
+	validateReviewFields(ledger as unknown as Record<string, unknown>, problems);
+	if (problems.length) throw new Error(`invalid ledger: ${problems.join("; ")}`);
+}
+
 export function parseLedger(text: string): { ledger: Ledger | null; problems: string[]; indexes: number[] } {
 	const problems: string[] = [];
 	const indexes: number[] = [];
@@ -203,6 +311,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 	const raw = doc.ledger;
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ledger: null, problems: ["no ledger block"], indexes };
 	const ledger = raw as Record<string, unknown>;
+	validateReviewFields(ledger, problems);
 	if (!Array.isArray(ledger.features)) problems.push("ledger.features is not a list");
 	const features = (Array.isArray(ledger.features) ? ledger.features : []) as Record<string, unknown>[];
 	const items: LedgerItem[] = [];
@@ -227,6 +336,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			short_goal: typeof item.short_goal === "string" ? item.short_goal : "",
 			...(typeof item.workspace === "string" && item.workspace !== "" ? { workspace: item.workspace } : {}),
 			...(typeof item.branch === "string" && item.branch !== "" ? { branch: item.branch } : {}),
+			...Object.fromEntries(["review", "max_failed_reviews", "failed_reviews", "assignment", "findings"].filter((key) => key in item).map((key) => [key, item[key]])),
 			acceptance_criteria: list(item.acceptance_criteria, at("acceptance_criteria"), problems),
 			constraints: list(item.constraints, at("constraints"), problems),
 			...(Array.isArray(item.validation_scripts) ? { validation_scripts: list(item.validation_scripts, at("validation_scripts"), problems) } : {}),
@@ -238,7 +348,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			// value parse kept would never come back through the round-trip.
 			commits: Object.fromEntries(
 				Object.entries((item.commits as Record<string, unknown>) ?? {})
-					.map(([key, value]) => [key, value === null || value === undefined ? undefined : String(value)])
+					.map(([key, value]) => [key, value === null || value === undefined ? undefined : key === "submissions" ? value : String(value)])
 					.filter(([, value]) => value !== undefined),
 			) as LedgerItem["commits"],
 		});
@@ -248,6 +358,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			description: typeof ledger.description === "string" ? ledger.description : "",
 			workspace: typeof ledger.workspace === "string" ? ledger.workspace : "",
 			branch: typeof ledger.branch === "string" ? ledger.branch : "",
+			...("max_failed_reviews" in ledger ? { max_failed_reviews: ledger.max_failed_reviews as number } : {}),
 			validation_scripts: list(ledger.validation_scripts, "ledger.validation_scripts", problems),
 			features: items,
 		},
@@ -367,13 +478,15 @@ export function nextItem(ledger: Ledger): LedgerNextResult {
 	};
 }
 
-const ITEM_KEYS = ["id", "status", "goal", "short_goal", "workspace", "branch", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
+const ITEM_KEYS = ["id", "status", "goal", "short_goal", "workspace", "branch", "review", "max_failed_reviews", "failed_reviews", "assignment", "findings", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
 
 export function serializeLedger(ledger: Ledger): string {
+	assertReviewFields(ledger);
 	const ordered: Record<string, unknown> = {
 		description: ledger.description,
 		workspace: ledger.workspace,
 		branch: ledger.branch,
+		...(ledger.max_failed_reviews !== undefined ? { max_failed_reviews: ledger.max_failed_reviews } : {}),
 		validation_scripts: ledger.validation_scripts,
 		features: ledger.features.map((item) => {
 			const record: Record<string, unknown> = {};
@@ -427,7 +540,9 @@ export interface StartResult {
 export async function startItem(opts: ItemContext): Promise<StartResult> {
 	const path = opts.ledgerPath;
 	const ledger = opts.ledger;
+	assertReviewFields(ledger);
 	const item = findItem(ledger, opts.id, path);
+	if (item.review === true) throw new Error(`item ${opts.id} has review enabled; legacy ledger_start cannot manage review`);
 	if (item.status !== "todo") throw new Error(`item ${opts.id} is already ${item.status}; one writer per item`);
 	// A per-item branch is an author-written label. It is checked against the repository the item
 	// works in, and a mismatch is an error before any work starts.
@@ -467,7 +582,9 @@ export async function submitItem(opts: ItemContext & {
 }): Promise<SubmitResult> {
 	const path = opts.ledgerPath;
 	const ledger = opts.ledger;
+	assertReviewFields(ledger);
 	const item = findItem(ledger, opts.id, path);
+	if (item.review === true) throw new Error(`item ${opts.id} has review enabled; legacy ledger_submit cannot manage review`);
 	if (item.status !== "in-progress") throw new Error(`item ${opts.id} is ${item.status}; submit requires in-progress`);
 	if (!item.commits.start) throw new Error(`item ${opts.id} has no commits.start`);
 

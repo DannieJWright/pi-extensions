@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startItem, submitItem, addablePaths } from "./ledger.ts";
+import { effectiveReviewConfig, type Finding } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -79,6 +80,86 @@ test("serialize then parse round-trips", async () => {
 	const first = parseLedger(await readFile(path, "utf8")).ledger!;
 	const again = parseLedger(serializeLedger(first)).ledger!;
 	assert.deepEqual(again, first);
+});
+
+test("review configuration defaults off and resolves feature, ledger, default, and unlimited limits", () => {
+	const ledger = parseLedger(FIXTURE.replace("{BRANCH}", "feature-x")).ledger!;
+	const item = ledger.features[0];
+	assert.deepEqual(effectiveReviewConfig(ledger, item), { enabled: false, max_failed_reviews: 5 });
+	ledger.max_failed_reviews = 3;
+	assert.equal(effectiveReviewConfig(ledger, item).max_failed_reviews, 3);
+	item.review = true;
+	item.max_failed_reviews = 0;
+	assert.deepEqual(effectiveReviewConfig(ledger, item), { enabled: true, max_failed_reviews: 0 });
+	item.max_failed_reviews = 2;
+	assert.equal(effectiveReviewConfig(ledger, item).max_failed_reviews, 2);
+});
+
+test("nested review findings, assignment, and numeric-looking commit hashes round-trip without loss", () => {
+	const ledger = parseLedger(FIXTURE.replace("{BRANCH}", "feature-x")).ledger!;
+	ledger.max_failed_reviews = 0;
+	const item = ledger.features[0];
+	item.status = "review";
+	item.review = true;
+	item.failed_reviews = 2;
+	item.assignment = { id: "alpha-2-reviewer", role: "reviewer", agent_id: "agent 'A'", claim_token: "123" };
+	const finding: Finding = { id: "finding-1", status: "open", severity: "nit", details: "Line 1\n\nLine 2: 'quoted' \\\n", rationale: "Keep  spaces and 'apostrophes'.", first_found_iteration: 1, required_checks: ["check: one, two", "true", "123"] };
+	item.findings = [finding, { ...finding, id: "finding-2", status: "closed", severity: "major", required_checks: [] }];
+	item.commits.submissions = ["1234567", "00ab123"];
+	const text = serializeLedger(ledger);
+	const parsed = parseLedger(text);
+	assert.deepEqual(parsed.problems, [], text);
+	assert.deepEqual(parsed.ledger, ledger, "review model must survive serialization exactly");
+});
+
+test("checker rejects invalid review configuration, finding fields, assignments, and state invariants", () => {
+	for (const field of ["review: 'false'", "max_failed_reviews: -1", "max_failed_reviews: '5'", "max_failed_reviews: null", "failed_reviews: -1"]) {
+		assert.notDeepEqual(checkLedger(itemLedger([`      ${field}`])), [], field);
+	}
+	assert.match(checkLedger(itemLedger([]).replace("  branch: feature-x", "  max_failed_reviews: -1\n  branch: feature-x")).join("\n"), /ledger.max_failed_reviews/);
+	const text = itemLedger([
+		"      review: true", "      failed_reviews: 1", "      assignment:",
+		"        id: alpha-0-reviewer", "        role: reviewer", "        agent_id: ''", "        claim_token: ''",
+		"      findings:", "        - id: duplicate", "          status: open", "          details: ''", "          rationale: ''",
+		"          severity: critical", "          first_found_iteration: 2", "          required_checks: [ok, '']",
+		"        - id: duplicate", "          status: closed", "          details: Detail", "          rationale: Reason",
+		"          severity: minor", "          first_found_iteration: 0", "          required_checks: []",
+	]).replace("status: todo", "status: done");
+	const problems = checkLedger(text).join("\n");
+	for (const needle of ["assignment.id", "assignment.agent_id", "assignment.claim_token", "assignment.role", "findings[0].details", "findings[0].rationale", "findings[0].severity", "findings[0].first_found_iteration", "findings[0].required_checks", "cannot be open", "findings[1].id"]) assert.ok(problems.includes(needle), `${needle}: ${problems}`);
+	assert.match(checkLedger(itemLedger(["      review: false"]).replace("status: todo", "status: review")).join("\n"), /review requires review enabled/);
+	assert.match(checkLedger(itemLedger(["      assignment: []"])).join("\n"), /assignment.*mapping/);
+	assert.match(checkLedger(itemLedger(["      findings: invalid"])).join("\n"), /findings.*list/);
+	assert.match(checkLedger(itemLedger([]).replace("      commits: {}", "      commits: {submissions: [123]}")).join("\n"), /commits.submissions/);
+});
+
+test("legacy writes reject invalid review data and leave the ledger unchanged", async () => {
+	const fixture = FIXTURE.replace("      status: todo", "      status: todo\n      max_failed_reviews: '5'");
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi();
+		featureLedger(api);
+		const ctx = createFakeContext(dir);
+		const before = await readFile(path, "utf8");
+		for (const [name, params] of [["ledger_start", { id: "alpha" }], ["ledger_submit", { id: "alpha", commit_message: "x", summary: "x" }]] as const) {
+			const result = await api.tools[name].execute(null, params, null, null, ctx);
+			assert.ok(result.isError, name);
+			assert.match(result.content[0].text, /max_failed_reviews.*nonnegative integer/);
+			assert.equal(await readFile(path, "utf8"), before);
+		}
+		const checked = await api.tools.ledger_check.execute(null, {}, null, null, ctx);
+		assert.ok(checked.isError);
+		assert.match(checked.content[0].text, /max_failed_reviews/);
+	} finally { await cleanup(); }
+});
+
+test("legacy start refuses review-enabled work rather than silently bypassing review", async () => {
+	const { dir, path, cleanup } = await setupRepo(FIXTURE.replace("      status: todo", "      status: todo\n      review: true"));
+	try {
+		const before = await readFile(path, "utf8");
+		await assert.rejects(startItem(itemOpts(dir, path, "alpha")), /legacy ledger_start cannot manage review/);
+		assert.equal(await readFile(path, "utf8"), before);
+	} finally { await cleanup(); }
 });
 
 test("commit hashes that look numeric stay strings", () => {

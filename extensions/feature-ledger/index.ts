@@ -130,12 +130,16 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	}
 
 	// Read tools do not touch git: the path comes from the resolution order, not from a branch.
-	async function readLedger(ctx: ExtensionContext, explicit?: string): Promise<{ path: string; ledger: Ledger }> {
+	async function readLedger(ctx: ExtensionContext, explicit?: string, forWrite = false): Promise<{ path: string; ledger: Ledger }> {
 		const path = await resolvePath(ctx, explicit);
 		const text = await readFile(path, "utf8");
-		const { ledger, problems } = parseLedger(text);
-		if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
-		return { path, ledger };
+		const parsed = parseLedger(text);
+		if (!parsed.ledger) throw new Error(`cannot read the ledger: ${parsed.problems.join("; ")}`);
+		if (forWrite) {
+			const problems = checkParsed(parsed);
+			if (problems.length) throw new Error(`invalid ledger: ${problems.join("; ")}`);
+		}
+		return { path, ledger: parsed.ledger };
 	}
 
 	pi.registerTool({
@@ -226,7 +230,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: START_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const { path, ledger } = await readLedger(ctx, params.path);
+				const { path, ledger } = await readLedger(ctx, params.path, true);
 				const item = findItem(ledger, params.id, path);
 				// The file is parsed once, and the brief reports the item the write path returned.
 				const { item: started, brief } = await startItem(await itemContext(ctx, path, ledger, item));
@@ -246,7 +250,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 			try {
 				const missing = missingRequired(params, SUBMIT_PARAMS.required as string[]);
 				if (missing.length > 0) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
-				const { path, ledger } = await readLedger(ctx, params.path);
+				const { path, ledger } = await readLedger(ctx, params.path, true);
 				const item = findItem(ledger, params.id, path);
 				const opts = await itemContext(ctx, path, ledger, item);
 				const result = await submitItem({ ...opts, commitMessage: params.commit_message, summary: params.summary, limitations: params.limitations ?? [], logDir: process.env.TMPDIR || "/tmp" });
