@@ -24,9 +24,9 @@ Pi extensions as one package:
    cp configs/just-tools.example.jsonc ~/.pi/just-tools.jsonc
    cp configs/provider-rules.example.jsonc ~/.pi/agent/provider-rules.jsonc
    cp configs/permissions.example.src.jsonc ~/.pi/agent/permissions.src.jsonc
-   mkdir -p ~/.pi/agent/prompts
-   cp configs/prompts/reviewer.md ~/.pi/agent/prompts/reviewer.md
    ```
+
+   No prompt file is copied: the example source references prompt files instead, and the merged result is the effective prompt.
 
 3. Requirements: `just` on PATH, and Node 22.6+ (type stripping) to run the `.ts` entry points and `node --test`. Run `npm install` once for the test devDependency (`@earendil-works/pi-ai`).
 
@@ -36,7 +36,7 @@ Pi extensions as one package:
    import "<path>/pi-extensions/justfile"
    ```
 
-   Sessions started in the repo can run `just` directly. Run `just perm` to generate from `~/.pi/agent/permissions.src.jsonc`: the `permissionModes` section writes `~/.pi/agent/permission-mode/permission-mode.json`, and `subagents` optionally owns the `subagents` key in `~/.pi/agent/settings.json` and selected keys in `~/.pi/agent/extensions/subagent/config.json`. `$file` resolves relative to the source, so copy the prompt as shown. Existing installations should follow [the migration guide](extensions/permission-mode-generator/MIGRATION.md), read [Merge rules](extensions/permission-mode-generator/README.md#merge-rules) and [Shared agent base](extensions/permission-mode-generator/README.md#shared-agent-base) before writing inheritance by hand, and use `just perm migrate` instead of copying the example. The sample incorporates the operator-supplied worker override and adds `ledger_list` and Git read tools; compare and preserve any other existing settings before generating. Adjust extension paths to your install. Live files and baselines are not committed.
+   Sessions started in the repo can run `just` directly. A prompt reference resolves relative to the source config, so a path that names an installed package (such as `~/npm/node_modules/pi-subagents/agents/reviewer.md`) has no fixed form: adjust it for your machine, and expect generation on a fresh machine to fail naming that path until the package is present. A relative reference, including the example's fixture path, only resolves while the source config stays where the example puts it. Run `just perm` to generate from `~/.pi/agent/permissions.src.jsonc`: the `permissionModes` section writes `~/.pi/agent/permission-mode/permission-mode.json`, and `subagents` optionally owns the `subagents` key in `~/.pi/agent/settings.json` and selected keys in `~/.pi/agent/extensions/subagent/config.json`. Existing installations should follow [the migration guide](extensions/permission-mode-generator/MIGRATION.md), read [Merge rules](extensions/permission-mode-generator/README.md#merge-rules) and [Shared agent base](extensions/permission-mode-generator/README.md#shared-agent-base) before writing inheritance by hand, and use `just perm migrate` instead of copying the example. The sample incorporates the operator-supplied worker override and adds `ledger_list` and Git read tools; compare and preserve any other existing settings before generating. Adjust extension paths to your install. Live files and baselines are not committed.
 
 Do not keep duplicate copies of these extension files under `~/.pi/agent/extensions` — Pi would load them twice.
 

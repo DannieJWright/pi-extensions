@@ -1,5 +1,5 @@
 // Source: ~/.pi/agent/permissions.src.jsonc. Edit it, then run `just perm` in ~/.pi.
-// Copy prompts/reviewer.md alongside this source; see the generator README for merge rules.
+// Prompt references name files outside this repository; their sources are recorded in NOTICE. See the generator README for merge rules.
 //
 // Pattern maps (path, external_directory, write, bash, tool, ...): the LAST matching key wins,
 // so "*" must come first. When a mode overrides an inherited key, the key keeps its position;
@@ -290,8 +290,16 @@
       "reviewer": {
         "extends": ["gitReadTools"],
         "tools+": ["read", "grep", "find", "ls", "watchdog_diff", "contact_supervisor"],
-        // Prompt body from pi-subagents 0.89.2, with committed-range guidance updated.
-        "systemPrompt": { "$file": "prompts/reviewer.md" }
+        // Real-world form: point at your own install, e.g.
+        //   { "files": [{ "path": "~/npm/node_modules/pi-subagents/agents/reviewer.md", "stripFrontmatter": true }, { "path": "prompts/reviewer-addendum.md", "stripFrontmatter": true }] }
+        // An install path is machine-specific, so adjust it; the package must be present for generation to succeed.
+        // This test layer uses this repository's own fixture agent file instead of an installed package.
+        "systemPrompt": {
+          "files": [
+            { "path": "../extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md", "stripFrontmatter": true },
+            { "path": "prompts/reviewer-addendum.md", "stripFrontmatter": true }
+          ]
+        }
       },
       "scout": {
         "extends": ["gitReadTools"],

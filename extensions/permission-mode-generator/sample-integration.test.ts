@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { devNull, homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -14,12 +14,10 @@ const sample = join(repo, "configs/permissions.example.src.jsonc");
 const gitTools = ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"];
 const ledgerTools = ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"];
 
+// The example source resolves its prompt references relative to itself, so generation runs on the source in place and
+// writes every output into the disposable directory. No prompt body is copied anywhere, and nothing here reads an installed package.
 async function deploy(dir: string) {
-  const src = join(dir, "permissions.src.jsonc");
-  await cp(sample, src);
-  await mkdir(join(dir, "prompts"));
-  await cp(join(repo, "configs/prompts/reviewer.md"), join(dir, "prompts/reviewer.md"));
-  const options = { src, out: join(dir, "modes.json"), state: join(dir, "state.json"), settings: join(dir, "settings.json"), subagentsState: join(dir, "subagents-state.json"), subagentConfig: join(dir, "extensions/subagent/config.json") };
+  const options = { src: sample, out: join(dir, "modes.json"), state: join(dir, "state.json"), settings: join(dir, "settings.json"), subagentsState: join(dir, "subagents-state.json"), subagentConfig: join(dir, "extensions/subagent/config.json") };
   assert.equal((await run({ ...options, action: "gen" })).status, "wrote");
   assert.equal((await run({ ...options, action: "check" })).status, "clean");
   return options;
@@ -122,9 +120,17 @@ test("deployed sample composes agents, prompt, and mode policies", async () => {
     }
     assert.deepEqual(overrides.worker.mutationTools, ["ledger_start", "ledger_submit"]);
     assert.ok(overrides.worker.subagentOnlyExtensions.some((p: string) => p.endsWith("/feature-ledger/index.ts")));
-    assert.match(overrides.reviewer.systemPrompt, /git_r_diff.*committed ranges/);
-    assert.match(overrides.reviewer.systemPrompt, /Do not use shell commands, mutate the repository/);
-    assert.ok(!overrides.reviewer.systemPrompt.includes("acceptanceRole:"));
+    // Each required phrase is asserted on its own, so order inside a line does not matter, and no full body is asserted.
+    // Every message names the referenced file the phrase comes from, so the run shows which part contributed what.
+    const prompt = overrides.reviewer.systemPrompt;
+    const agentFixture = join(repo, "extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md");
+    const addendum = join(repo, "configs/prompts/reviewer-addendum.md");
+    for (const [phrase, origin] of [["test fixture", agentFixture], ["git_r_diff", addendum], ['mode: "range"', addendum]] as const) {
+      assert.ok(prompt.includes(phrase), `${origin}: the assembled prompt must contain ${JSON.stringify(phrase)}`);
+    }
+    // Every entry in the sample carries stripFrontmatter, so no frontmatter block reaches the assembled prompt; the
+    // group below proves that an entry without the flag keeps it, which is why the flag is needed here.
+    assert.ok(!prompt.includes("name: illustrative-agent"), `${agentFixture}: frontmatter appears only for entries without the flag`);
     for (const name of ["default", "plan", "plan-local", "build", "build-local", "build-yolo"]) {
       assert.equal(modes[name].permission.tool["git_r_*"], "allow");
       for (const tool of ["ledger_check", "ledger_list", "ledger_next"]) assert.equal(modes[name].permission.tool[tool], "allow");
@@ -139,8 +145,8 @@ test("deployed sample composes agents, prompt, and mode policies", async () => {
 });
 
 // The prompt-assembly groups read only the agent fixtures this repository owns, so results do not depend on what is installed.
-test("fixture agent files prove the frontmatter flag against real files inside the repository", async () => {
-  // Entries name the fixtures relative to the source file, which is how the sample configuration references them.
+test("frontmatter appears only for entries without the flag, using the fixtures the sample references", async () => {
+  // Entries name the fixtures relative to the source file, as the sample configuration does.
   const sourceFile = join(repo, "configs", "permissions.example.src.jsonc");
   const assemble = (files: unknown[]) => (resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files } } } } }, sourceFile) as Record<string, any>).subagents.agents.worker.systemPrompt;
   const trimmed = (text: string) => text.replace(/\s+$/, ""); // trailing whitespace at a join boundary is normalized
