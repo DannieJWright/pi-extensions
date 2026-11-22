@@ -14,6 +14,9 @@ test:
     set -euo pipefail
 
     justfile="{{ REPO }}/justfile"
+    fixture_dir="{{ REPO }}/configs"
+    test_dir="$(mktemp -d)"
+    trap 'rm -rf "${test_dir}"' EXIT
     summary=()
     overall=0
 
@@ -54,7 +57,10 @@ test:
     run_group "subagent config test" node --test "{{ REPO }}/extensions/permission-mode-generator/config.test.ts"
     run_group "just-tools test" just -f "${justfile}" just-tools test
     run_group "git-tools test" just -f "${justfile}" git-tools test
-    run_group "provider-rules check" just -f "${justfile}" provider-rules check
+    run_group "perm check" node "{{ REPO }}/extensions/permission-mode-generator/generate.ts" check --src "${fixture_dir}/permission-mode.example.src.jsonc" --out "${fixture_dir}/permission-mode.example.json" --state "${test_dir}/permission-mode-state.json"
+    run_group "just-tools test" just -f "${justfile}" just-tools test
+    run_group "provider-rules check" node "{{ REPO }}/extensions/provider-rules/check.ts" --config "${fixture_dir}/provider-rules.example.jsonc"
+    run_group "provider-rules test" just -f "${justfile}" provider-rules test
     run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
     run_group "feature-ledger test" just -f "${justfile}" feature-ledger test
     run_group "skills test" just -f "${justfile}" skills test
@@ -65,7 +71,7 @@ test:
 
     exit "${overall}"
 
-# Run the just-tools and permission-mode merge tests. Pass Node options after `--` (for example `just just-tools test -- --test-name-pattern=grep`).
+# Run the just-tools and permission-mode generator tests. Pass Node options after `--` (for example `just just-tools test -- --test-name-pattern=grep`).
 [arg('action', pattern='test', help='test')]
 [group('test')]
 just-tools action="test" *args="":
@@ -81,7 +87,7 @@ just-tools action="test" *args="":
 
     case "${action}" in
         test)
-            node --test "{{ REPO }}/extensions/just-tools/just-tools.test.ts" "{{ REPO }}/extensions/just-tools/execution.test.ts" "{{ REPO }}/extensions/permission-mode-generator/merge.test.ts" ${extra[@]+"${extra[@]}"}
+            node --test "{{ REPO }}/extensions/just-tools/just-tools.test.ts" "{{ REPO }}/extensions/just-tools/execution.test.ts" "{{ REPO }}/extensions/permission-mode-generator/merge.test.ts" "{{ REPO }}/extensions/permission-mode-generator/generate.test.ts" ${extra[@]+"${extra[@]}"}
             ;;
         *)
             echo "unknown action: ${action}" >&2

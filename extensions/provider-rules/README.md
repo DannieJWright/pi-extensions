@@ -19,6 +19,10 @@ just provider-rules check --model strata/qwen3.8-flash-next-iq2_xs
 just provider-rules test            # run the parse, resolve, and recovery tests
 ```
 
+The explicit check above uses your personal current or legacy config. The repository's `just test`
+checks `configs/provider-rules.example.jsonc` instead. For another file, invoke the CLI directly with
+`node extensions/provider-rules/check.ts --config <path>`; it will not probe the personal paths.
+
 In a session, `/provider-rules` re-reads the config and reports the model, the winning rule, and any
 problems. The rule is resolved on every run, so a `/model` switch takes effect on the next run.
 

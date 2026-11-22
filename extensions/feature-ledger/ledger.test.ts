@@ -10,6 +10,9 @@ import { badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableSt
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
+// Never let an inherited ledger path redirect fixture tests into a real ledger.
+delete process.env.PI_LEDGER_PATH;
+
 // The harness provides exec and setupRepo. The ledger lives under plan/, which the
 // repo gitignores; setupRepo mirrors that here.
 
@@ -1015,6 +1018,13 @@ function itemLedger(fields: string[]): string {
 
 const commitIn = (cwd: string, message: string) => exec("git", ["-c", "user.email=test@example.com", "-c", "user.name=Ledger Test", "commit", "-q", "-m", message], cwd);
 
+async function initWorkspace(cwd: string): Promise<void> {
+	for (const args of [["init", "-q"], ["config", "user.email", "ledger-test@localhost"], ["config", "user.name", "Ledger Test"]]) {
+		const result = await exec("git", args, cwd);
+		assert.equal(result.code, 0, result.stderr);
+	}
+}
+
 test("isInside tells the item's own repository from the rest of the session", () => {
 	const root = "/session/sub-repo-1";
 	assert.ok(isInside(join(root, "notes.md"), root));
@@ -1061,7 +1071,7 @@ test("an item works in its own workspace: files.out reads from the session root 
 		const ctx = createFakeContext(dir);
 		const ws = join(dir, "sub-repo-1");
 		await mkdir(ws);
-		await exec("git", ["init", "-q"], ws);
+		await initWorkspace(ws);
 		await writeFile(join(ws, "ws-marker"), "x\n");
 		await writeFile(join(ws, "seed.txt"), "s\n");
 		await exec("git", ["add", "-A"], ws);
@@ -1091,7 +1101,7 @@ test("nothing is claimed about out-of-repo changes when the session root is not 
 	const ws = join(root, "sub-repo-1");
 	try {
 		await mkdir(ws);
-		await exec("git", ["init", "-q"], ws);
+		await initWorkspace(ws);
 		await writeFile(join(ws, "seed.txt"), "s\n");
 		await exec("git", ["add", "-A"], ws);
 		await commitIn(ws, "seed");
@@ -1180,7 +1190,7 @@ test("the out-of-repo warning reads from the session root, not from the reposito
 		const ws = join(dir, "item-repo");
 		await mkdir(session);
 		await mkdir(ws);
-		await exec("git", ["init", "-q"], ws);
+		await initWorkspace(ws);
 		await writeFile(join(ws, "seed.txt"), "s\n");
 		await exec("git", ["add", "-A"], ws);
 		await commitIn(ws, "seed");
