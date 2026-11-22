@@ -66,14 +66,47 @@ The top level has `permissionModes` and an optional `subagents`. Permission mode
 
 ## Merge rules
 
-- `extends`: fragment or mode names, applied left to right, then the entry's own body.
-  Unknown names and cycles are errors.
+- `extends`: a fragment name, or a sibling entry in the same section (`modes` or `agents`).
+  Applied left to right, then the entry's own body. Unknown names and cycles are errors.
+  A fragment wins over an entry with the same name.
 - Objects: deep merge. An inherited key keeps its position; a new key is appended at the end.
   Position matters for pattern maps, where the last matching key wins, so `*` must come first.
 - `"$replace": true` in an object: replace the inherited object fully, in your own order.
 - Arrays: replace. `"key+": [...]` appends to the inherited array (deduplicated).
 - `null`: delete the inherited key. A type change (string to map) replaces.
 - `extends`, `$replace`, and `key+` are stripped from the output.
+
+### Shared agent base
+
+Define the common tool set once as a fragment, then let each variant extend it. Each key under
+`subagents.agents` stays launchable under its own name, so a base you write as an agent is also
+callable; use distinct names for variants. Agent discovery priority is defined in the pi-subagents
+`docs/agents.md`; read it there instead of restating it here.
+
+```jsonc
+{
+  "subagents": {
+    "fragments": {
+      "workerBase": { "tools+": ["read", "grep", "find", "ls", "bash", "contact_supervisor"] }
+    },
+    "agents": {
+      "worker-ledger": {
+        "extends": ["workerBase"],
+        "tools+": ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"],
+        "mutationTools+": ["ledger_start", "ledger_submit"]
+      },
+      "worker-gitread": {
+        "extends": ["workerBase"],
+        "tools+": ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"]
+      }
+    }
+  }
+}
+```
+
+To narrow a variant: `"tools"` replaces the inherited array, `"tools+"` appends to it, and `null`
+deletes an inherited key. Hand-written settings values shaped like `extends`, `$replace`, or `key+`
+are reinterpreted by the generator; see [MIGRATION.md](MIGRATION.md).
 
 ## Mode prompts
 
