@@ -284,6 +284,37 @@ test("extends lookup is section-local and names the failing entry", () => {
 		/subagents\.agents\.reviewer: unknown extends "toString"/);
 });
 
+test("an agent entry inherits from a sibling agent entry", () => {
+	const source = {
+		agents: {
+			workerBase: { tools: ["read", "grep", "find"], mutationTools: ["bash"] },
+			"worker-ledger": {
+				extends: ["workerBase"],
+				"tools+": ["grep", "ledger_start"],
+				"mutationTools+": ["ledger_submit"],
+			},
+			"worker-readonly": {
+				extends: ["workerBase"],
+				mutationTools: null,
+			},
+		},
+	};
+
+	const result = buildSubagents(source);
+	assert.deepEqual(result, {
+		agentOverrides: {
+			workerBase: { tools: ["read", "grep", "find"], mutationTools: ["bash"] },
+			"worker-ledger": { tools: ["read", "grep", "find", "ledger_start"], mutationTools: ["bash", "ledger_submit"] },
+			"worker-readonly": { tools: ["read", "grep", "find"] },
+		},
+	});
+
+	// Append order is the inherited array first, then the variant's own additions in source order.
+	const overrides = result.agentOverrides as Record<string, Record<string, unknown>>;
+	assert.deepEqual(overrides["worker-ledger"].tools as string[], ["read", "grep", "find", "ledger_start"]);
+	assert.deepEqual(Object.keys(overrides["worker-readonly"]), ["tools"]);
+});
+
 test("sibling resolved fragments replace arrays instead of appending", () => {
 	const fragments = { a: { tools: ["a"] }, b: { tools: ["b"] } };
 	assert.deepEqual(mode(buildConfig({ fragments, modes: { m: { extends: ["a", "b"] } } }), "m"), { tools: ["b"] });
