@@ -2,8 +2,10 @@
 // The tools in index.ts call these; the logic is kept here so it is testable
 // without a Pi session.
 
+import { randomUUID } from "node:crypto";
 import { lstat, type Stats } from "node:fs/promises";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 
@@ -53,7 +55,7 @@ export interface LedgerItem {
 	tests: string[];
 	limitations: string[];
 	summary: string;
-	commits: { start?: string; end?: string; submissions?: string[] };
+	commits: { start?: string; end?: string; expected?: string; submissions?: string[] };
 }
 
 export interface Ledger {
@@ -640,4 +642,197 @@ export async function submitItem(opts: ItemContext & {
 	await ensureParent(path);
 	await writeFile(path, serializeLedger(ledger));
 	return { rejected: false, commit: end, filesOut, outOfRepo };
+}
+
+// Worker lifecycle is separate from the legacy start/submit tools until their cutover.
+export interface PatchView {
+	files: string[];
+	stat: string;
+	patch: string;
+	truncated: boolean;
+	full_patch_path?: string;
+}
+
+export interface DiffView {
+	from: string;
+	to: string;
+	implementation: PatchView;
+	ledger_metadata: PatchView;
+}
+
+// A start response may contain four patches; keep their combined previews bounded.
+const PATCH_LIMIT_BYTES = 4 * 1024;
+
+async function gitResult(opts: ItemContext, args: string[]): Promise<string> {
+	const result = await opts.exec("git", args, opts.repoRoot);
+	if (result.code !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr || result.stdout}`);
+	return result.stdout;
+}
+
+function ledgerRepoPath(opts: ItemContext): string | undefined {
+	return isInside(opts.ledgerPath, opts.repoRoot) ? relative(opts.repoRoot, opts.ledgerPath) : undefined;
+}
+
+async function patchView(opts: ItemContext, from: string, to: string, pathspec: string[], artifactDir: string): Promise<PatchView> {
+	const args = [from, to, "--", ...pathspec];
+	const files = (await gitResult(opts, ["diff", "--name-only", "-z", ...args])).split("\0").filter(Boolean);
+	const stat = await gitResult(opts, ["diff", "--stat", ...args]);
+	const fullPatch = await gitResult(opts, ["diff", "--binary", ...args]);
+	const bytes = Buffer.from(fullPatch);
+	if (bytes.length <= PATCH_LIMIT_BYTES) return { files, stat, patch: fullPatch, truncated: false };
+	const dir = await mkdtemp(join(artifactDir, "ledger-patch-"));
+	const fullPatchPath = join(dir, "full.patch");
+	await writeFile(fullPatchPath, fullPatch);
+	return { files, stat, patch: `${bytes.subarray(0, PATCH_LIMIT_BYTES).toString("utf8")}\n[Patch truncated; full patch: ${fullPatchPath}]`, truncated: true, full_patch_path: fullPatchPath };
+}
+
+export async function workDiff(opts: ItemContext, from: string, to: string, artifactDir = tmpdir()): Promise<DiffView> {
+	const ledgerPath = ledgerRepoPath(opts);
+	const implementation = await patchView(opts, from, to, ledgerPath ? [".", `:(exclude,literal)${ledgerPath}`] : ["."], artifactDir);
+	const ledger_metadata = ledgerPath
+		? await patchView(opts, from, to, [`:(literal)${ledgerPath}`], artifactDir)
+		: { files: [], stat: "", patch: "", truncated: false };
+	return { from, to, implementation, ledger_metadata };
+}
+
+function requireWorkerBranch(opts: ItemContext, item: LedgerItem): void {
+	if (item.branch && item.branch !== opts.branch) throw new Error(`item ${opts.id} says branch ${item.branch}, but ${opts.workspace} is on ${opts.branch}`);
+}
+
+function requireWorkerEligibility(ledger: Ledger, item: LedgerItem): void {
+	const config = effectiveReviewConfig(ledger, item);
+	if (config.max_failed_reviews > 0 && (item.failed_reviews ?? 0) >= config.max_failed_reviews) {
+		throw new Error(`item ${item.id} reached the failed-review limit ${config.max_failed_reviews}; change the limit or resolve the item before starting or submitting`);
+	}
+}
+
+export async function startWork(opts: ItemContext & { agentId: string; artifactDir?: string }): Promise<{
+	item: LedgerItem;
+	config: { enabled: boolean; max_failed_reviews: number; validation_scripts: string[] };
+	pending_findings: Finding[];
+	workspace: string;
+	cumulative_diff: DiffView;
+	latest_diff: DiffView | null;
+}> {
+	assertReviewFields(opts.ledger);
+	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
+	if (!opts.agentId?.trim()) throw new Error("agent_id: must be a non-empty string");
+	if (item.status !== "todo" && item.status !== "in-progress") throw new Error(`item ${item.id} is ${item.status}; worker start requires todo or in-progress`);
+	if (item.assignment) throw new Error(`item ${item.id} is already assigned to ${item.assignment.agent_id}`);
+	requireWorkerEligibility(opts.ledger, item);
+	requireWorkerBranch(opts, item);
+	const head = (await gitResult(opts, ["rev-parse", "HEAD"])).trim();
+	if (!head) throw new Error("cannot read HEAD");
+	if (!item.commits.start && ((item.failed_reviews ?? 0) > 0 || (item.commits.submissions?.length ?? 0) > 0)) throw new Error(`item ${item.id} has no feature base commit`);
+	const base = item.commits.start ?? head;
+	const cumulative_diff = await workDiff(opts, base, head, opts.artifactDir);
+	const latest = item.commits.submissions?.at(-1);
+	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, opts.artifactDir) : null;
+	item.status = "in-progress";
+	item.commits = { ...item.commits, start: base, expected: head };
+	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-worker`, role: "worker", agent_id: opts.agentId, claim_token: randomUUID() };
+	try {
+		await ensureParent(opts.ledgerPath);
+		await writeFile(opts.ledgerPath, serializeLedger(opts.ledger));
+	} catch (error) {
+		throw new Error(`worker start could not write the claim; ledger write may be partial, inspect ${opts.ledgerPath} before retrying: ${String(error)}`);
+	}
+	return { item, config: { ...effectiveReviewConfig(opts.ledger, item), validation_scripts: item.validation_scripts ?? opts.ledger.validation_scripts }, pending_findings: (item.findings ?? []).filter((finding) => finding.status === "open"), workspace: opts.workspace, cumulative_diff, latest_diff };
+}
+
+export async function submitWork(opts: ItemContext & {
+	agentId: string;
+	claimToken: string;
+	commitMessage: string;
+	summary: string;
+	limitations: string[];
+	emptyCommit?: boolean;
+	logDir?: string;
+	stat?: EntryStat;
+}): Promise<SubmitResult> {
+	assertReviewFields(opts.ledger);
+	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
+	if (item.status !== "in-progress") throw new Error(`item ${item.id} is ${item.status}; worker submit requires in-progress`);
+	if (!opts.agentId?.trim() || !opts.claimToken?.trim() || !item.assignment || item.assignment.role !== "worker" || item.assignment.agent_id !== opts.agentId || item.assignment.claim_token !== opts.claimToken) throw new Error(`item ${item.id} has no matching worker claim (agent_id and claim_token required)`);
+	if (!opts.commitMessage?.trim() || !opts.summary?.trim()) throw new Error("commit_message and summary must be non-empty strings");
+	if (opts.emptyCommit && (item.failed_reviews ?? 0) === 0) throw new Error("an empty commit is allowed only for a review-fix iteration");
+	requireWorkerEligibility(opts.ledger, item);
+	requireWorkerBranch(opts, item);
+	if (!item.commits.start || !item.commits.expected) throw new Error(`item ${item.id} lacks the feature base or expected HEAD`);
+	const checkHead = async () => {
+		const head = (await gitResult(opts, ["rev-parse", "HEAD"])).trim();
+		const expected = (await gitResult(opts, ["rev-parse", item.commits.expected!])).trim();
+		if (head !== expected) throw new Error(`HEAD moved since worker start (${item.commits.expected} is not HEAD); inspect before recovery`);
+	};
+	await checkHead();
+	const workPaths = async () => {
+		const status = await gitResult(opts, ["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"]);
+		const ledgerPath = ledgerRepoPath(opts);
+		const entries = parsePorcelain(status);
+		const paths = [...new Set((await addablePaths(status, opts.repoRoot, opts.stat ?? lstat)).filter((path) => path !== ledgerPath))];
+		// Git add cannot match a path already deleted from the index. Commit --only can
+		// still match its HEAD version; a recreated untracked path must instead be added.
+		const stagePaths = paths.filter((path) => !entries.some((entry) => entry.path === path && entry.status === "D ") || entries.some((entry) => entry.path === path && entry.status === "??"));
+		return { paths, stagePaths };
+	};
+	let { paths, stagePaths } = await workPaths();
+	if (!opts.emptyCommit && paths.length === 0) throw new Error("the working tree has no implementation changes (ledger metadata alone is not work)");
+	for (const script of item.validation_scripts ?? opts.ledger.validation_scripts) {
+		const result = await opts.exec("sh", ["-c", script], opts.workspace);
+		if (result.code !== 0) {
+			const output = `${result.stdout}${result.stderr}`;
+			const logPath = join(opts.logDir ?? tmpdir(), `ledger-${opts.id}-${randomUUID()}.log`);
+			await writeFile(logPath, `$ ${script}\n${output}`);
+			return { rejected: true, script, exit: result.code, logPath, lastOutput: output.split("\n").filter(Boolean).slice(-20).join("\n") };
+		}
+	}
+	await checkHead();
+	const branch = (await gitResult(opts, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+	if (branch !== opts.branch) throw new Error(`branch changed during validation (${opts.branch} to ${branch}); inspect before recovery`);
+	({ paths, stagePaths } = await workPaths());
+	if (!opts.emptyCommit && paths.length === 0) throw new Error("validation left no implementation changes to commit");
+	if (!opts.emptyCommit && stagePaths.length) {
+		try {
+			const staged = await opts.exec("git", ["add", "-A", "--", ...stagePaths.map((path) => `:(literal)${path}`)], opts.repoRoot);
+			if (staged.code !== 0) throw new Error(staged.stderr || staged.stdout);
+		} catch (error) {
+			throw new Error(`git add failed; inspect the index before retrying: ${String(error)}`);
+		}
+	}
+	const args = opts.emptyCommit ? ["commit", "--only", "--allow-empty", "-m", opts.commitMessage] : ["commit", "--only", "-m", opts.commitMessage, "--", ...paths.map((path) => `:(literal)${path}`)];
+	let commitAttempted = false;
+	let end = "";
+	try {
+		commitAttempted = true;
+		const commit = await opts.exec("git", args, opts.repoRoot);
+		if (commit.code !== 0) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`);
+		end = (await gitResult(opts, ["rev-parse", "HEAD"])).trim();
+		if (!end) throw new Error("cannot read new HEAD");
+		const ledgerPath = ledgerRepoPath(opts);
+		const nameArgs = ["diff", "--name-only", "-z", item.commits.start, end, "--", ".", ...(ledgerPath ? [`:(exclude,literal)${ledgerPath}`] : [])];
+		const names = (await gitResult(opts, nameArgs)).split("\0").filter(Boolean);
+		const filesOut = prefixFromRoot(opts.cwd, opts.workspace, opts.repoRoot, names);
+		const outOfRepo: string[] = [];
+		const sessionRoot = await resolveRepoRoot(opts.cwd, opts.exec);
+		if (sessionRoot) {
+			const session = await opts.exec("git", ["status", "--porcelain", "-z"], opts.cwd);
+			if (session.code === 0) {
+				const outside = parsePorcelain(session.stdout).filter((entry) => !isInside(join(sessionRoot, entry.path), opts.repoRoot));
+				outOfRepo.push(...prefixFromRoot(opts.cwd, opts.cwd, sessionRoot, outside.map((entry) => entry.path)));
+			}
+		}
+		item.files = { ...item.files, out: filesOut };
+		item.summary = opts.summary;
+		item.limitations = [...item.limitations, ...opts.limitations];
+		item.commits = { ...item.commits, end, submissions: [...(item.commits.submissions ?? []), end] };
+		delete item.commits.expected;
+		delete item.assignment;
+		item.status = effectiveReviewConfig(opts.ledger, item).enabled ? "review" : "done";
+		await ensureParent(opts.ledgerPath);
+		await writeFile(opts.ledgerPath, serializeLedger(opts.ledger));
+		return { rejected: false, commit: end, filesOut, outOfRepo };
+	} catch (error) {
+		if (commitAttempted) throw new Error(`worker submission ${end ? `created commit ${end}` : "may have created a commit (commit result or HEAD is uncertain)"}; ledger update may be incomplete. Do not retry blindly; inspect HEAD, index, and ${opts.ledgerPath} and reconcile the claim and history: ${String(error)}`);
+		throw error;
+	}
 }

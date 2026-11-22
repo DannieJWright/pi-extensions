@@ -9,7 +9,7 @@ import { access, readFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, findItem, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
+import { checkParsed, findItem, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, startWork, submitWork, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
@@ -51,6 +51,21 @@ const SUBMIT_PARAMS = {
 	},
 	required: ["id", "commit_message", "summary"],
 	additionalProperties: false,
+} as unknown as TSchema;
+
+const WORK_PARAMS = {
+	anyOf: [
+		{
+			type: "object",
+			properties: { action: { const: "start" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
+			required: ["action", "id", "agent_id"], additionalProperties: false,
+		},
+		{
+			type: "object",
+			properties: { action: { const: "submit" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, summary: { type: "string", minLength: 1 }, limitations: { type: "array", items: { type: "string" } }, empty_commit: { type: "boolean" }, path: PATH_PROPERTY },
+			required: ["action", "id", "agent_id", "claim_token", "commit_message", "summary"], additionalProperties: false,
+		},
+	],
 } as unknown as TSchema;
 
 const POINTER_FILE = join("plan", "ledger.path");
@@ -219,6 +234,34 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {}, isError: problems.length > 0 };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_check: ${message(error)}` }], details: {}, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "ledger_work",
+		label: "Ledger work",
+		description: "Start or submit worker work. Start claims a todo or eligible in-progress item for agent_id and returns a fresh claim token, full item, effective config, pending findings and implementation/ledger diff views. Submit requires the same agent_id and claim_token, runs validations and commits work. empty_commit is only for an explained review fix. Claims fence stale sequential runs, not concurrent writers. Each patch preview is limited to 4 KiB; larger patches include a full-patch artifact path.",
+		parameters: WORK_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				if (params.action !== "start" && params.action !== "submit") throw new Error("action must be start or submit");
+				const required = params.action === "start" ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message", "summary"];
+				const missing = missingRequired(params, required);
+				if (missing.length) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
+				const { path, ledger } = await readLedger(ctx, params.path, true);
+				const item = findItem(ledger, params.id, path);
+				const opts = await itemContext(ctx, path, ledger, item);
+				if (params.action === "start") {
+					const result = await startWork({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined });
+					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
+				}
+				const result = await submitWork({ ...opts, agentId: params.agent_id, claimToken: params.claim_token, commitMessage: params.commit_message, summary: params.summary, limitations: params.limitations ?? [], emptyCommit: params.empty_commit, logDir: process.env.TMPDIR || undefined });
+				if (result.rejected) return { content: [{ type: "text", text: `ledger_work: rejected by ${result.script} (exit ${result.exit}); claim retained\nFull output: ${result.logPath}\nLast output:\n${result.lastOutput}` }], details: {}, isError: true };
+				const warning = result.outOfRepo.length ? `\nwarning: changes outside ${opts.workspace} are not committed:\n${result.outOfRepo.map((file) => `- ${file}`).join("\n")}` : "";
+				return { content: [{ type: "text", text: `ledger_work: ${params.id} is ${item.status} (commit ${result.commit})\nfiles.out:\n${result.filesOut.map((file) => `- ${file}`).join("\n")}${warning}` }], details: {} };
+			} catch (error) {
+				return { content: [{ type: "text", text: `ledger_work: ${message(error)}` }], details: {}, isError: true };
 			}
 		},
 	});

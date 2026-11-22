@@ -47,6 +47,10 @@ and points to `NOTICE`; the README links to it without naming sources, and no sk
 README, or doc restates an entry. A license, copyright holder, or version that cannot be established
 from evidence available in this repository is recorded as unknown with the evidence held, never guessed.
 Do not commit a third-party prompt body: reference the source by path instead.
+## Pi extension information
+
+Search for installed Pi extension documentation and examples under `~/.pi/agent/install/releases/`,
+not broadly under `~/.pi/agent/`.
 
 ## Checks
 

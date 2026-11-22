@@ -556,7 +556,7 @@ test("the harness runs a tool against a temporary repository with no Pi session"
 	try {
 		const api = createFakeApi();
 		featureLedger(api);
-		assert.ok(Object.keys(api.tools).sort().join(",") === "ledger_check,ledger_list,ledger_next,ledger_start,ledger_submit");
+		assert.ok(Object.keys(api.tools).sort().join(",") === "ledger_check,ledger_list,ledger_next,ledger_start,ledger_submit,ledger_work");
 
 		const ctx = createFakeContext(dir);
 		const list = await api.tools.ledger_list.execute(null, {}, null, null, ctx);
