@@ -35,6 +35,19 @@ Direct ledger operations access their ledger and workspace paths without ordinar
 features, not defects solely on that basis; remain alert to other security issues and use trusted
 ledger paths, workspaces, and validation scripts.
 
+## Content taken from other repositories
+
+When code, prompt text, or any other content comes from another repository, add or update its entry in
+the root `NOTICE` before using it, and honor that source's license terms. An entry records the source
+repository URL, license, copyright holder, the version observed, where the content is used in this
+repository, what was changed, and that source's copyright and permission notice.
+
+`NOTICE` is the single record of third-party content. `LICENSE` covers only original work authored here
+and points to `NOTICE`; the README links to it without naming sources, and no skill file, extension
+README, or doc restates an entry. A license, copyright holder, or version that cannot be established
+from evidence available in this repository is recorded as unknown with the evidence held, never guessed.
+Do not commit a third-party prompt body: reference the source by path instead.
+
 ## Checks
 
 Run `just feature-ledger check` and `just test` through the just tools exposed to you. These are your own

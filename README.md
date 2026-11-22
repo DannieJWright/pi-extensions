@@ -50,3 +50,13 @@ just provider-rules test     # provider rules tests
 ```
 
 No test reads an installed package. Unit tests author their own fixtures in temporary directories; the sample group (`perm sample test`) compares against this repository's committed golden fixture and its own agent fixture files under `extensions/permission-mode-generator/test-fixtures/agents/`, so results do not change with what happens to be installed. Checking a real install is a manual step, gated on the version recorded in `NOTICE`, and is not part of `just test`. Third-party sources are named once in `NOTICE`; docs link to it instead of restating them.
+
+## Credits
+
+Content taken from another repository is recorded once in [NOTICE](NOTICE): its source repository,
+license, copyright holder, the version observed, where the content is used here, what was changed,
+and that source's copyright and permission notice. `LICENSE` covers only the original work authored
+in this repository and points to `NOTICE` for third-party terms. This README names no individual
+source because `NOTICE` is the single record; docs link to it instead of restating an entry. Before
+taking code or snippets from another repository, update `NOTICE` and honor that source's license
+terms — see [AGENTS.md](AGENTS.md#content-taken-from-other-repositories).
