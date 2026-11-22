@@ -37,12 +37,70 @@ function isObject(value: unknown): value is JsonObject { return typeof value ===
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function code(error: unknown): string | undefined { return (error as NodeJS.ErrnoException)?.code; }
 
+/** Reference paths are absolute, `~/...` from the user's home directory, or relative to the source file. */
+function referencePath(raw: string, sourceFile: string): string {
+	if (raw === "~") return homedir();
+	if (raw.startsWith("~/")) return path.join(homedir(), raw.slice(2));
+	return path.resolve(path.dirname(sourceFile), raw);
+}
+
+/** Normalize trailing whitespace at a join boundary so parts concatenate with exactly one blank line. */
+function trimBoundary(text: string): string { return text.replace(/\s+$/, ""); }
+
+/** Remove a frontmatter block delimited by --- lines at offset 0; its fields are not interpreted. */
+function stripFrontmatter(text: string, keyPath: string, file: string): string {
+	// Keep line terminators so the remaining content is returned byte for byte.
+	const lines = text.match(/[^\r\n]*(?:\r?\n|$)/g) ?? [];
+	if (lines[0] !== "---\n" && lines[0] !== "---\r\n") return text;
+	for (let i = 1; i < lines.length; i++) if (lines[i] === "---\n" || lines[i] === "---\r\n") return lines.slice(i + 1).join("");
+	throw new Error(`${keyPath}: frontmatter opened in ${file} has no closing delimiter`);
+}
+
+const PROMPT_KEYS = new Set(["files", "text"]);
+const ENTRY_KEYS = new Set(["path", "stripFrontmatter"]);
+
+/** A prompt value may name files plus inline text; the assembled result is the effective systemPrompt. */
+function resolvePromptValue(value: JsonObject, sourceFile: string, keyPath: string): string {
+	const unknown = Object.keys(value).filter((key) => !PROMPT_KEYS.has(key));
+	if (unknown.length) throw new Error(`${keyPath}: prompt reference has unsupported fields: ${unknown.join(", ")}`);
+	const parts: string[] = [];
+	if (Object.hasOwn(value, "files")) {
+		if (!Array.isArray(value.files)) throw new Error(`${keyPath}: files must be an array of path strings or objects with path`);
+		value.files.forEach((entry, index) => {
+			const entryPath = `${keyPath}.files[${index}]`;
+			let raw: string, strip = false;
+			if (typeof entry === "string") raw = entry;
+			else if (isObject(entry)) {
+				if (!Object.keys(entry).length) throw new Error(`${entryPath}: empty object; expected a path string or an object with path`);
+				const badEntryKeys = Object.keys(entry).filter((key) => !ENTRY_KEYS.has(key));
+				if (badEntryKeys.length) throw new Error(`${entryPath}: unsupported fields: ${badEntryKeys.join(", ")}`);
+				if (typeof entry.path !== "string") throw new Error(`${entryPath}: path must be a path string`);
+				if (entry.stripFrontmatter !== undefined && typeof entry.stripFrontmatter !== "boolean") throw new Error(`${entryPath}: stripFrontmatter must be a boolean`);
+				raw = entry.path; strip = entry.stripFrontmatter === true;
+			} else throw new Error(`${entryPath}: each files entry must be a path string or an object with path`);
+			const file = referencePath(raw, sourceFile);
+			let content: string;
+			try { content = fs.readFileSync(file, "utf8"); }
+			catch (error) { throw new Error(`${entryPath}: cannot read referenced file ${file}: ${message(error)}`); }
+			parts.push(trimBoundary(strip ? stripFrontmatter(content, entryPath, file) : content));
+		});
+	}
+	if (Object.hasOwn(value, "text")) {
+		if (typeof value.text !== "string") throw new Error(`${keyPath}: text must be a string`);
+		parts.push(trimBoundary(value.text));
+	}
+	if (!parts.length) throw new Error(`${keyPath}: must contain at least one file or text`);
+	return parts.join("\n\n");
+}
+
 export function resolveFiles(value: unknown, sourceFile: string, keyPath = ""): unknown {
 	if (Array.isArray(value)) return value.map((item, index) => resolveFiles(item, sourceFile, `${keyPath}[${index}]`));
 	if (!isObject(value)) return value;
+	// Precedence: an object containing files or text is the prompt-reference form. A single-key $file object keeps its existing meaning and is not checked for unknown keys.
+	if (Object.hasOwn(value, "files") || Object.hasOwn(value, "text")) return resolvePromptValue(value, sourceFile, keyPath);
 	if (Object.keys(value).length === 1 && Object.hasOwn(value, "$file")) {
 		if (typeof value.$file !== "string") throw new Error(`${keyPath}: $file must be a path string`);
-		const file = path.resolve(path.dirname(sourceFile), value.$file);
+		const file = referencePath(value.$file, sourceFile);
 		try { return fs.readFileSync(file, "utf8"); }
 		catch (error) { throw new Error(`${keyPath}: cannot read $file ${file}: ${message(error)}`); }
 	}

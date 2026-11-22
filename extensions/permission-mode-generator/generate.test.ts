@@ -60,6 +60,86 @@ test("missing $file reports its section and key path", (t) => {
 	}
 });
 
+test("prompt references join parts in read order with exactly one blank line", (t) => {
+	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "nested", "source.jsonc");
+	fs.mkdirSync(path.join(dir, "prompts"));
+	fs.writeFileSync(path.join(dir, "prompts", "first.md"), "first part\n   \n");
+	fs.writeFileSync(path.join(dir, "prompts", "second.md"), "second part\t\n");
+	const value = { files: ["../prompts/first.md", path.join(dir, "prompts", "second.md")], text: "added paragraph  " };
+	const source = { permissionModes: { modes: { one: { systemPrompt: value } } } };
+	// Entry order is preserved; trailing whitespace at each boundary is normalized before the single blank line.
+	assert.deepEqual(resolveFiles(source, sourceFile), { permissionModes: { modes: { one: { systemPrompt: "first part\n\nsecond part\n\nadded paragraph" } } } });
+	assert.deepEqual(value, { files: ["../prompts/first.md", path.join(dir, "prompts", "second.md")], text: "added paragraph  " });
+	assert.equal((resolveFiles({ subagents: { agents: { worker: { systemPrompt: { text: "text alone" } } } } }, sourceFile) as JsonObject).subagents.agents.worker.systemPrompt, "text alone");
+});
+
+test("~ expands from the home directory for both prompt forms", (t) => {
+	const dir = temporaryDirectory(t);
+	fs.writeFileSync(path.join(dir, "home-prompt.md"), "home content\n");
+	const savedHome = process.env.HOME;
+	process.env.HOME = dir;
+	try {
+		const sourceFile = path.join(dir, "elsewhere", "source.jsonc");
+		assert.equal((resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files: ["~/home-prompt.md"] } } } } }, sourceFile) as JsonObject).subagents.agents.worker.systemPrompt, "home content");
+		// The legacy form still returns file content verbatim, only its path resolution gains ~ expansion.
+		assert.equal((resolveFiles({ permissionModes: { fragments: { base: { systemPrompt: { $file: "~/home-prompt.md" } } } } }, sourceFile) as JsonObject).permissionModes.fragments.base.systemPrompt, "home content\n");
+	} finally {
+		if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+	}
+});
+
+test("stripFrontmatter removes a leading --- block only when the entry asks for it", (t) => {
+	const dir = temporaryDirectory(t);
+	fs.writeFileSync(path.join(dir, "with-frontmatter.md"), "---\ntitle: illustrative stand-in\n---\nbody line\n");
+	fs.writeFileSync(path.join(dir, "unclosed.md"), "---\ntitle: illustrative stand-in\nbody line\n");
+	const sourceFile = path.join(dir, "src.jsonc");
+	const value = { files: [{ path: "with-frontmatter.md" }, { path: "with-frontmatter.md", stripFrontmatter: true }] };
+	assert.equal((resolveFiles({ permissionModes: { modes: { one: { systemPrompt: value } } } }, sourceFile) as JsonObject).permissionModes.modes.one.systemPrompt,
+		"---\ntitle: illustrative stand-in\n---\nbody line\n\nbody line");
+	assert.throws(() => resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files: [{ path: "unclosed.md", stripFrontmatter: true }] } } } } }, sourceFile),
+		new RegExp(`subagents\\.agents\\.worker\\.systemPrompt\\.files\\[0\\]: frontmatter opened in .*unclosed\\.md has no closing delimiter`));
+});
+
+test("missing prompt references name their key path and resolved path", (t) => {
+	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "src.jsonc");
+	for (const entry of ["missing.md", { path: "missing.md", stripFrontmatter: true }]) {
+		assert.throws(() => resolveFiles({ subagents: { agents: { worker: { systemPrompt: { files: [entry] } } } } }, sourceFile),
+			new RegExp(`subagents\\.agents\\.worker\\.systemPrompt\\.files\\[0\\]: cannot read referenced file .*missing\\.md`));
+	}
+});
+
+test("empty or malformed prompt values report the key path", (t) => {
+	const dir = temporaryDirectory(t), sourceFile = path.join(dir, "src.jsonc");
+	const prompt = (value: unknown) => ({ permissionModes: { modes: { one: { systemPrompt: value } } } });
+	assert.throws(() => resolveFiles(prompt({ files: [{}] }), sourceFile), /systemPrompt\.files\[0\]: empty object/);
+	assert.throws(() => resolveFiles(prompt({ text: 1 }), sourceFile), /systemPrompt: text must be a string/);
+	assert.throws(() => resolveFiles(prompt({ files: [] }), sourceFile), /systemPrompt: must contain at least one file or text/);
+	assert.throws(() => resolveFiles(prompt({ files: ["prompts/x.md"], extra: true }), sourceFile), /systemPrompt: prompt reference has unsupported fields: extra/);
+	assert.throws(() => resolveFiles(prompt({ files: [{ path: "prompts/x.md", other: 1 }] }), sourceFile), /systemPrompt\.files\[0\]: unsupported fields: other/);
+	// A single-key $file object is not subject to unknown-key rejection.
+	fs.mkdirSync(path.join(dir, "prompts"));
+	fs.writeFileSync(path.join(dir, "prompts", "x.md"), "kept verbatim\n");
+	assert.equal((resolveFiles(prompt({ $file: "prompts/x.md" }), sourceFile) as JsonObject).permissionModes.modes.one.systemPrompt, "kept verbatim\n");
+});
+
+test("assembled prompts flow through extends, override and null deletion in both sections", (t) => {
+	const dir = temporaryDirectory(t);
+	fs.mkdirSync(path.join(dir, "prompts"));
+	fs.writeFileSync(path.join(dir, "prompts", "base.md"), "base body\n");
+	for (const [section, collection] of [["permissionModes", "modes"], ["subagents", "agents"]] as const) {
+		const assembled = "base body\n\nadded by inline text";
+		const source = { [section]: { fragments: { base: { systemPrompt: { files: ["prompts/base.md"], text: "added by inline text" } } }, [collection]: {
+			inherited: { extends: ["base"] },
+			overridden: { extends: ["base"], systemPrompt: { text: "replacement form" } },
+			deleted: { extends: ["base"], systemPrompt: null },
+		} } };
+		const resolved = resolveFiles(source, path.join(dir, "source.jsonc")) as Record<string, JsonObject>;
+		assert.equal(resolved[section].fragments.base.systemPrompt, assembled);
+		const merged = section === "permissionModes" ? buildConfig(resolved[section]).modes : buildSubagents(resolved[section]).agentOverrides;
+		assert.deepEqual(merged, { inherited: { systemPrompt: assembled }, overridden: { systemPrompt: "replacement form" }, deleted: {} });
+	}
+});
+
 test("generator writes, checks, detects drift and force overwrites", async (t) => {
 	const dir = temporaryDirectory(t);
 	const paths = { src: path.join(dir, "src.jsonc"), out: path.join(dir, "out.json"), state: path.join(dir, "state.json"), settings: path.join(dir, "settings.json"), subagentsState: path.join(dir, "subagents-state.json") };
