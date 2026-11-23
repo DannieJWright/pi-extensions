@@ -167,7 +167,11 @@
       "label": "Plan Mode",
       "color": "mdLink",
       // A custom prompt avoids the @plan approval UI. show_plan still displays files.
-      "systemPrompt": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions.",
+      // Both value forms in one value: an object-form reference plus inline text. The golden fixture records this as a marker.
+      "systemPrompt": {
+        "files": [{ "path": "../extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md", "stripFrontmatter": true }],
+        "text": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+      },
       "sandbox": {
         "writable": false
       },

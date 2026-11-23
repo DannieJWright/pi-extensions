@@ -267,8 +267,16 @@
       "label": "Plan Mode",
       "color": "mdLink",
       "systemPrompt": {
-        "$digest": "9ce7b529c09dfe2d9ee7579dbab33229730de69888e954826c9835c1343624bc",
-        "$reference": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+        "$digest": "7670e4cc2608f84910097ce8863aee21b0e464d7573f515493ca36baa9382d50",
+        "$reference": {
+          "files": [
+            {
+              "path": "../extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md",
+              "stripFrontmatter": true
+            }
+          ],
+          "text": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+        }
       }
     },
     "build": {
@@ -533,8 +541,16 @@
       "label": "Plan (local)",
       "color": "mdLink",
       "systemPrompt": {
-        "$digest": "9ce7b529c09dfe2d9ee7579dbab33229730de69888e954826c9835c1343624bc",
-        "$reference": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+        "$digest": "7670e4cc2608f84910097ce8863aee21b0e464d7573f515493ca36baa9382d50",
+        "$reference": {
+          "files": [
+            {
+              "path": "../extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md",
+              "stripFrontmatter": true
+            }
+          ],
+          "text": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+        }
       }
     },
     "build-local": {

@@ -17,6 +17,11 @@ function map(config: Record<string, unknown>, name: string, key: string): Record
 	return mode(config, name)[key] as Record<string, unknown>;
 }
 
+/** Prompt text in either value form, so a content assertion does not depend on which form the source used. */
+function promptText(value: unknown): string {
+	return typeof value === "string" ? value : (value as Record<string, unknown>)["text"] as string;
+}
+
 test("deep merge keeps inherited key order and appends new keys", () => {
 	const config = build({
 		fragments: {
@@ -189,19 +194,22 @@ test("comments inside strings are kept", () => {
 test("configured prompts follow mode inheritance without enabling plan approval", () => {
 	const path = new URL("../../configs/permissions.example.src.jsonc", import.meta.url);
 	const source = parseJsonc(readFileSync(path, "utf8"), path.pathname) as Record<string, unknown>;
-	const config = build(source.permissionModes as Record<string, unknown>);
+	const sourceModes = source.permissionModes as Record<string, unknown>;
+	const config = build(sourceModes);
+	const authored = (name: string) => ((sourceModes.modes as Record<string, Record<string, unknown>>)[name]).systemPrompt;
 	const planPrompt = mode(config, "plan").systemPrompt;
 	const buildPrompt = mode(config, "build").systemPrompt;
 
-	assert.equal(typeof planPrompt, "string");
+	// Inheritance carries the configured value through unchanged whatever form it was authored in, so this asserts the value itself rather than its type.
+	assert.deepEqual(planPrompt, authored("plan"));
 	assert.notEqual(planPrompt, "@plan");
-	assert.match(planPrompt as string, /show_plan/);
-	assert.match(planPrompt as string, /Do not implement code/);
-	assert.equal(mode(config, "plan-local").systemPrompt, planPrompt);
+	assert.match(promptText(planPrompt), /show_plan/);
+	assert.match(promptText(planPrompt), /Do not implement code/);
+	assert.deepEqual(mode(config, "plan-local").systemPrompt, planPrompt);
 	assert.equal(typeof buildPrompt, "string");
-	assert.match(buildPrompt as string, /Implement the user's current request/);
+	assert.match(promptText(buildPrompt), /Implement the user's current request/);
 	for (const name of ["build-local", "build-yolo"]) {
-		assert.equal(mode(config, name).systemPrompt, buildPrompt);
+		assert.deepEqual(mode(config, name).systemPrompt, buildPrompt);
 	}
 	for (const name of ["default", "yolo"]) {
 		assert.equal(mode(config, name).systemPrompt, undefined);

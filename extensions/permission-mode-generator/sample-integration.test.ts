@@ -34,6 +34,14 @@ const isMarker = (value: unknown) => isObject(value) && typeof value["$digest"] 
 /** Hash a value verbatim when it is a string, otherwise through its JSON form. */
 const digestOf = (value: unknown) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 
+/** Collect the fixture's markers with their key paths, so a test can say which value form each recorded position uses. */
+function markersIn(expected: unknown, keyPath = ""): Array<{ keyPath: string; marker: Record<string, unknown> }> {
+	if (isMarker(expected)) return [{ keyPath: keyPath || "(root)", marker: expected }];
+	if (Array.isArray(expected)) return expected.flatMap((item, index) => markersIn(item, `${keyPath}[${index}]`));
+	if (isObject(expected)) return Object.entries(expected).flatMap(([key, child]) => markersIn(child, keyPath ? `${keyPath}.${key}` : key));
+	return [];
+}
+
 /** Compare the generated output with the fixture. Normalization follows the fixture's markers, not a length heuristic. Every recorded reference must stay inside the repository or the declared stand-in home root. */
 function compareFixture(actual: unknown, expected: unknown, sourceFile: string, homeRoot: string, keyPath = ""): void {
   const here = keyPath || "(root)";
@@ -75,7 +83,15 @@ test("golden fixture compares prompt bodies by digest marker and keeps every oth
     const { $comment, ...actual } = generated;
     // The comparison resolves through this group's own stand-in root instead of the machine's home.
     const home = standInHomeRoot(dir);
-    compareFixture(actual, JSON.parse(await readFile(fixture, "utf8")), sample, home);
+    const expected = JSON.parse(await readFile(fixture, "utf8"));
+    compareFixture(actual, expected, sample, home);
+    // Coverage for the object value form must come from the committed fixture itself, not only from unit tests: a compared position records an object reference whose entry strips frontmatter, and its stored digest reproduces through the stand-in root.
+    const objectForm = markersIn(expected).filter(({ marker }) => isObject(marker["$reference"]) && Array.isArray(marker["$reference"]["files"]) && marker["$reference"]["files"].some((entry) => isObject(entry) && entry["stripFrontmatter"] === true));
+    assert.ok(objectForm.length > 0, "the committed fixture records no object-form reference with stripFrontmatter true at a compared position");
+    for (const { keyPath, marker } of objectForm) {
+      checkReadScope(marker["$reference"], sample, keyPath, home);
+      assert.equal(digestOf(resolveFiles(marker["$reference"], sample, keyPath, home)), marker["$digest"], `${keyPath}: the stored digest does not reproduce from the stand-in root`);
+    }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -105,6 +121,14 @@ test("markers are driven by the fixture and fail on a wrong digest or a changed 
     assert.throws(() => compareFixture(`${inline}changed`, inlineMarker, src, home, keyPath), /digest mismatch/);
     // The stored digest can still be right while the reference list has changed to another file.
     assert.throws(() => compareFixture(resolvedFirst, { "$digest": digestOf(resolvedFirst), "$reference": second }, src, home, keyPath), /digest mismatch/);
+    // An object-form reference that mixes a file and inline text is recorded as its own reference, and its failure names the same three things.
+    const objectForm = { files: [{ path: "prompts/second.md", stripFrontmatter: true }], text: "inline text in the same value" };
+    const resolvedObjectForm = resolveWithinScope(objectForm, src, keyPath, home) as string;
+    const objectMarker = { "$digest": digestOf(resolvedObjectForm), "$reference": objectForm };
+    compareFixture(resolvedObjectForm, objectMarker, src, home, keyPath);
+    let objectFailure = "";
+    try { compareFixture(`${resolvedObjectForm}changed`, objectMarker, src, home, keyPath); } catch (error) { objectFailure = (error as Error).message; }
+    for (const part of [keyPath, JSON.stringify(objectForm), objectMarker["$digest"], digestOf(`${resolvedObjectForm}changed`)]) assert.ok(objectFailure.includes(part), `the object-form failure must name ${part}: ${objectFailure}`);
     assert.throws(() => compareFixture(resolvedFirst, { "$digest": digestOf(resolvedFirst) }, src, home, keyPath), /does not record the reference/);
     // A marker whose key path is absent from the generated output fails naming the key path and the recorded reference instead of hashing undefined.
     let absentFailure = "";

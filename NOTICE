@@ -20,7 +20,7 @@ with the evidence available; do not guess a license.
   `~/.pi/agent/npm/node_modules/pi-subagents` on 2026-11-22. Nothing here pins that version;
   generation output depends on what is installed on the machine running it.
 - Where the content is used: reference only — no prompt body from this source is committed.
-  The install-path form appears as a comment line in `configs/permissions.example.src.jsonc:292`, as
+  The install-path form appears as a comment line in `configs/permissions.example.src.jsonc:296`, as
   example paths in `README.md:39` and in `extensions/permission-mode-generator/README.md:31` and :80,
   where docs describe resolving a reference against an installed package. When a user points a
   reference at their own install, that file's content enters generated output at generation time under
