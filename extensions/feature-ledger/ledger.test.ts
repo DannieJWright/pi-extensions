@@ -525,7 +525,7 @@ test("every action validates through the shared gate before doing work, reads in
 			["ledger_work", { action: "start", id: "alpha", agent_id: "worker" }],
 			["ledger_work", { action: "submit", id: "alpha", agent_id: "worker", claim_token: "token", commit_message: "test: gate runs first", summary: "Nothing was read as work." }],
 			["ledger_review", { action: "start", id: "alpha", agent_id: "reviewer" }],
-			["ledger_review", { action: "submit", id: "alpha", agent_id: "reviewer", claim_token: "token" }],
+			["ledger_review", { action: "submit", id: "alpha", agent_id: "reviewer", claim_token: "token", commit_message: "test: gate runs first" }],
 		] as const) {
 			const result = await api.tools[name].execute(null, params, null, null, ctx);
 			assert.ok(result.isError, name);

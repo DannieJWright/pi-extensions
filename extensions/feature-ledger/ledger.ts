@@ -791,6 +791,7 @@ async function trackedLedger(opts: ItemContext): Promise<{ root: string; path: s
 export async function submitReview(opts: ItemContext & {
 	agentId: string;
 	claimToken: string;
+	commitMessage: string;
 	closeFindings: string[];
 	newFindings: NewFinding[];
 }): Promise<{ status: ItemStatus; failed_reviews: number; open_findings: Finding[]; ledger_commit: string | null; ledger_commit_note: string }> {
@@ -798,6 +799,9 @@ export async function submitReview(opts: ItemContext & {
 	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
 	if (item.status !== "review") throw new Error(`item ${item.id} is ${item.status}; reviewer submit requires review`);
 	if (!opts.agentId?.trim() || !opts.claimToken?.trim() || !item.assignment || item.assignment.role !== "reviewer" || item.assignment.agent_id !== opts.agentId || item.assignment.claim_token !== opts.claimToken) throw new Error(`item ${item.id} has no matching reviewer claim (agent_id and claim_token required)`);
+	// The supplied message is used unchanged so the project's commit conventions apply. Checked here,
+	// before the first Git call, so a rejected submission does not inspect or write the repository.
+	if (!opts.commitMessage?.trim()) throw new Error("commit_message must be a non-empty string");
 	requireWorkerBranch(opts, item);
 	if (!Array.isArray(opts.closeFindings) || opts.closeFindings.some((id) => typeof id !== "string" || !id.trim())) throw new Error("close_findings must be a list of non-empty IDs");
 	if (new Set(opts.closeFindings).size !== opts.closeFindings.length) throw new Error("close_findings contains duplicate IDs");
@@ -838,7 +842,7 @@ export async function submitReview(opts: ItemContext & {
 			if (diff.code === 0) return { status: item.status, failed_reviews: item.failed_reviews, open_findings: open, ledger_commit: null, ledger_commit_note: "Tracked ledger was written but already matches HEAD; no commit needed." };
 		}
 		commitAttempted = true;
-		const result = await opts.exec("git", ["commit", "--only", "-m", `Review ${item.id}`, "--", `:(literal)${tracked.path}`], tracked.root);
+		const result = await opts.exec("git", ["commit", "--only", "-m", opts.commitMessage, "--", `:(literal)${tracked.path}`], tracked.root);
 		if (result.code !== 0) throw new Error(`git commit failed: ${result.stderr || result.stdout}`);
 		const head = await opts.exec("git", ["rev-parse", "HEAD"], tracked.root);
 		if (head.code !== 0 || !head.stdout.trim()) throw new Error(`cannot read new ledger HEAD: ${head.stderr || head.stdout}`);

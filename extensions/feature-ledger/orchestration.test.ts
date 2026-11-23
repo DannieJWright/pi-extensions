@@ -136,7 +136,7 @@ test("complete review loop crosses orchestration and role tools through selectiv
     const workStart = (agent_id: string) => invoke("ledger_work", { action: "start", id: "todo", agent_id });
     const workSubmit = (agent_id: string, claim_token: string) => call(api, dir, "ledger_work", { action: "submit", id: "todo", agent_id, claim_token, commit_message: "Implementation", summary: "Implemented or fixed the feature", path });
     const reviewStart = (agent_id: string) => invoke("ledger_review", { action: "start", id: "todo", agent_id });
-    const reviewSubmit = (agent_id: string, claim_token: string, updates: Record<string, unknown>) => invoke("ledger_review", { action: "submit", id: "todo", agent_id, claim_token, ...updates });
+    const reviewSubmit = (agent_id: string, claim_token: string, updates: Record<string, unknown>, commit_message: string) => invoke("ledger_review", { action: "submit", id: "todo", agent_id, claim_token, commit_message, ...updates });
     assert.equal((await selected()).next.status, "todo");
     const worker = await workStart("todo-0-worker");
     await writeFile(join(dir, "work.txt"), "first\n");
@@ -146,7 +146,7 @@ test("complete review loop crosses orchestration and role tools through selectiv
     const reviewer = await reviewStart("todo-0-reviewer");
     assert.deepEqual(reviewer.latest_diff.implementation.files, ["work.txt"]);
     const finding = (details: string) => ({ details, rationale: "Must fix", severity: "minor", required_checks: ["inspect fix"] });
-    const failed = await reviewSubmit("todo-0-reviewer", reviewer.item.assignment.claim_token, { new_findings: [finding("first issue"), finding("second issue")] });
+    const failed = await reviewSubmit("todo-0-reviewer", reviewer.item.assignment.claim_token, { new_findings: [finding("first issue"), finding("second issue")] }, "Review todo round 0: two findings");
     assert.equal(failed.status, "in-progress");
     assert.equal(failed.failed_reviews, 1);
     assert.equal((await selected()).next.status, "in-progress");
@@ -158,7 +158,7 @@ test("complete review loop crosses orchestration and role tools through selectiv
     const second = await reviewStart("todo-1-reviewer");
     assert.match(second.cumulative_diff.implementation.patch, /first fix/);
     assert.match(second.latest_diff.implementation.patch, /first fix/);
-    const partial = await reviewSubmit("todo-1-reviewer", second.item.assignment.claim_token, { close_findings: [failed.open_findings[0].id] });
+    const partial = await reviewSubmit("todo-1-reviewer", second.item.assignment.claim_token, { close_findings: [failed.open_findings[0].id] }, "Review todo round 1: one finding still open");
     assert.equal(partial.failed_reviews, 2);
     assert.equal(partial.open_findings[0].id, failed.open_findings[1].id);
     assert.equal((await selected()).next, null);
@@ -170,7 +170,7 @@ test("complete review loop crosses orchestration and role tools through selectiv
     const secondFix = await workSubmit("todo-2-worker", thirdWorker.item.assignment.claim_token);
     assert.ok(!secondFix.isError, secondFix.content[0].text);
     const thirdReviewer = await reviewStart("todo-2-reviewer");
-    const passed = await reviewSubmit("todo-2-reviewer", thirdReviewer.item.assignment.claim_token, { close_findings: [failed.open_findings[1].id] });
+    const passed = await reviewSubmit("todo-2-reviewer", thirdReviewer.item.assignment.claim_token, { close_findings: [failed.open_findings[1].id] }, "Review todo round 2: no findings remain");
     assert.equal(passed.status, "done");
     const final = await invoke("ledger_get_feature", { id: "todo" });
     assert.equal(final.item.commits.submissions.length, 3);

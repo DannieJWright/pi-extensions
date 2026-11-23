@@ -33,6 +33,8 @@ Every tool validates the resolved file through one shared gate before doing any 
 
 Statuses are tool-owned: `todo` → `in-progress` → `done` without review, or → `review` with review enabled. A review with any open finding returns to `in-progress`; only a review with no open findings reaches `done`. Do not edit live ledger state by hand. Use the read tools, not a direct read of the entire ledger, except when authoring it.
 
+A reviewer supplies the commit message for a review submission. It is required, non-empty, and recorded unchanged so the project's commit conventions apply. Recommended form: `Review <item-id> round <iteration>` plus a short description.
+
 ## Safety and unavailable tools
 
 Claims fence stale sequential submissions; they are not access-control secrets or locks. Ledger writes are last-writer-wins: parallel writers and parallel work in a shared workspace are unsupported. For a stopped run, a parent may release only after establishing that run has stopped, using its current identity and token; otherwise stop and report. Never retry blindly after an uncertain commit or ledger write.

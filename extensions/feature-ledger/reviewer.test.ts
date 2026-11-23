@@ -41,7 +41,8 @@ async function reviewStart(api: ReturnType<typeof createFakeApi>, dir: string, p
 	assert.ok(!result.isError, result.content[0].text);
 	return JSON.parse(result.content[0].text);
 }
-const reviewArgs = (path: string, token: string, agent_id = "reviewer") => ({ action: "submit", id: "alpha", agent_id, claim_token: token, path });
+// A reviewer supplies the commit message and the tool uses it unchanged.
+const reviewArgs = (path: string, token: string, agent_id = "reviewer", commit_message = "Review alpha round 0") => ({ action: "submit", id: "alpha", agent_id, claim_token: token, commit_message, path });
 const finding = (severity: string) => ({ details: `Issue ${severity}`, rationale: "Why", severity, required_checks: ["manual check: do not run"] });
 async function fix(api: ReturnType<typeof createFakeApi>, dir: string, path: string) {
 	const start = await call(api, "ledger_work", dir, { action: "start", id: "alpha", agent_id: "fixer", path });
@@ -55,8 +56,11 @@ test("ledger_review schema, claims, validation and finding history through retri
 	try {
 		const api = createFakeApi(); featureLedger(api);
 		const schema = compile(api.tools.ledger_review.parameters);
-		assert.ok(schema.check({ action: "submit", id: "alpha", agent_id: "x", claim_token: "t" }));
+		assert.ok(schema.check({ action: "submit", id: "alpha", agent_id: "x", claim_token: "t", commit_message: "Review alpha round 0" }));
 		assert.ok(!schema.check({ action: "submit", id: "alpha", agent_id: "x" }));
+		// commit_message is required for submit, so a call without it or with an empty one does not validate.
+		assert.ok(!schema.check({ action: "submit", id: "alpha", agent_id: "x", claim_token: "t" }));
+		assert.ok(!schema.check({ action: "submit", id: "alpha", agent_id: "x", claim_token: "t", commit_message: "" }));
 		assert.ok(!schema.check({ action: "start", id: "alpha", agent_id: "x", claim_token: "t" }));
 		assert.ok(!schema.check({ action: "submit", id: "alpha", agent_id: "x", claim_token: "t", new_findings: [finding("critical")] }));
 		assert.match((await call(api, "ledger_review", dir, { action: "start", id: "alpha", agent_id: "r", path })).content[0].text, /requires review/);
@@ -69,7 +73,7 @@ test("ledger_review schema, claims, validation and finding history through retri
 		assert.equal(brief.config.max_failed_reviews, 2);
 		const args = reviewArgs(path, brief.item.assignment.claim_token, "alpha-0-reviewer");
 		assert.match((await call(api, "ledger_review", dir, { action: "start", id: "alpha", agent_id: "r", path })).content[0].text, /already assigned/);
-		for (const invalid of [{ ...args, agent_id: "wrong" }, { ...args, claim_token: "stale" }, { ...args, close_findings: ["unknown"] }, { ...args, close_findings: ["same", "same"] }, { ...args, new_findings: [finding("critical")] }, { ...args, new_findings: [{ ...finding("nit"), required_checks: [""] }] }]) {
+		for (const invalid of [{ ...args, agent_id: "wrong" }, { ...args, claim_token: "stale" }, { ...args, commit_message: "   " }, { ...args, close_findings: ["unknown"] }, { ...args, close_findings: ["same", "same"] }, { ...args, new_findings: [finding("critical")] }, { ...args, new_findings: [{ ...finding("nit"), required_checks: [""] }] }]) {
 			const before = await readFile(path, "utf8");
 			assert.ok((await call(api, "ledger_review", dir, invalid)).isError);
 			assert.equal(await readFile(path, "utf8"), before);
@@ -135,10 +139,13 @@ test("tracked ledger commit contains all ledger edits but preserves unrelated st
 			await writeFile(join(ledgerRepo.dir, "README.md"), "staged unrelated\n");
 			assert.equal((await exec("git", ["add", "README.md"], ledgerRepo.dir)).code, 0);
 			await writeFile(join(ledgerRepo.dir, "README.md"), "unstaged unrelated\n");
-			const result = await call(api, "ledger_review", workspace.dir, reviewArgs(path, brief.item.assignment.claim_token));
+			// The project's own commit convention is what the supplied message says, not a generated one.
+			const message = "fix(feature-ledger): review alpha round 0";
+			const result = await call(api, "ledger_review", workspace.dir, { ...reviewArgs(path, brief.item.assignment.claim_token), commit_message: message });
 			assert.ok(!result.isError, result.content[0].text);
 			const output = JSON.parse(result.content[0].text);
 			assert.match(output.ledger_commit, /^[a-f0-9]{40}$/);
+			assert.equal((await exec("git", ["log", "-1", "--format=%s"], ledgerRepo.dir)).stdout.trim(), message);
 			assert.match(output.ledger_commit_note, /including pre-existing edits/);
 			assert.equal((await exec("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], ledgerRepo.dir)).stdout.trim(), "plan/ledger.yaml");
 			assert.match((await exec("git", ["show", "HEAD:plan/ledger.yaml"], ledgerRepo.dir)).stdout, /Pre-existing ledger edit/);
@@ -146,6 +153,34 @@ test("tracked ledger commit contains all ledger edits but preserves unrelated st
 			assert.equal(await readFile(join(ledgerRepo.dir, "README.md"), "utf8"), "unstaged unrelated\n");
 		} finally { if (separate) await ledgerRepo.cleanup(); await workspace.cleanup(); }
 	}
+});
+
+// A rejected message stops before any Git work, so the claim and repository are untouched.
+// A supplied message is what the recorded commit carries, unchanged.
+test("review submit requires a non-empty commit message and records it verbatim", async () => {
+	const repo = await setupRepo(fixture);
+	try {
+		assert.equal((await exec("git", ["add", "-f", "plan/ledger.yaml"], repo.dir)).code, 0);
+		assert.equal((await exec("git", ["commit", "-m", "Track"], repo.dir)).code, 0);
+		const api = createFakeApi(); featureLedger(api); await initialWork(api, repo.dir, repo.path);
+		const brief = await reviewStart(api, repo.dir, repo.path);
+		let gitCalls = 0;
+		api.exec = async (command, args, cwd) => { if (command === "git") gitCalls++; return exec(command, args, cwd); };
+		for (const [value, expected] of [[undefined, /commit_message: missing/], ["", /commit_message: missing/], ["   ", /commit_message: must be a non-empty string/]] as const) {
+			gitCalls = 0;
+			const params = value === undefined ? { ...reviewArgs(repo.path, brief.item.assignment.claim_token), commit_message: undefined } : { ...reviewArgs(repo.path, brief.item.assignment.claim_token), commit_message: value };
+			const result = await call(api, "ledger_review", repo.dir, params);
+			assert.ok(result.isError, String(value));
+			assert.match(result.content[0].text, expected);
+			assert.equal(gitCalls, 0, `a rejected submission ran ${gitCalls} git commands for ${String(value)}`);
+			assert.equal((await itemAt(repo.path)).status, "review");
+		}
+		const message = "Review alpha round 0: left one finding open";
+		const result = await call(api, "ledger_review", repo.dir, { ...reviewArgs(repo.path, brief.item.assignment.claim_token), commit_message: message, new_findings: [finding("nit")] });
+		assert.ok(!result.isError, result.content[0].text);
+		assert.match(JSON.parse(result.content[0].text).ledger_commit, /^[a-f0-9]{40}$/);
+		assert.equal((await exec("git", ["log", "-1", "--format=%s"], repo.dir)).stdout.trim(), message);
+	} finally { await repo.cleanup(); }
 });
 
 test("untracked, ignored and outside-repository ledgers are written without a commit", async () => {
@@ -216,7 +251,7 @@ test("review failed write does not attempt commit and reports possible partial w
 			if (command === "git" && args[0] === "commit") commits++;
 			return result;
 		};
-		await assert.rejects(submitReview({ cwd: repo.dir, ledgerPath: repo.path, ledger, workspace: repo.dir, repoRoot: repo.dir, branch: repo.branch, id: "alpha", exec: faultExec, agentId: "reviewer", claimToken: brief.item.assignment.claim_token, closeFindings: [], newFindings: [] }), /may be partially written, no commit attempted/);
+		await assert.rejects(submitReview({ cwd: repo.dir, ledgerPath: repo.path, ledger, workspace: repo.dir, repoRoot: repo.dir, branch: repo.branch, id: "alpha", exec: faultExec, agentId: "reviewer", claimToken: brief.item.assignment.claim_token, commitMessage: "Review alpha round 0", closeFindings: [], newFindings: [] }), /may be partially written, no commit attempted/);
 		assert.equal(commits, 0);
 	} finally { await repo.cleanup(); }
 });
