@@ -81,8 +81,9 @@ test("worktree inspection refuses configured clean and process filters", async (
  }
  const nullMode = await inspectGit("diff", { mode: null }, { cwd: dir });
  assert.equal(nullMode.isError, true); assert.match(text(nullMode), /mode must be unstaged, staged, or range/);
+ // Discovery runs before the filter preflight, so an over-limit value is reached through the root lookup.
  const limited = await inspectGit("diff", {}, { cwd: dir, outputLimit: 1 });
- assert.equal(limited.isError, true); assert.match(text(limited), /filter configuration check exceeded/);
+ assert.equal(limited.isError, true); assert.match(text(limited), /repository root check exceeded/);
  assert.equal((await inspectGit("diff", { mode: "staged" }, { cwd: dir })).isError, false);
  await assert.rejects(readFile(marker), { code: "ENOENT" });
  git(dir, "config", "--unset", "filter.evil.clean");
@@ -142,6 +143,7 @@ test("submodule index parser handles arbitrary chunk boundaries and fails closed
 
 test("submodule scan fails closed on malformed output, errors, timeout and cancellation", async () => fixture(async (dir) => {
  const script = join(dir, "fake-git");
+ // Only ls-files is intercepted here, so the discovery lookup falls through to real Git inside the fixture repository and these expectations still reach the submodule branch.
  const writeScript = (body: string) => writeFile(script, `#!/bin/sh\ncase " $* " in\n *" ls-files "*) ${body} ;;\n *) exec git "$@" ;;\nesac\n`, { mode: 0o755 });
  for (const [body, expected] of [
   ["printf 'garbage'; exit 0", /unexpected submodule check output/],
@@ -162,6 +164,70 @@ test("submodule scan fails closed on malformed output, errors, timeout and cance
  }
  await readFile(join(dir, "scan-started")); controller.abort();
  const cancelled = await pending; assert.equal(cancelled.isError, true); assert.match(text(cancelled), /Git cancelled/);
+}));
+
+test("discovery lookup runs first and owns its anomaly labels against the filter preflight", async () => fixture(async (dir) => {
+ const script = join(dir, "fake-git");
+ // The script answers the lookup itself so these branches are reached through it. Fixture names stay short because these cases use outputLimit: 100.
+ const writeScript = (body: string) => writeFile(script, `#!/bin/sh\ncase " $* " in\n *" rev-parse --show-toplevel "*) ${body} ;;\n *" config "*) echo 'filter.evil.clean touch ran'; exit 0 ;;\n *) exec git "$@" ;;\nesac\n`, { mode: 0o755 });
+ for (const [body, expected] of [
+  ["printf '/'; head -c 120 /dev/zero | tr '\\000' a; exit 0", /^Working-tree inspection refused: repository root check exceeded output limit\./],
+  ["echo 'fatal: not a git repository' >&2; exit 128", /^Could not locate repository root:[\s\S]*not a git repository/],
+  ["echo failed >&2; exit 2", /^Could not locate repository root:[\s\S]*failed/],
+  ["printf 'garbage'; exit 0", /Could not locate repository root: unexpected Git output/],
+  ["sleep 2", /^Could not locate repository root:[\s\S]*Git timed out/],
+ ] as const) {
+  await writeScript(body);
+  const result = await inspectGit("status", {}, { cwd: dir, executable: script, timeoutMs: 300, outputLimit: 100 });
+  assert.equal(result.isError, true); assert.match(text(result), expected);
+  // The configured filter would have answered with its own label, so reaching the root label proves the lookup runs before the preflight.
+  assert.doesNotMatch(text(result), /filter configuration|filter drivers/);
+ }
+ // A truncated-but-successful lookup keeps its own wording rather than no-repository-found: that is the first case above.
+ // With the same configured filter, the filter label is reachable only when discovery succeeds.
+ await writeScript('exec git "$@"');
+ const afterDiscovery = await inspectGit("status", {}, { cwd: dir, executable: script, timeoutMs: 300, outputLimit: 100 });
+ assert.equal(afterDiscovery.isError, true); assert.match(text(afterDiscovery), /refused.*filter drivers/);
+ // Kinds with no working-tree need resolve the target first as well.
+ await writeScript("echo 'fatal: not a git repository' >&2; exit 128");
+ for (const [kind, args] of [["log", {}], ["show", { ref: "HEAD" }]] as const) {
+  const result = await inspectGit(kind, args, { cwd: dir, executable: script, timeoutMs: 300, outputLimit: 100 });
+  assert.equal(result.isError, true); assert.match(text(result), /^Could not locate repository root:/);
+ }
+ await writeScript("touch lookup-started; sleep 2");
+ const controller = new AbortController();
+ const pending = inspectGit("status", {}, { cwd: dir, executable: script, signal: controller.signal });
+ for (let i = 0; i < 100; i++) {
+  try { await readFile(join(dir, "lookup-started")); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+ }
+ await readFile(join(dir, "lookup-started")); controller.abort();
+ const cancelled = await pending;
+ assert.equal(cancelled.isError, true); assert.match(text(cancelled), /^Could not locate repository root:[\s\S]*Git cancelled/);
+ // Spawn failure follows the separate precedent in the output-cap test, and is reported under the same label.
+ const failedSpawn = await inspectGit("status", {}, { cwd: dir, executable: join(dir, "missing") });
+ assert.equal(failedSpawn.isError, true); assert.match(text(failedSpawn), /^Could not locate repository root:[\s\S]*Could not start Git/);
+}));
+
+test("submodule scan reuses the discovery lookup result instead of calling --show-cdup again", async () => fixture(async (dir) => {
+ const script = join(dir, "fake-git");
+ await writeFile(script, `#!/bin/sh\ncase " $* " in\n *" --show-cdup "*) echo 'unexpected second root call' >&2; exit 7 ;;\n *) exec git "$@" ;;\nesac\n`, { mode: 0o755 });
+ // A submodule record makes the prefix observable: a wrong prefix scopes ls-files away from it.
+ git(dir, "update-index", "--add", "--cacheinfo", `160000,${git(dir, "rev-parse", "HEAD")},zz-submodule`);
+ await mkdir(join(dir, "nested"));
+ const fromSubdirectory = await unchanged(dir, "status", {}, { cwd: join(dir, "nested"), executable: script });
+ assert.equal(fromSubdirectory.isError, true); assert.match(text(fromSubdirectory), /index contains submodules/);
+}));
+
+test("a symlinked target falls back to --show-cdup for the prefix because Git reports the physical top level", async () => fixture(async (dir) => {
+ git(dir, "update-index", "--add", "--cacheinfo", `160000,${git(dir, "rev-parse", "HEAD")},zz-submodule`);
+ await mkdir(join(dir, "nested"));
+ const outer = await mkdtemp(join(tmpdir(), "sym-outer-"));
+ try {
+  await symlink(join(dir, "nested"), join(outer, "link"));
+  // Deriving the prefix here would compare the symlink path against the physical top level and fail closed. The fallback asks Git, so the scan still covers the whole superproject index.
+  const throughLink = await unchanged(dir, "status", { dir: join(outer, "link") }, { cwd: outer });
+  assert.equal(throughLink.isError, true); assert.match(text(throughLink), /index contains submodules/);
+ } finally { await rm(outer, { recursive: true, force: true }); }
 }));
 
 test("dirty submodule status and diff do not execute submodule clean filters", async () => fixture(async (dir) => {

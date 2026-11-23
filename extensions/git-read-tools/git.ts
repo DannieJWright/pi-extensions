@@ -81,6 +81,13 @@ async function scanSubmodules(cdup: string, options: RunOptions) {
  return { result, ...parser.finish() };
 }
 
+// Fails closed on the discovery lookup's output shape: one absolute path, or the chain of ".." segments that is the prefix from the run directory to the top level (empty at the top level itself, and accepting either Git's "../" form or the derived ".." form). clean() keeps tab and newline, so these patterns reject them as well.
+const ROOT_PATH = /^(?:[A-Za-z]:)?[\\/][^\x00-\x1f\x7f]*$/;
+const PREFIX_CHAIN = /^(?:\.\.\/?)*$/;
+// Over-limit keeps its own wording because a truncated-but-successful lookup proves Git found a repository; reporting no-repository-found there would be wrong.
+const ROOT_OVER_LIMIT = "Working-tree inspection refused: repository root check exceeded output limit.";
+const UNEXPECTED_ROOT_OUTPUT = "Could not locate repository root: unexpected Git output";
+
 // validate() stays synchronous: it resolves dir against the caller's working directory but does not check that it exists, because report() has no access to the run options. The existence and directory-type check belongs in inspectGit.
 function validate(kind: Kind, input: Input, options: RunOptions): { dir: string; paths: string[]; refs: string[]; args: string[] } {
  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected an argument object");
@@ -117,9 +124,28 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
   const { dir, paths, refs, args } = validate(kind, input, options);
   // A passed dir may itself be a symlink that resolves to a directory; candidate children under it are never followed. lstat is used on the target so a symlink is identified as one instead of being reported by its target's type.
   const link = await lstat(dir).catch(() => null);
-  const type = link?.isSymbolicLink() ? await stat(dir).catch(() => null) : link;
+  const linked = !!link?.isSymbolicLink();
+  const type = linked ? await stat(dir).catch(() => null) : link;
   if (!type?.isDirectory()) throw new Error(`dir must exist and be a directory: ${dir}`);
   const runAt = { ...options, cwd: dir };
+  // One bounded discovery lookup runs before anything else, for every kind, so target selection does not depend on which kind needs a working tree. Its result also feeds the submodule scan below instead of a second call.
+  const root = await runGit(["rev-parse", "--show-toplevel"], runAt);
+  if (root.truncated) throw new Error(ROOT_OVER_LIMIT);
+  // Anomalies on this lookup — timeout, cancellation, spawn failure, any non-zero exit — go under the no-repository label.
+  if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root");
+  const top = root.stdout.trim();
+  if (!ROOT_PATH.test(top)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
+  // Prefix for the submodule scan. Deriving it compares the run directory against the physical top level, which is wrong when the target was reached through a symlink: measured on Git 2.53.0 --show-toplevel printed the physical path while --show-cdup printed "../" from the same run directory. So derive only for a direct target and ask Git otherwise, which costs one more invocation. Git reports the physical path, so the two derivations are not equivalent in all cases.
+  let prefix = "";
+  if (linked) {
+   const cdup = await runGit(["rev-parse", "--show-cdup"], runAt);
+   if (cdup.truncated) throw new Error(ROOT_OVER_LIMIT);
+   if (cdup.code !== 0 || cdup.cancelled || cdup.timedOut || cdup.error) return report(cdup, "Could not locate repository root");
+   prefix = cdup.stdout.trim();
+  } else {
+   prefix = path.relative(dir, top);
+  }
+  if (!PREFIX_CHAIN.test(prefix)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
   // Worktree comparisons and status can run repository-configured clean/process filters.
   // Refuse rather than silently produce an unfiltered, misleading comparison.
   if (kind === "status" || (kind === "diff" && (input.mode === undefined || input.mode === "unstaged"))) {
@@ -130,13 +156,8 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
     return report(filters, "Could not check repository filter configuration");
    }
    // Git may inspect a submodule's working tree using that repository's filters.
-   // Check the whole superproject index even when called from a subdirectory.
-   const root = await runGit(["rev-parse", "--show-cdup"], runAt);
-   if (root.truncated) throw new Error("Working-tree inspection refused: repository root check exceeded output limit.");
-   if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root");
-   const cdup = root.stdout.trim();
-   if (cdup && !/^(?:\.\.\/)+$/.test(cdup)) throw new Error("Could not locate repository root: unexpected Git output");
-   const index = await scanSubmodules(cdup, runAt);
+   // Check the whole superproject index even when called from a subdirectory, using the prefix above.
+   const index = await scanSubmodules(prefix, runAt);
    if (index.result.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
    if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules");
    if (index.invalid) throw new Error("Working-tree inspection refused: unexpected submodule check output.");
