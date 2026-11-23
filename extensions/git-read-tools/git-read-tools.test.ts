@@ -368,6 +368,61 @@ test("the report header names the run directory and top level only when either d
  } finally { await rm(parent, { recursive: true, force: true }); }
 }));
 
+test("bare repositories keep log and show working with no top level in the header", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "git-bare-"));
+ try {
+  const source = join(parent, "source");
+  await mkdir(source); git(source, "init", "-q");
+  await writeFile(join(source, "space name"), "first\n"); git(source, "add", "--", "."); git(source, "commit", "-qm", "bare subject");
+  // A bare clone keeps refs and objects without a working tree, so there is something to read.
+  const bare = join(parent, "bare"); git(source, "clone", "--bare", "-q", source, bare);
+  // The helper is not used here: its index check runs status, which cannot run in a bare repository, so these cases call inspectGit directly.
+  const log = await inspectGit("log", { limit: 1 }, { cwd: bare });
+  assert.equal(log.isError, false, text(log)); assert.match(text(log), /bare subject/);
+  const shown = await inspectGit("show", { ref: "HEAD" }, { cwd: bare });
+  assert.equal(shown.isError, false, text(shown)); assert.match(text(shown), /first/);
+  // Working-tree kinds still reach Git's own fatal there, reported as the inspection itself with its exit code.
+  for (const [kind, args] of [["status", {}], ["diff", {}]] as const) {
+   const result = await inspectGit(kind, args, { cwd: bare });
+   assert.equal(result.isError, true); assert.match(text(result), /must be run in a work tree/); assert.equal(result.details.exitCode, 128);
+  }
+  // Nothing differs when the run directory is the caller working directory, so the label stays plain. Reached through dir, only the run-directory part can appear because no top level resolves in a bare repository.
+  assert.equal(headerLine(log), "Git inspection:"); assert.equal(headerLine(shown), "Git inspection:");
+  const throughDir = await inspectGit("log", { dir: "bare", limit: 1 }, { cwd: parent });
+  assert.equal(throughDir.isError, false, text(throughDir));
+  assert.equal(headerLine(throughDir), `Git inspection (run directory ${bare}):`);
+  assert.doesNotMatch(headerLine(throughDir), /repository/);
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("the bareness confirmation is gated on the failed lookup and the submodule scan is skipped in a bare repository", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "git-bare-gate-"));
+ try {
+  const repo = join(parent, "repo");
+  await mkdir(repo); git(repo, "init", "-q");
+  await writeFile(join(repo, "file"), "x\n"); git(repo, "add", "--", "."); git(repo, "commit", "-qm", "subject");
+  const bare = join(parent, "bare"); git(repo, "clone", "--bare", "-q", repo, bare);
+  const script = join(parent, "fake-git");
+  // Both branches record what was asked for and answer with real Git, so these assertions depend on which calls happen at all rather than on their output.
+  await writeFile(script, `#!/bin/sh\ncase " $* " in\n *" ls-files "*) touch '${parent}/scan-started'; exec git "$@" ;;\n *" --is-bare-repository "*) touch '${parent}/bare-check'; exec git "$@" ;;\n *) exec git "$@" ;;\nesac\n`, { mode: 0o755 });
+  // In a bare repository an empty ls-files output with exit 0 would read as success, so reaching the fatal here proves the scan was not attempted; the confirmation ran because this lookup failed with that fatal.
+  const inBare = await inspectGit("status", {}, { cwd: bare, executable: script });
+  assert.equal(inBare.isError, true); assert.match(text(inBare), /must be run in a work tree/);
+  await assert.rejects(readFile(join(parent, "scan-started")), { code: "ENOENT" });
+  await readFile(join(parent, "bare-check"));
+  // A successful lookup never asks about bareness, so the ordinary case pays no extra invocation and still scans. The plain-directory case fails the lookup with a different message, so it does not check either.
+  await rm(join(parent, "bare-check"), { force: true });
+  const normal = await inspectGit("status", {}, { cwd: repo, executable: script });
+  assert.equal(normal.isError, false, text(normal));
+  await readFile(join(parent, "scan-started"));
+  await assert.rejects(readFile(join(parent, "bare-check")), { code: "ENOENT" });
+  const plain = join(parent, "plain"); await mkdir(plain);
+  const outside = await inspectGit("status", {}, { cwd: plain, executable: script });
+  assert.equal(outside.isError, true); assert.match(text(outside), /not a git repository/);
+  await assert.rejects(readFile(join(parent, "bare-check")), { code: "ENOENT" });
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
 test("status reports paths relative to the repository top level while a pathspec is scoped to the run directory", async () => fixture(async (dir) => {
  await mkdir(join(dir, "in-scope")); await mkdir(join(dir, "out-of-scope"));
  await writeFile(join(dir, "in-scope", "a.txt"), "first\n"); await writeFile(join(dir, "out-of-scope", "b.txt"), "first\n");

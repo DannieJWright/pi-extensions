@@ -91,6 +91,14 @@ const PREFIX_CHAIN = /^(?:\.\.\/?)*$/;
 // Over-limit keeps its own wording because a truncated-but-successful lookup proves Git found a repository; reporting no-repository-found there would be wrong.
 const ROOT_OVER_LIMIT = "Working-tree inspection refused: repository root check exceeded output limit.";
 const UNEXPECTED_ROOT_OUTPUT = "Could not locate repository root: unexpected Git output";
+// A bare repository has no top level, so the lookup answers with this fatal instead of printing one. Working-tree commands report the same fatal there, so it is matched as a stable substring only, never as a full sentence.
+const WORK_TREE_FATAL = /must be run in a work tree/i;
+
+// Confirming bareness costs an extra invocation, so it runs only after a lookup failed with that fatal. It fails closed on the shape like the lookup above: anything other than exactly true falls back to reporting the failed lookup as no repository found.
+async function confirmBare(options: RunOptions) {
+ const result = await runGit(["rev-parse", "--is-bare-repository"], options);
+ return !result.truncated && result.code === 0 && !result.cancelled && !result.timedOut && !result.error && result.stdout.trim() === "true";
+}
 
 // validate() stays synchronous: it resolves dir against the caller's working directory but does not check that it exists, because that is a validation-stage rejection answered by the plain catch path before any header can be built. The existence and directory-type check belongs in inspectGit, which also builds the ReportScope report() needs.
 function validate(kind: Kind, input: Input, options: RunOptions): { dir: string; paths: string[]; refs: string[]; args: string[] } {
@@ -137,22 +145,26 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
   // One bounded discovery lookup runs before anything else, for every kind, so target selection does not depend on which kind needs a working tree. Its result also feeds the submodule scan below instead of a second call.
   const root = await runGit(["rev-parse", "--show-toplevel"], runAt);
   if (root.truncated) throw new Error(ROOT_OVER_LIMIT);
-  // Anomalies on this lookup — timeout, cancellation, spawn failure, any non-zero exit — go under the no-repository label.
-  if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root", scope);
-  const top = root.stdout.trim();
-  if (!ROOT_PATH.test(top)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
-  scope.top = top;
-  // Prefix for the submodule scan. Deriving it compares the run directory against the physical top level, which is wrong when the target was reached through a symlink: measured on Git 2.53.0 --show-toplevel printed the physical path while --show-cdup printed "../" from the same run directory. So derive only for a direct target and ask Git otherwise, which costs one more invocation. Git reports the physical path, so the two derivations are not equivalent in all cases.
-  let prefix = "";
-  if (linked) {
-   const cdup = await runGit(["rev-parse", "--show-cdup"], runAt);
-   if (cdup.truncated) throw new Error(ROOT_OVER_LIMIT);
-   if (cdup.code !== 0 || cdup.cancelled || cdup.timedOut || cdup.error) return report(cdup, "Could not locate repository root", scope);
-   prefix = cdup.stdout.trim();
+  // Anomalies on this lookup — timeout, cancellation, spawn failure, any non-zero exit — go under the no-repository label, except the work-tree fatal, which is how a bare repository answers. A bare repository has no top level to resolve or print, but log and show still work there, so that case is confirmed before the label is used.
+  let bare = false, prefix = "";
+  if (root.code !== 0 || root.cancelled || root.timedOut || root.error) {
+   if (!(WORK_TREE_FATAL.test(root.text) && await confirmBare(runAt))) return report(root, "Could not locate repository root", scope);
+   bare = true;
   } else {
-   prefix = path.relative(dir, top);
+   const top = root.stdout.trim();
+   if (!ROOT_PATH.test(top)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
+   scope.top = top;
+   // Prefix for the submodule scan. Deriving it compares the run directory against the physical top level, which is wrong when the target was reached through a symlink: measured on Git 2.53.0 --show-toplevel printed the physical path while --show-cdup printed "../" from the same run directory. So derive only for a direct target and ask Git otherwise, which costs one more invocation. Git reports the physical path, so the two derivations are not equivalent in all cases.
+   if (linked) {
+    const cdup = await runGit(["rev-parse", "--show-cdup"], runAt);
+    if (cdup.truncated) throw new Error(ROOT_OVER_LIMIT);
+    if (cdup.code !== 0 || cdup.cancelled || cdup.timedOut || cdup.error) return report(cdup, "Could not locate repository root", scope);
+    prefix = cdup.stdout.trim();
+   } else {
+    prefix = path.relative(dir, top);
+   }
+   if (!PREFIX_CHAIN.test(prefix)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
   }
-  if (!PREFIX_CHAIN.test(prefix)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
   // Worktree comparisons and status can run repository-configured clean/process filters.
   // Refuse rather than silently produce an unfiltered, misleading comparison.
   if (kind === "status" || (kind === "diff" && (input.mode === undefined || input.mode === "unstaged"))) {
@@ -162,13 +174,16 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
     if (filters.code === 0 && !filters.cancelled && !filters.timedOut && !filters.error) throw new Error("Working-tree inspection refused: repository config contains filter drivers.");
     return report(filters, "Could not check repository filter configuration", scope);
    }
-   // Git may inspect a submodule's working tree using that repository's filters.
-   // Check the whole superproject index even when called from a subdirectory, using the prefix above.
-   const index = await scanSubmodules(prefix, runAt);
-   if (index.result.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
-   if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules", scope);
-   if (index.invalid) throw new Error("Working-tree inspection refused: unexpected submodule check output.");
-   if (index.hasSubmodule) throw new Error("Working-tree inspection refused: index contains submodules, whose filters cannot be safely checked.");
+   // In a bare repository ls-files --stage returns empty output with exit 0, which cannot be read as success, so this scan is skipped there. The kinds that need a working tree reach Git's own fatal instead.
+   if (!bare) {
+    // Git may inspect a submodule's working tree using that repository's filters.
+    // Check the whole superproject index even when called from a subdirectory, using the prefix above.
+    const index = await scanSubmodules(prefix, runAt);
+    if (index.result.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
+    if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules", scope);
+    if (index.invalid) throw new Error("Working-tree inspection refused: unexpected submodule check output.");
+    if (index.hasSubmodule) throw new Error("Working-tree inspection refused: index contains submodules, whose filters cannot be safely checked.");
+   }
   }
   const hashes: string[] = [];
   for (const ref of refs) {
