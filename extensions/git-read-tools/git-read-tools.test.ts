@@ -14,10 +14,15 @@ async function fixture(fn: (dir: string) => Promise<void>) {
  finally { await rm(dir, { recursive: true, force: true }); }
 }
 function text(result: Awaited<ReturnType<typeof inspectGit>>) { return result.content[0].text; }
-async function unchanged(dir: string, kind: Parameters<typeof inspectGit>[0], args: Record<string, unknown> = {}) {
- const before = git(dir, "status", "--porcelain=v1", "--untracked-files=all"); const index = await readFile(join(git(dir, "rev-parse", "--absolute-git-dir"), "index"));
- const result = await inspectGit(kind, args, { cwd: dir });
- assert.equal(git(dir, "status", "--porcelain=v1", "--untracked-files=all"), before); assert.deepEqual(await readFile(join(git(dir, "rev-parse", "--absolute-git-dir"), "index")), index);
+// Runs one kind and returns the result. `base` is not named `dir` because `dir` is a tool argument.
+// Limitation: the helper derives the git dir by running Git at `base`, so index immutability can only be
+// checked when `base` is itself inside a repository. For a target outside any repository, assert content only
+// and route the index checks through a `base` that is inside one. Extra RunOptions are forwarded to
+// inspectGit as-is; without them the run directory stays `base`.
+async function unchanged(base: string, kind: Parameters<typeof inspectGit>[0], args: Record<string, unknown> = {}, options?: Parameters<typeof inspectGit>[2]) {
+ const before = git(base, "status", "--porcelain=v1", "--untracked-files=all"); const index = await readFile(join(git(base, "rev-parse", "--absolute-git-dir"), "index"));
+ const result = await inspectGit(kind, args, { cwd: base, ...options });
+ assert.equal(git(base, "status", "--porcelain=v1", "--untracked-files=all"), before); assert.deepEqual(await readFile(join(git(base, "rev-parse", "--absolute-git-dir"), "index")), index);
  return result;
 }
 
@@ -214,6 +219,18 @@ test("ambiguous ref warnings do not corrupt the resolved hash", async () => fixt
  git(dir, "branch", "ambiguous"); git(dir, "tag", "ambiguous");
  const result = await inspectGit("show", { ref: "ambiguous" }, { cwd: dir });
  assert.equal(result.isError, false); assert.match(text(result), /first/);
+}));
+
+test("helper forwards extra run options while keeping its default run directory", async () => fixture(async (base) => {
+ // Without extra options the run directory is still the helper argument.
+ assert.match(text(await unchanged(base, "status")), /##/);
+ // With an option that changes the run directory, the inspection runs there while the index check is
+ // routed through `base`, which is inside a repository. This is the case the helper cannot check on its own.
+ const parent = await mkdtemp(join(tmpdir(), "git-helper-parent-"));
+ try {
+  const result = await unchanged(base, "status", {}, { cwd: parent });
+  assert.equal(result.isError, true); assert.match(text(result), /not a git repository/);
+ } finally { await rm(parent, { recursive: true, force: true }); }
 }));
 
 test("output cap, timeout, cancellation and spawn failure", async () => fixture(async (dir) => {
