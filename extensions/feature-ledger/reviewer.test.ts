@@ -77,6 +77,10 @@ test("ledger_review schema, claims, validation and finding history through retri
 			const before = await readFile(path, "utf8");
 			assert.ok((await call(api, "ledger_review", dir, invalid)).isError);
 			assert.equal(await readFile(path, "utf8"), before);
+			// The file is unchanged because the claim itself survived the refusal.
+			const kept = await itemAt(path);
+			assert.equal(kept.assignment?.agent_id, "alpha-0-reviewer");
+			assert.equal(kept.assignment?.claim_token, brief.item.assignment.claim_token);
 		}
 		const first = await call(api, "ledger_review", dir, { ...args, new_findings: ["blocker", "major", "minor", "nit"].map(finding) });
 		assert.ok(!first.isError, first.content[0].text);

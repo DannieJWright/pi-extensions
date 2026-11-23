@@ -67,6 +67,10 @@ test("ledger_work exposes action-specific schemas and submits an initial non-rev
 		const params = submitArgs(path, "external-agent", brief.item.assignment.claim_token);
 		assert.match((await call(api, dir, { action: "start", id: "alpha", agent_id: "other", path })).content[0].text, /already assigned/);
 		assert.match((await call(api, dir, { ...params, agent_id: "other" })).content[0].text, /no matching worker claim/);
+		// A submission refused for another identity leaves the held claim exactly as it was.
+		const held = await readItem(path);
+		assert.equal(held.assignment?.agent_id, "external-agent");
+		assert.equal(held.assignment?.claim_token, params.claim_token);
 		assert.match((await call(api, dir, { ...params, claim_token: "old" })).content[0].text, /no matching worker claim/);
 		assert.match((await call(api, dir, { ...params, empty_commit: true })).content[0].text, /only for a review-fix/);
 		assert.match((await call(api, dir, params)).content[0].text, /no implementation changes/);

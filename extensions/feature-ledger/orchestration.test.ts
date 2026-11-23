@@ -105,9 +105,17 @@ test("ledger_get_feature exposes full item and release fences stale identity and
     assert.equal(full.config.enabled, false);
     assert.deepEqual(full.config.validation_scripts, []);
     const release = (agent_id: string, claim_token: string) => call(api, dir, "ledger_orchestrate", { action: "release", id: "todo", agent_id, claim_token, path });
+    // Assignment is read through the list action. next filters assigned items out of next and reports
+    // them in assigned, so it cannot show which holder a refused claim still belongs to.
+    const listed = async () => json(await call(api, dir, "ledger_orchestrate", { action: "list", path })).items.find((item: { id: string }) => item.id === "todo");
     const before = await readFile(path, "utf8");
     assert.ok((await release("wrong", assignment.claim_token)).isError);
+    // A refusal on identity or token leaves the held claim intact for its original holder.
+    assert.equal((await listed())?.assignment?.agent_id, "external-agent");
+    assert.equal((await listed())?.assignment?.claim_token, assignment.claim_token);
     assert.ok((await release("external-agent", "wrong")).isError);
+    assert.equal(await readFile(path, "utf8"), before);
+    assert.equal((await listed())?.assignment?.agent_id, "external-agent");
     assert.equal(await readFile(path, "utf8"), before);
     const released = json(await release("external-agent", assignment.claim_token));
     assert.equal(released.item.status, "in-progress");
@@ -119,6 +127,9 @@ test("ledger_get_feature exposes full item and release fences stale identity and
     const stale = await call(api, dir, "ledger_work", { action: "submit", id: "todo", agent_id: "external-agent", claim_token: assignment.claim_token, commit_message: "stale", summary: "stale", path });
     assert.ok(stale.isError);
     assert.match(stale.content[0].text, /no matching worker claim/);
+    // Fencing refuses the stale token only; the live claim from the second start still holds.
+    assert.equal((await listed())?.assignment?.agent_id, "external-agent");
+    assert.equal((await listed())?.assignment?.claim_token, second.item.assignment.claim_token);
     await writeFile(join(dir, "work.txt"), "work\n");
     const submitted = await call(api, dir, "ledger_work", { action: "submit", id: "todo", agent_id: "external-agent", claim_token: second.item.assignment.claim_token, commit_message: "work", summary: "worked", path });
     assert.ok(!submitted.isError, submitted.content[0].text);
