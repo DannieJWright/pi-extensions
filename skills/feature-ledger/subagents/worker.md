@@ -11,7 +11,7 @@ The orchestrator supplies actual values for every placeholder; none has a defaul
 
 ## Prompt
 
-Use the feature-ledger skill. I directly instruct you to read and follow `references/agents/implementor-workflow.md` in that skill. Implement and submit only the assigned item.
+Use the feature-ledger skill. I directly instruct you to read and follow `references/agents/worker-workflow.md` in that skill. Implement and submit only the assigned item.
 
 - Item ID: (`ITEM_ID`)
 - Ledger path: (`LEDGER_PATH`)

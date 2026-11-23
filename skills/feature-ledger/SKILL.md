@@ -15,7 +15,7 @@ Use the ledger tools for shared, resumable feature state. Reading state does not
 | `references/ledger.yaml` | Authoring a ledger example. |
 | `references/implementation-flow.md` | Working an item directly or as a worker; tool and evidence rules. |
 | `references/agents/orchestrator-workflow.md` | The user directly requests orchestration. |
-| `references/agents/implementor-workflow.md` | The orchestrator directly assigns worker work and instructs the agent to read it. |
+| `references/agents/worker-workflow.md` | The orchestrator directly assigns worker work and instructs the agent to read it. |
 | `references/agents/reviewer-workflow.md` | The orchestrator directly assigns review and instructs the agent to read it. |
 | `subagents/worker.md` | The orchestrator dispatches a worker. |
 | `subagents/reviewer.md` | The orchestrator dispatches a reviewer. |

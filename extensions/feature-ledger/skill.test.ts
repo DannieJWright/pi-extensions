@@ -9,7 +9,7 @@ import { parseYaml } from "../../lib/yaml.ts";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../skills/feature-ledger");
 const read = (path: string) => readFileSync(join(root, path), "utf8");
 const main = read("SKILL.md");
-const worker = read("references/agents/implementor-workflow.md");
+const worker = read("references/agents/worker-workflow.md");
 const reviewer = read("references/agents/reviewer-workflow.md");
 const orchestrator = read("references/agents/orchestrator-workflow.md");
 const implementation = read("references/implementation-flow.md");
