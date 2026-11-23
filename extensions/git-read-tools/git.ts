@@ -7,6 +7,10 @@ export const OUTPUT_LIMIT = 64 * 1024;
 export const TIMEOUT_MS = 10_000;
 type Kind = "diff" | "status" | "log" | "show";
 type Input = Record<string, unknown>;
+// What report() needs to build its header: the caller's working directory, the resolved run directory, and the
+// top level. top stays undefined until the discovery lookup resolves one, so a bare repository or a directory in
+// no repository gets the run-directory part alone. Nothing is shown when nothing differs.
+type ReportScope = { cwd: string; target: string; top?: string };
 type RunOptions = { cwd: string; signal?: AbortSignal; timeoutMs?: number; outputLimit?: number; executable?: string };
 
 type ProcessResult = { text: string; stdout: string; stderr: string; code: number | null; truncated: boolean; cancelled: boolean; timedOut: boolean; error?: string };
@@ -88,7 +92,7 @@ const PREFIX_CHAIN = /^(?:\.\.\/?)*$/;
 const ROOT_OVER_LIMIT = "Working-tree inspection refused: repository root check exceeded output limit.";
 const UNEXPECTED_ROOT_OUTPUT = "Could not locate repository root: unexpected Git output";
 
-// validate() stays synchronous: it resolves dir against the caller's working directory but does not check that it exists, because report() has no access to the run options. The existence and directory-type check belongs in inspectGit.
+// validate() stays synchronous: it resolves dir against the caller's working directory but does not check that it exists, because that is a validation-stage rejection answered by the plain catch path before any header can be built. The existence and directory-type check belongs in inspectGit, which also builds the ReportScope report() needs.
 function validate(kind: Kind, input: Input, options: RunOptions): { dir: string; paths: string[]; refs: string[]; args: string[] } {
  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected an argument object");
  const allowed = kind === "diff" ? ["mode", "from", "to", "paths", "dir"] : kind === "status" ? ["dir"] : kind === "log" ? ["ref", "limit", "paths", "dir"] : ["ref", "paths", "dir"];
@@ -122,6 +126,8 @@ function validate(kind: Kind, input: Input, options: RunOptions): { dir: string;
 export async function inspectGit(kind: Kind, input: Input, options: RunOptions) {
  try {
   const { dir, paths, refs, args } = validate(kind, input, options);
+  // Compared after normalising, so a trailing separator or an unnormalised path in the caller's cwd does not make a header appear where nothing differs.
+  const scope: ReportScope = { cwd: path.resolve(options.cwd), target: dir };
   // A passed dir may itself be a symlink that resolves to a directory; candidate children under it are never followed. lstat is used on the target so a symlink is identified as one instead of being reported by its target's type.
   const link = await lstat(dir).catch(() => null);
   const linked = !!link?.isSymbolicLink();
@@ -132,15 +138,16 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
   const root = await runGit(["rev-parse", "--show-toplevel"], runAt);
   if (root.truncated) throw new Error(ROOT_OVER_LIMIT);
   // Anomalies on this lookup — timeout, cancellation, spawn failure, any non-zero exit — go under the no-repository label.
-  if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root");
+  if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root", scope);
   const top = root.stdout.trim();
   if (!ROOT_PATH.test(top)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
+  scope.top = top;
   // Prefix for the submodule scan. Deriving it compares the run directory against the physical top level, which is wrong when the target was reached through a symlink: measured on Git 2.53.0 --show-toplevel printed the physical path while --show-cdup printed "../" from the same run directory. So derive only for a direct target and ask Git otherwise, which costs one more invocation. Git reports the physical path, so the two derivations are not equivalent in all cases.
   let prefix = "";
   if (linked) {
    const cdup = await runGit(["rev-parse", "--show-cdup"], runAt);
    if (cdup.truncated) throw new Error(ROOT_OVER_LIMIT);
-   if (cdup.code !== 0 || cdup.cancelled || cdup.timedOut || cdup.error) return report(cdup, "Could not locate repository root");
+   if (cdup.code !== 0 || cdup.cancelled || cdup.timedOut || cdup.error) return report(cdup, "Could not locate repository root", scope);
    prefix = cdup.stdout.trim();
   } else {
    prefix = path.relative(dir, top);
@@ -153,30 +160,33 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
    if (filters.truncated) throw new Error("Working-tree inspection refused: filter configuration check exceeded output limit.");
    if (filters.code !== 1 || filters.cancelled || filters.timedOut || filters.error) {
     if (filters.code === 0 && !filters.cancelled && !filters.timedOut && !filters.error) throw new Error("Working-tree inspection refused: repository config contains filter drivers.");
-    return report(filters, "Could not check repository filter configuration");
+    return report(filters, "Could not check repository filter configuration", scope);
    }
    // Git may inspect a submodule's working tree using that repository's filters.
    // Check the whole superproject index even when called from a subdirectory, using the prefix above.
    const index = await scanSubmodules(prefix, runAt);
    if (index.result.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
-   if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules");
+   if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules", scope);
    if (index.invalid) throw new Error("Working-tree inspection refused: unexpected submodule check output.");
    if (index.hasSubmodule) throw new Error("Working-tree inspection refused: index contains submodules, whose filters cannot be safely checked.");
   }
   const hashes: string[] = [];
   for (const ref of refs) {
    const result = await runGit(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], runAt);
-   if (result.code !== 0 || result.truncated || result.cancelled || result.timedOut || result.error) return report(result, `Could not resolve ref ${ref}`);
+   if (result.code !== 0 || result.truncated || result.cancelled || result.timedOut || result.error) return report(result, `Could not resolve ref ${ref}`, scope);
    const hash = result.stdout.trim();
    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(hash)) throw new Error(`Could not resolve ref ${ref}: unexpected Git output`);
    hashes.push(hash);
   }
   const result = await runGit([...args, ...hashes, "--", ...paths], runAt);
-  return report(result, "Git inspection");
+  return report(result, "Git inspection", scope);
  } catch (error) { return { content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }], details: {}, isError: true }; }
 }
 
-function report(result: ProcessResult, label: string) {
+// The header names the run directory and the repository top level only when either differs from the caller's working directory, so the ordinary case keeps the plain label and byte-for-byte output.
+function report(result: ProcessResult, label: string, scope: ReportScope) {
+ const differs = scope.target !== scope.cwd || (scope.top !== undefined && scope.top !== scope.cwd);
+ const header = `${label}${differs ? ` (run directory ${scope.target}${scope.top ? `, repository ${scope.top}` : ""})` : ""}`;
  const notes = [result.truncated && "Output truncated at limit; process stopped.", result.timedOut && "Git timed out; process stopped.", result.cancelled && "Git cancelled; process stopped.", result.error && `Could not start Git: ${result.error}`, !result.truncated && result.code !== 0 && !result.timedOut && !result.cancelled && !result.error && `Git failed (exit ${result.code}).`].filter(Boolean);
- return { content: [{ type: "text" as const, text: `${label}:\n${result.text}${notes.length ? `\n[${notes.join(" ")}]` : ""}` }], details: { exitCode: result.code, truncated: result.truncated, timedOut: result.timedOut, cancelled: result.cancelled }, isError: !!(result.error || result.timedOut || result.cancelled || (!result.truncated && result.code !== 0)) };
+ return { content: [{ type: "text" as const, text: `${header}:\n${result.text}${notes.length ? `\n[${notes.join(" ")}]` : ""}` }], details: { exitCode: result.code, truncated: result.truncated, timedOut: result.timedOut, cancelled: result.cancelled }, isError: !!(result.error || result.timedOut || result.cancelled || (!result.truncated && result.code !== 0)) };
 }

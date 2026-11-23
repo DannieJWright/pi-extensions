@@ -14,6 +14,9 @@ async function fixture(fn: (dir: string) => Promise<void>) {
  finally { await rm(dir, { recursive: true, force: true }); }
 }
 function text(result: Awaited<ReturnType<typeof inspectGit>>) { return result.content[0].text; }
+// The first line report() builds: the plain label, or the label with the run directory and top level when either differs.
+// Comparing this line exactly lets a test assert both that the header appears and that it does not.
+function headerLine(result: Awaited<ReturnType<typeof inspectGit>>) { return text(result).split("\n")[0]; }
 // Runs one kind and returns the result. `base` is not named `dir` because `dir` is a tool argument.
 // Limitation: the helper derives the git dir by running Git at `base`, so index immutability can only be
 // checked when `base` is itself inside a repository. For a target outside any repository, assert content only
@@ -332,6 +335,54 @@ test("dir selects the run directory relative to the working directory, accepts a
   } finally { await rm(outside, { recursive: true, force: true }); }
  } finally { await rm(parent, { recursive: true, force: true }); }
 });
+
+test("the report header names the run directory and top level only when either differs from the caller working directory", async () => fixture(async (dir) => {
+ const statusArgs = ["status", "--porcelain=v1", "--branch", "--untracked-files=all"];
+ // Nothing differs here: the label stays plain and the body is byte-for-byte what the same call produced through runGit
+ // at the same directory. No guidance note exists in this state, so the whole text is compared as it stands.
+ assert.equal(text(await unchanged(dir, "status")), `Git inspection:\n${(await runGit(statusArgs, { cwd: dir })).text}`);
+ assert.equal(headerLine(await unchanged(dir, "log", { limit: 1 })), "Git inspection:");
+ const top = git(dir, "rev-parse", "--show-toplevel");
+ // Only the repository differs: the run directory equals the caller working directory while the top level does not.
+ await mkdir(join(dir, "nested"));
+ const nested = join(dir, "nested");
+ assert.equal(headerLine(await unchanged(dir, "status", {}, { cwd: nested })), `Git inspection (run directory ${nested}, repository ${top}):`);
+ // Only the run directory differs: the target resolves to its own repository reached through dir from a plain parent
+ // outside any repository. Both parts are shown because nothing about the resolved repository matches the caller.
+ const parent = await mkdtemp(join(tmpdir(), "header-parent-"));
+ try {
+  const main = join(parent, "A");
+  await mkdir(main); git(main, "init", "-q"); await writeFile(join(main, "file"), "x\n"); git(main, "add", "--", "."); git(main, "commit", "-qm", "subject A");
+  assert.equal(headerLine(await unchanged(main, "log", { dir: "A", limit: 1 }, { cwd: parent })), `Git inspection (run directory ${main}, repository ${git(main, "rev-parse", "--show-toplevel")}):`);
+  // A dir that resolves to the caller working directory is no difference at all, so the header stays absent.
+  assert.equal(headerLine(await unchanged(main, "log", { dir: ".", limit: 1 }, { cwd: main })), "Git inspection:");
+  // When no top level resolves, only the run-directory part appears. The notes still reach report() through the header path.
+  const plainChild = join(parent, "plain-child");
+  await mkdir(plainChild);
+  const unresolved = await inspectGit("status", { dir: "plain-child" }, { cwd: parent });
+  assert.equal(unresolved.isError, true);
+  assert.equal(headerLine(unresolved), `Could not locate repository root (run directory ${plainChild}):`);
+  assert.match(text(unresolved), /not a git repository/);
+  assert.match(text(unresolved), /\[Git failed \(exit 128\)\.\]/);
+  assert.deepEqual(unresolved.details, { exitCode: 128, truncated: false, timedOut: false, cancelled: false });
+ } finally { await rm(parent, { recursive: true, force: true }); }
+}));
+
+test("status reports paths relative to the repository top level while a pathspec is scoped to the run directory", async () => fixture(async (dir) => {
+ await mkdir(join(dir, "in-scope")); await mkdir(join(dir, "out-of-scope"));
+ await writeFile(join(dir, "in-scope", "a.txt"), "first\n"); await writeFile(join(dir, "out-of-scope", "b.txt"), "first\n");
+ git(dir, "add", "--", "."); git(dir, "commit", "-qm", "scoped files");
+ await writeFile(join(dir, "in-scope", "a.txt"), "IN SCOPE\n"); await writeFile(join(dir, "out-of-scope", "b.txt"), "OUT OF SCOPE\n");
+ // First behaviour, asserted on its own: status prints paths relative to the top level even when run from a subdirectory,
+ // including for files outside it. Measured on Git 2.53.0; status.relative has no effect either way.
+ const fromSub = await unchanged(dir, "status", {}, { cwd: join(dir, "in-scope") });
+ assert.match(text(fromSub), /^ M in-scope\/a\.txt$/m);
+ assert.match(text(fromSub), /^ M out-of-scope\/b\.txt$/m);
+ assert.doesNotMatch(text(fromSub), /^ M a\.txt$/m);
+ // Second behaviour, asserted separately: a "." pathspec is read against the run directory, so only the change inside it appears.
+ const diff = await unchanged(dir, "diff", { paths: ["."] }, { cwd: join(dir, "in-scope") });
+ assert.match(text(diff), /IN SCOPE/); assert.doesNotMatch(text(diff), /OUT OF SCOPE/);
+}));
 
 test("helper forwards extra run options while keeping its default run directory", async () => fixture(async (base) => {
  // Without extra options the run directory is still the helper argument.
