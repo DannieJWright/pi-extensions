@@ -9,10 +9,11 @@ _list-recipes:
 
 # Run the permission-mode generator tests, the sample fixture comparison, subagent config, just-tools and git-tools tests, provider rules check, feature-ledger check and tests, and skill tests. Prints one line per group; exits non-zero on failure.
 [group('test')]
-test:
+test action="full":
     #!/usr/bin/env bash
     set -euo pipefail
 
+    action="$1"
     justfile="{{ REPO }}/justfile"
     fixture_dir="{{ REPO }}/configs"
     test_dir="$(mktemp -d)"
@@ -64,6 +65,10 @@ test:
     run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
     run_group "feature-ledger test" just -f "${justfile}" feature-ledger test
     run_group "skills test" just -f "${justfile}" skills test
+    # The isolation test reruns these groups under guarded fake homes, not itself.
+    if [ "${action}" = "full" ]; then
+        run_group "suite isolation" node --test "{{ REPO }}/tests/suite-isolation.test.ts"
+    fi
 
     echo
     echo "summary:"

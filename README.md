@@ -55,9 +55,12 @@ The suite checks `configs/permission-mode.example.src.jsonc` against the committ
 `configs/permission-mode.example.json`, using a temporary generator baseline. It validates
 `configs/provider-rules.example.jsonc` rather than a personal provider configuration. The ledger
 check uses `skills/feature-ledger/references/ledger.yaml`; its tests use temporary repositories.
-The just-tools and capture tests use temporary homes, logs, and outputs. The isolation regression
-runs the suite with absent, malformed, and different fake Pi configurations, blocks access to them,
-and checks that they remain unchanged.
+The just-tools and capture tests use temporary homes, logs, and outputs. The isolation regression,
+which is part of `just test`, runs `just test groups` with absent, malformed, and different fake Pi
+configurations, records and blocks attempted access even when errors are swallowed, and checks that
+they remain unchanged. The groups-only action avoids recursively running the isolation regression.
+Feature-ledger test helpers and fixtures live alongside the extension tests; their Git subprocesses
+use isolated configuration and repositories. Suite-wide isolation coverage lives in `tests/`.
 
 These isolated tests are distinct from explicitly invoked personal operations: `just perm gen` and
 `just perm check` use the live permission-mode source, output, and baseline by default;

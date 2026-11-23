@@ -1,7 +1,6 @@
 import { test } from "node:test";
-import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -650,7 +649,8 @@ test("the default target is plan/ledger.yaml in the session root", async () => {
 test("a detached HEAD does not change the resolved path", async () => {
 	const { dir, path, cleanup } = await setupRepo(FIXTURE);
 	try {
-		await execFile("git", ["checkout", "--detach", "-q"], { cwd: dir });
+		const checkout = await exec("git", ["checkout", "--detach", "-q"], dir);
+		assert.equal(checkout.code, 0, checkout.stderr);
 		// The check reads files.in entries, so the fixture's entry must exist.
 		await ensureParent(join(dir, "src/a.ts"));
 		await writeFile(join(dir, "src/a.ts"), "x\n");
@@ -751,7 +751,7 @@ test("resolveRepoRoot reads the repository from the workspace, and gives nothing
 		const workspace = join(dir, "sub-repo-1");
 		await mkdir(workspace);
 		await writeFile(join(workspace, ".keep"), "x");
-		assert.equal(await resolveRepoRoot(workspace, exec), dir);
+		assert.equal(await resolveRepoRoot(workspace, exec), await realpath(dir));
 		// Outside a git repository the result is empty, so the caller reports the workspace.
 		const draft = await mkdtemp(join(tmpdir(), "feature-ledger-norepo-"));
 		try {

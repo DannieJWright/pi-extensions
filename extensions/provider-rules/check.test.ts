@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const check = fileURLToPath(new URL("./check.ts", import.meta.url));
 const example = fileURLToPath(new URL("../../configs/provider-rules.example.jsonc", import.meta.url));
@@ -17,7 +17,7 @@ test("explicit config does not probe personal paths and still reports invalid fi
 const exists = fs.existsSync;
 fs.existsSync = function(path) { if (String(path).startsWith(process.env.HOME + '/.pi/agent/')) throw new Error('probed personal config'); return exists.apply(this, arguments); };
 syncBuiltinESMExports();\n`);
-		const env = { ...process.env, HOME: dir, NODE_OPTIONS: `--import=${guard}` };
+		const env = { ...process.env, HOME: dir, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(guard).href}` };
 		const valid = execFileSync(process.execPath, [check, "--config", example], { env, encoding: "utf8" });
 		assert.match(valid, /provider-rules\.example\.jsonc/);
 		assert.match(valid, /configured:/);

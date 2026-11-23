@@ -52,6 +52,16 @@ Do not commit a third-party prompt body: reference the source by path instead.
 Search for installed Pi extension documentation and examples under `~/.pi/agent/install/releases/`,
 not broadly under `~/.pi/agent/`.
 
+## Test isolation
+
+Tests must never read, change, or depend on a user's real state. Do not access personal configuration,
+ledgers, credentials, accounts, services, or repositories from a test. Use repository fixtures and isolated
+temporary data instead. Control inherited paths and environment variables, including `HOME` and
+`PI_LEDGER_PATH`, so they cannot redirect tests to personal files. Use fake services or mocks where needed.
+
+Add regression coverage for isolation and run it as part of routine validation. A passing test suite must
+not depend on the presence, contents, or absence of a user's personal setup.
+
 ## Checks
 
 Run `just feature-ledger check` and `just test` through the just tools exposed to you. These are your own

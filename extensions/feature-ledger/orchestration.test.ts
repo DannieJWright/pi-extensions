@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { compile } from "@earendil-works/pi-schema";
 import featureLedger from "./index.ts";
 import { parseLedger, serializeLedger } from "./ledger.ts";
@@ -48,8 +51,8 @@ test("ledger_orchestrate prioritizes review and eligible retries, reports in-fli
       updater(ledger);
       await writeFile(path, serializeLedger(ledger));
     }
-    const next = async () => json(await call(api, dir, "ledger_orchestrate", { action: "next" }));
-    const list = json(await call(api, dir, "ledger_orchestrate", { action: "list" }));
+    const next = async () => json(await call(api, dir, "ledger_orchestrate", { action: "next", path }));
+    const list = json(await call(api, dir, "ledger_orchestrate", { action: "list", path }));
     assert.deepEqual(list.items.map((item: { id: string }) => item.id), ["todo", "retry", "review"]);
     assert.equal((await next()).next.id, "review");
     await set(ledger => { ledger.features[2].assignment = { id: "review-0-reviewer", role: "reviewer", agent_id: "assigned", claim_token: "token" }; });
@@ -66,6 +69,23 @@ test("ledger_orchestrate prioritizes review and eligible retries, reports in-fli
     await set(ledger => { ledger.features[1].status = "done"; ledger.features[2].status = "done"; delete ledger.features[2].assignment; });
     assert.equal((await next()).next.id, "todo");
   } finally { await cleanup(); }
+});
+
+test("orchestration fixture wins over an inherited ledger path", async () => {
+  const home = await mkdtemp(join(tmpdir(), "orchestration-isolation-"));
+  try {
+    const sentinel = join(home, "personal-ledger.yaml");
+    const contents = fixture.replace("{BRANCH}", "sentinel").replace("id: todo", "id: sentinel");
+    await writeFile(sentinel, contents);
+    const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: home, GIT_CONFIG_GLOBAL: join(home, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", PI_LEDGER_PATH: sentinel };
+    delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=^ledger_orchestrate prioritizes review", fileURLToPath(import.meta.url)], {
+      env, encoding: "utf8", timeout: 30_000,
+    });
+    assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /^ok \d+ - ledger_orchestrate prioritizes review/m);
+    assert.equal(await readFile(sentinel, "utf8"), contents);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });
 
 test("ledger_get_feature exposes full item and release fences stale identity and token across claims", async () => {
@@ -160,7 +180,7 @@ test("complete review loop crosses orchestration and role tools through selectiv
 });
 
 test("action schemas and tool calls reject missing, wrong-action, and malformed arguments", async () => {
-  const { dir, cleanup } = await setupRepo(fixture);
+  const { dir, path, cleanup } = await setupRepo(fixture);
   try {
     const api = createFakeApi(); featureLedger(api);
     for (const name of ["ledger_start", "ledger_submit", "ledger_list", "ledger_next"]) assert.equal(api.tools[name], undefined);
@@ -176,6 +196,6 @@ test("action schemas and tool calls reject missing, wrong-action, and malformed 
       ["ledger_work", { action: "start", id: "x", agent_id: "  " }],
       ["ledger_work", { action: "start", id: "x", agent_id: "a", claim_token: "not-allowed" }],
       ["ledger_review", { action: "submit", id: "x", agent_id: "a" }],
-    ] as const) assert.ok((await call(api, dir, name, params)).isError, name);
+    ] as const) assert.ok((await call(api, dir, name, { ...params, path })).isError, name);
   } finally { await cleanup(); }
 });

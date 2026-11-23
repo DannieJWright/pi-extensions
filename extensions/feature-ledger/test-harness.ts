@@ -4,9 +4,9 @@
 // code must not import this file at runtime. Node built-ins only.
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { ensureParent, resolveLedgerPath } from "./ledger.ts";
 
@@ -42,11 +42,33 @@ export interface FakeContext {
 export async function exec(command: string, args: string[], cwdOrOptions: string | { cwd?: string }): Promise<ExecResult> {
 	const cwd = typeof cwdOrOptions === "string" ? cwdOrOptions : cwdOrOptions?.cwd ?? "";
 	try {
-		const { stdout, stderr } = await run(command, args, { cwd });
+		// Git stops before checking the ceiling itself, even if TMPDIR is a user repo.
+		const ceiling = await realpath(tmpdir());
+		const fixtureCwd = await realpath(cwd);
+		const inside = relative(ceiling, fixtureCwd);
+		if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+			throw new Error("fixture subprocess cwd must be inside the temporary directory");
+		}
+		// Git's ceiling list has no escaping for the platform path-list delimiter.
+		if (ceiling.includes(delimiter)) throw new Error("temporary directory cannot be represented as a Git discovery ceiling");
+		// Git and validation-script subprocesses must not inherit repository, configuration,
+		// hook, or identity overrides from the user's environment.
+		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_") && key !== "EMAIL"));
+		Object.assign(env, {
+			HOME: fixtureCwd,
+			XDG_CONFIG_HOME: join(fixtureCwd, ".fixture-xdg-config"),
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_CONFIG_SYSTEM: "/dev/null",
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_ATTR_NOSYSTEM: "1",
+			GIT_TERMINAL_PROMPT: "0",
+			GIT_CEILING_DIRECTORIES: ceiling,
+		});
+		const { stdout, stderr } = await run(command, args, { cwd: fixtureCwd, env });
 		return { code: 0, stdout, stderr };
 	} catch (error) {
 		const failure = error as { code?: number; stdout?: string; stderr?: string };
-		return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
+		return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? (error instanceof Error ? error.message : "") };
 	}
 }
 
