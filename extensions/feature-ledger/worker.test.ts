@@ -244,6 +244,42 @@ test("worker start applies one shared patch budget across its four views", async
 	} finally { await cleanup(); }
 });
 
+// A submission commit can be the first commit in the repository, so there is no parent to compare against.
+// The response must say why instead of passing a raw git failure through to the caller.
+test("worker start returns an empty latest view with a note when the submission commit has no parent", async () => {
+	const { dir, path, cleanup } = await setup(true);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		// An orphan branch makes the next commit a root commit with no parent.
+		assert.equal((await exec("git", ["checkout", "-q", "--orphan", "root-commit"], dir)).code, 0);
+		assert.equal((await exec("git", ["commit", "-q", "--allow-empty", "-m", "Root commit"], dir)).code, 0);
+		const root = (await exec("git", ["rev-parse", "HEAD"], dir)).stdout.trim();
+		await changeItem(path, item => { delete item.branch; item.status = "in-progress"; item.failed_reviews = 1; item.commits.start = root; item.commits.submissions = [root]; });
+		const brief = await start(api, dir, path, "a");
+		assert.match(brief.latest_diff.note!, new RegExp(`^Submission commit ${root} is the first commit in the repository and has no parent, so the latest view is empty\.$`));
+		assert.equal(brief.latest_diff.from, "");
+		assert.equal(brief.latest_diff.to, root);
+		assert.deepEqual(brief.latest_diff.implementation, { files: [], stat: "", patch: "", truncated: false });
+		assert.deepEqual(brief.latest_diff.ledger_metadata, { files: [], stat: "", patch: "", truncated: false });
+		// The cumulative view still resolves its base from the ledger record.
+		assert.equal(brief.cumulative_diff.from, root);
+		assert.equal(brief.cumulative_diff.to, root);
+		// A later submission does have a parent, so the normal latest diff works again.
+		await writeFile(join(dir, "src/a.ts"), "later work\n");
+		const submitted = await call(api, dir, submitArgs(path, "a", brief.item.assignment.claim_token));
+		assert.ok(!submitted.isError, submitted.content[0].text);
+		const secondCommit = (await readItem(path)).commits.submissions!.at(-1)!;
+		assert.notEqual(secondCommit, root);
+		await changeItem(path, item => { item.status = "in-progress"; item.failed_reviews = 2; });
+		const after = await start(api, dir, path, "b");
+		assert.equal(after.latest_diff.note, undefined);
+		assert.equal(after.latest_diff.from, root);
+		assert.equal(after.latest_diff.to, secondCommit);
+		assert.deepEqual(after.latest_diff.implementation.files, ["src/a.ts"]);
+		assert.match(after.latest_diff.implementation.patch, /\+later work/);
+	} finally { await cleanup(); }
+});
+
 test("ledger_work reports post-commit failures with the commit and recovery guidance", async () => {
 	const { dir, path, cleanup } = await setup(false);
 	try {

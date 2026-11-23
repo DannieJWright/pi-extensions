@@ -537,6 +537,8 @@ export interface DiffView {
 	to: string;
 	implementation: PatchView;
 	ledger_metadata: PatchView;
+	// Set when there is no base to compare against. The views are then empty and the note says why.
+	note?: string;
 }
 
 // A start response can contain four patch previews: cumulative and latest, implementation and ledger
@@ -585,6 +587,20 @@ export async function workDiff(opts: ItemContext, from: string, to: string, budg
 	return { from, to, implementation, ledger_metadata };
 }
 
+const emptyPatch = (): PatchView => ({ files: [], stat: "", patch: "", truncated: false });
+
+// A recorded submission commit can be the first commit in the repository, which has no parent, so `<sha>^`
+// resolves to nothing. Report that as an empty latest view with the reason instead of failing inside
+// gitResult. A commit that cannot be read at all still reports the git failure; only a readable commit
+// with no parent gets the note. The cumulative view keeps resolving its base from the ledger record.
+async function latestDiff(opts: ItemContext, sha: string, budget: PatchBudget, artifactDir = tmpdir()): Promise<DiffView> {
+	const listed = await opts.exec("git", ["rev-list", "-n", "1", "--parents", sha], opts.repoRoot);
+	if (listed.code !== 0) throw new Error(`git rev-list failed: ${listed.stderr || listed.stdout}`);
+	const tokens = listed.stdout.trim().split(/\s+/);
+	if (tokens.length < 2) return { from: "", to: sha, implementation: emptyPatch(), ledger_metadata: emptyPatch(), note: `Submission commit ${sha} is the first commit in the repository and has no parent, so the latest view is empty.` };
+	return workDiff(opts, tokens[1], sha, budget, artifactDir);
+}
+
 function requireWorkerBranch(opts: ItemContext, item: LedgerItem): void {
 	if (item.branch && item.branch !== opts.branch) throw new Error(`item ${opts.id} says branch ${item.branch}, but ${opts.workspace} is on ${opts.branch}`);
 }
@@ -618,7 +634,7 @@ export async function startWork(opts: ItemContext & { agentId: string; artifactD
 	const budget: PatchBudget = { remaining: PATCH_BUDGET_BYTES };
 	const cumulative_diff = await workDiff(opts, base, head, budget, opts.artifactDir);
 	const latest = item.commits.submissions?.at(-1);
-	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, budget, opts.artifactDir) : null;
+	const latest_diff = latest ? await latestDiff(opts, latest, budget, opts.artifactDir) : null;
 	item.status = "in-progress";
 	item.commits = { ...item.commits, start: base, expected: head };
 	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-worker`, role: "worker", agent_id: opts.agentId, claim_token: randomUUID() };
@@ -744,7 +760,7 @@ export async function startReview(opts: ItemContext & { agentId: string; artifac
 	const budget: PatchBudget = { remaining: PATCH_BUDGET_BYTES };
 	const cumulative_diff = await workDiff(opts, item.commits.start, head, budget, opts.artifactDir);
 	const latest = item.commits.submissions?.at(-1);
-	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, budget, opts.artifactDir) : null;
+	const latest_diff = latest ? await latestDiff(opts, latest, budget, opts.artifactDir) : null;
 	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-reviewer`, role: "reviewer", agent_id: opts.agentId, claim_token: randomUUID() };
 	try {
 		await ensureParent(opts.ledgerPath);
