@@ -37,3 +37,11 @@ All tools accept `path`. Role starts assign `<feature-id>-<failed-reviews>-<work
 Claims fence stale sequential submissions; they are not locks or access-control secrets. Ledger writes are last-writer-wins: concurrent writers and concurrent work in a shared workspace are unsupported. Release a claim only after confirming its run stopped, using the current matching identity and token. Git commits and ledger writes are not atomic together; inspect state and report uncertainty rather than retrying blindly.
 
 Bundled pi-subagents worker/reviewer tool access and reviewer write permission are an external dependency being addressed separately. This extension and skill do not configure overrides; agents must stop and report missing required tools.
+
+## Verification
+
+What the tests check is the authored contract, not behaviour: frontmatter and structure, every bundled path referenced from `SKILL.md`, the subagent templates and their return fields, the phrases the description must contain, and the route rules written in the references. They run through the commands under Human and CI commands.
+
+The comparison of the same request with and without the skill has not been run, and nothing here claims it passed. No test can observe it: tool-call count, tokens consumed, failed calls, and user corrections exist only when the request is executed twice in two live Pi sessions with the skill loaded, once with the skill available and once without. Model routing is likewise only observable live — the trigger tests assert that the should-trigger and negative phrases appear in the description, which is not evidence that a model selects the skill for them.
+
+This is reported as a blocker, not a defect: the comparison is out of scope for this work because it cannot be checked from the repository, only by running the live pair. Nothing here should be read as saying the skill was measured against a baseline.
