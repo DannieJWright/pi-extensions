@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compile } from "@earendil-works/pi-schema";
 import featureLedger from "./index.ts";
-import { parseLedger, serializeLedger } from "./ledger.ts";
+import { checkLedger, parseLedger, serializeLedger } from "./ledger.ts";
 import { createFakeApi, createFakeContext, setupRepo } from "./test-harness.ts";
 
 const fixture = `ledger:
@@ -123,6 +123,36 @@ test("ledger_get_feature exposes full item and release fences stale identity and
     const submitted = await call(api, dir, "ledger_work", { action: "submit", id: "todo", agent_id: "external-agent", claim_token: second.item.assignment.claim_token, commit_message: "work", summary: "worked", path });
     assert.ok(!submitted.isError, submitted.content[0].text);
     assert.equal(json(await call(api, dir, "ledger_get_feature", { id: "todo", path })).item.status, "done");
+  } finally { await cleanup(); }
+});
+
+test("release refuses an invalid file through the shared gate and leaves the file unchanged", async () => {
+  const single = fixture.slice(0, fixture.indexOf("    - id: retry"));
+  const { dir, path, cleanup } = await setupRepo(single);
+  try {
+    const api = createFakeApi(); featureLedger(api);
+    async function set(updater: (ledger: NonNullable<ReturnType<typeof parseLedger>["ledger"]>) => void) {
+      const ledger = parseLedger(await readFile(path, "utf8")).ledger!;
+      updater(ledger);
+      await writeFile(path, serializeLedger(ledger));
+    }
+    const started = json(await call(api, dir, "ledger_work", { action: "start", id: "todo", agent_id: "external-agent", path }));
+    const claimToken = started.item.assignment.claim_token;
+    // The identity matches exactly; only the model is wrong. The gate runs first, so nothing is matched or written.
+    await set((ledger) => { ledger.features[0].max_failed_reviews = -1; });
+    const invalid = await readFile(path, "utf8");
+    const expected = checkLedger(invalid);
+    assert.deepEqual(expected, ["features[0] (todo): max_failed_reviews must be a nonnegative integer"], invalid);
+    const refused = await call(api, dir, "ledger_orchestrate", { action: "release", id: "todo", agent_id: "external-agent", claim_token: claimToken, path });
+    assert.ok(refused.isError);
+    assert.equal(refused.content[0].text, `ledger_orchestrate: invalid ledger: ${expected.join("; ")}`);
+    assert.equal(await readFile(path, "utf8"), invalid, "a refusal wrote the ledger");
+    assert.equal(parseLedger(invalid).ledger!.features[0].assignment?.claim_token, claimToken, "a refusal cleared the claim");
+    // The same identity against a valid file releases the claim and leaves status as the file recorded it.
+    await set((ledger) => { delete ledger.features[0].max_failed_reviews; });
+    const released = json(await call(api, dir, "ledger_orchestrate", { action: "release", id: "todo", agent_id: "external-agent", claim_token: claimToken, path }));
+    assert.equal(released.item.status, "in-progress");
+    assert.equal(released.item.assignment, undefined);
   } finally { await cleanup(); }
 });
 

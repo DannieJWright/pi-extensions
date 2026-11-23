@@ -233,11 +233,10 @@ function nonnegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+// Resolve the configuration only. Invariant checking lives here in the model module, reached through
+// checkParsed, and every tool runs that gate on the parsed file before doing any work, so this does not
+// validate again: a second check would report the same field differently depending on which path ran first.
 export function effectiveReviewConfig(ledger: Ledger, item: LedgerItem): { enabled: boolean; max_failed_reviews: number } {
-	if (item.review !== undefined && typeof item.review !== "boolean") throw new Error("review must be a boolean");
-	for (const value of [ledger.max_failed_reviews, item.max_failed_reviews]) {
-		if (value !== undefined && !nonnegativeInteger(value)) throw new Error("max_failed_reviews must be a nonnegative integer");
-	}
 	return { enabled: item.review ?? false, max_failed_reviews: item.max_failed_reviews ?? ledger.max_failed_reviews ?? DEFAULT_MAX_FAILED_REVIEWS };
 }
 
@@ -298,12 +297,6 @@ function validateReviewFields(ledger: Record<string, unknown>, problems: string[
 		}
 		if (isRecord(raw.commits) && "submissions" in raw.commits && (!Array.isArray(raw.commits.submissions) || raw.commits.submissions.some((commit: unknown) => typeof commit !== "string" || commit.trim() === ""))) problems.push(`${at("commits.submissions")} must be a list of non-empty strings`);
 	}
-}
-
-function assertReviewFields(ledger: Ledger): void {
-	const problems: string[] = [];
-	validateReviewFields(ledger as unknown as Record<string, unknown>, problems);
-	if (problems.length) throw new Error(`invalid ledger: ${problems.join("; ")}`);
 }
 
 export function parseLedger(text: string): { ledger: Ledger | null; problems: string[]; indexes: number[] } {
@@ -459,8 +452,9 @@ export function orchestrateNext(ledger: Ledger) {
 	return { next, status, assigned, capped };
 }
 
+// The caller has already run the shared gate on the file, so an invalid model never reaches here.
+// Release changes nothing but the matching claim: exact item id, agent_id and claim_token, status unchanged.
 export async function releaseClaim(ledger: Ledger, path: string, id: string, agentId: string, claimToken: string): Promise<LedgerItem> {
-	assertReviewFields(ledger);
 	const item = findItem(ledger, id, path);
 	if (!agentId?.trim() || !claimToken?.trim() || !item.assignment || item.assignment.agent_id !== agentId || item.assignment.claim_token !== claimToken) {
 		throw new Error(`item ${id} has no matching claim (agent_id and claim_token required)`);
@@ -476,8 +470,9 @@ export async function releaseClaim(ledger: Ledger, path: string, id: string, age
 
 const ITEM_KEYS = ["id", "status", "goal", "short_goal", "workspace", "branch", "review", "max_failed_reviews", "failed_reviews", "assignment", "findings", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
 
+// No invariant check here. Every write path reaches this from a model the shared gate already accepted,
+// so re-checking at the last step would be the same rule stated twice with different wording.
 export function serializeLedger(ledger: Ledger): string {
-	assertReviewFields(ledger);
 	const ordered: Record<string, unknown> = {
 		description: ledger.description,
 		workspace: ledger.workspace,
@@ -510,8 +505,9 @@ export function findItem(ledger: Ledger, id: string, path: string): LedgerItem {
 export interface ItemContext {
 	cwd: string;
 	ledgerPath: string;
-	// The parsed ledger the caller read. The write steps use this object and write it back, so the file
-	// is parsed once per call and the item reported is the item written.
+	// The parsed ledger the caller read, already accepted by the shared gate before any work, so no write
+	// step checks invariants again. The write steps use this object and write it back, so the file is
+	// parsed once per call and the item reported is the item written.
 	ledger: Ledger;
 	workspace: string;
 	repoRoot: string;
@@ -621,7 +617,6 @@ export async function startWork(opts: ItemContext & { agentId: string; artifactD
 	cumulative_diff: DiffView;
 	latest_diff: DiffView | null;
 }> {
-	assertReviewFields(opts.ledger);
 	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
 	if (!opts.agentId?.trim()) throw new Error("agent_id: must be a non-empty string");
 	if (item.status !== "todo" && item.status !== "in-progress") throw new Error(`item ${item.id} is ${item.status}; worker start requires todo or in-progress`);
@@ -658,7 +653,6 @@ export async function submitWork(opts: ItemContext & {
 	logDir?: string;
 	stat?: EntryStat;
 }): Promise<SubmitResult> {
-	assertReviewFields(opts.ledger);
 	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
 	if (item.status !== "in-progress") throw new Error(`item ${item.id} is ${item.status}; worker submit requires in-progress`);
 	if (!opts.agentId?.trim() || !opts.claimToken?.trim() || !item.assignment || item.assignment.role !== "worker" || item.assignment.agent_id !== opts.agentId || item.assignment.claim_token !== opts.claimToken) throw new Error(`item ${item.id} has no matching worker claim (agent_id and claim_token required)`);
@@ -748,7 +742,6 @@ export type NewFinding = Pick<Finding, "details" | "rationale" | "severity" | "r
 
 // A review claim uses the same workspace and diff context as a worker claim.
 export async function startReview(opts: ItemContext & { agentId: string; artifactDir?: string }): ReturnType<typeof startWork> {
-	assertReviewFields(opts.ledger);
 	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
 	if (!opts.agentId?.trim()) throw new Error("agent_id: must be a non-empty string");
 	if (item.status !== "review") throw new Error(`item ${item.id} is ${item.status}; reviewer start requires review`);
@@ -811,7 +804,6 @@ export async function submitReview(opts: ItemContext & {
 	closeFindings: string[];
 	newFindings: NewFinding[];
 }): Promise<{ status: ItemStatus; failed_reviews: number; open_findings: Finding[]; ledger_commit: string | null; ledger_commit_note: string }> {
-	assertReviewFields(opts.ledger);
 	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
 	if (item.status !== "review") throw new Error(`item ${item.id} is ${item.status}; reviewer submit requires review`);
 	if (!opts.agentId?.trim() || !opts.claimToken?.trim() || !item.assignment || item.assignment.role !== "reviewer" || item.assignment.agent_id !== opts.agentId || item.assignment.claim_token !== opts.claimToken) throw new Error(`item ${item.id} has no matching reviewer claim (agent_id and claim_token required)`);
