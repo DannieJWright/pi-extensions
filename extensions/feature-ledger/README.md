@@ -10,7 +10,13 @@ just feature-ledger check path/to/ledger.yaml   # validate a ledger
 just feature-ledger test                        # run feature-ledger tests
 ```
 
-The CLI check uses the same model check as `ledger_check`, without its filesystem/Git checks. In a Pi session use the tools below. The reference schema example is `skills/feature-ledger/references/ledger.yaml`.
+The CLI runs the same validation gate as the tools, without its filesystem/Git checks. In a Pi session use the tools below. The reference schema example is `skills/feature-ledger/references/ledger.yaml`.
+
+## Validation gate
+
+One entry point serves every action: resolve the path, read the file once, run `checkParsed`. Every tool calls it before doing any work, reads included — `get_feature`, `orchestrate list`, `orchestrate next`, `orchestrate release`, role starts and submissions all refuse a file with problems, duplicate IDs among them. The problem lines are identical for the same file across tools and the CLI; only presentation differs (`ledger_check` returns `{ path, ok, problems, warnings }`, every acting tool reports an error). Filesystem and Git checks stay in `ledger_check` because they need the filesystem, and no read path writes the ledger.
+
+Because `release` shares the gate, recovery after an interrupted run needs the file fixed first: release refuses a file with state problems even though it changes nothing but the matching claim. This supersedes the earlier carve-out where release kept only the parse gate.
 
 ## Path and workspace
 

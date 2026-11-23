@@ -29,6 +29,8 @@ Use the ledger tools for shared, resumable feature state. Reading state does not
 
 Every tool accepts optional `path`: explicit argument, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. Relative paths resolve against the original session root; any extension is accepted. An orchestrator pins the user-selected path for all calls.
 
+Every tool validates the resolved file through one shared gate before doing any work, so a read refuses a ledger `ledger_check` would reject, duplicate IDs included; the problem lines match for the same file. `ledger_check` is the only tool that reports filesystem and Git findings, and read paths never write. Release runs the same gate, so an interrupted run's file must be valid before its claim can be released.
+
 Statuses are tool-owned: `todo` → `in-progress` → `done` without review, or → `review` with review enabled. A review with any open finding returns to `in-progress`; only a review with no open findings reaches `done`. Do not edit live ledger state by hand. Use the read tools, not a direct read of the entire ledger, except when authoring it.
 
 ## Safety and unavailable tools

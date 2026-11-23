@@ -91,6 +91,26 @@ function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+type GateResult = { path: string; parsed: ParsedLedger; problems: string[] };
+
+// One validation entry point for every action, reads included. Every tool resolves the path, reads
+// once and runs the model check here before doing any work, so no tool accepts a file another would
+// reject. A tool that acts on an item reports the gate as an error; only ledger_check reports it as
+// data. Both use these lines unchanged, so the wording matches for the same file. Filesystem and git
+// checks stay in ledger_check because they need the filesystem, and a read path never writes.
+async function validateLedger(ctx: ExtensionContext, explicit?: string): Promise<GateResult> {
+	const path = await resolvePath(ctx, explicit);
+	const parsed = parseLedger(await readFile(path, "utf8"));
+	return { path, parsed, problems: checkParsed(parsed) };
+}
+
+// A file with no model always contributes at least the "no ledger block" line, so this never hands
+// back an absent model.
+function requireValid(gate: GateResult): Ledger {
+	if (gate.problems.length) throw new Error(`invalid ledger: ${gate.problems.join("; ")}`);
+	return gate.parsed.ledger!;
+}
+
 // Names each required field that is missing, in the order of the required list.
 // The tool wrapper reports it as "id: missing" rather than only the arguments received.
 function missingRequired(params: Record<string, unknown>, required: string[]): string[] {
@@ -132,19 +152,6 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		return { cwd: ctx.cwd, ledgerPath, ledger, workspace, repoRoot, branch: await readBranch(repoRoot), id: item.id, exec };
 	}
 
-	// Read tools do not touch git: the path comes from the resolution order, not from a branch.
-	async function readLedger(ctx: ExtensionContext, explicit?: string, forWrite = false): Promise<{ path: string; ledger: Ledger }> {
-		const path = await resolvePath(ctx, explicit);
-		const text = await readFile(path, "utf8");
-		const parsed = parseLedger(text);
-		if (!parsed.ledger) throw new Error(`cannot read the ledger: ${parsed.problems.join("; ")}`);
-		if (forWrite) {
-			const problems = checkParsed(parsed);
-			if (problems.length) throw new Error(`invalid ledger: ${problems.join("; ")}`);
-		}
-		return { path, ledger: parsed.ledger };
-	}
-
 	pi.registerTool({
 		name: "ledger_get_feature",
 		label: "Ledger feature",
@@ -153,8 +160,9 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireArguments(params, ["id"], ["id", "path"]);
-				const { path, ledger } = await readLedger(ctx, params.path);
-				const item = findItem(ledger, params.id, path);
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const item = findItem(ledger, params.id, gate.path);
 				const result = { item, config: { ...effectiveReviewConfig(ledger, item), validation_scripts: item.validation_scripts ?? ledger.validation_scripts }, workspace: resolveWorkspace(ctx.cwd, item, ledger.workspace) };
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
@@ -173,8 +181,9 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				if (!["list", "next", "release"].includes(params.action)) throw new Error("action must be list, next, or release");
 				const release = params.action === "release";
 				requireArguments(params, release ? ["id", "agent_id", "claim_token"] : [], release ? ["action", "id", "agent_id", "claim_token", "path"] : ["action", "path"]);
-				const { path, ledger } = await readLedger(ctx, params.path, release);
-				const result = release ? { item: await releaseClaim(ledger, path, params.id, params.agent_id, params.claim_token) }
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const result = release ? { item: await releaseClaim(ledger, gate.path, params.id, params.agent_id, params.claim_token) }
 					: params.action === "list" ? orchestrateList(ledger) : orchestrateNext(ledger);
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
@@ -190,17 +199,17 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const path = await resolvePath(ctx, params.path);
-				const parsed = parseLedger(await readFile(path, "utf8"));
-				const problems = checkParsed(parsed);
+				const gate = await validateLedger(ctx, params.path);
+				// The same core every other tool runs. Here its lines are reported as data, not thrown.
+				const problems = [...gate.problems];
 				// A warning is reported and does not fail the check. Only problems set ok and isError.
 				const warnings: string[] = [];
 				// These need the filesystem and git, so they run here and not in checkLedger. Plan
 				// references resolve against the session root, not the repository.
-				if (parsed.ledger) {
-					for (const [i, item] of parsed.ledger.features.entries()) {
-						const at = problemTarget(parsed.indexes[i], item.id, "workspace");
-						const workspace = resolveWorkspace(ctx.cwd, item, parsed.ledger.workspace);
+				if (gate.parsed.ledger) {
+					for (const [i, item] of gate.parsed.ledger.features.entries()) {
+						const at = problemTarget(gate.parsed.indexes[i], item.id, "workspace");
+						const workspace = resolveWorkspace(ctx.cwd, item, gate.parsed.ledger.workspace);
 						try {
 							await access(workspace);
 						} catch {
@@ -213,7 +222,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 							try {
 								await access(target);
 							} catch {
-								warnings.push(missingInputWarning(problemTarget(parsed.indexes[i], item.id, "files.in"), target));
+								warnings.push(missingInputWarning(problemTarget(gate.parsed.indexes[i], item.id, "files.in"), target));
 							}
 						}
 						const ref = planReference(item.goal);
@@ -221,12 +230,12 @@ export default function featureLedger(pi: ExtensionAPI): void {
 							try {
 								await access(join(ctx.cwd, ref));
 							} catch {
-								problems.push(missingPlanProblem(problemTarget(parsed.indexes[i], item.id, "goal"), ref));
+								problems.push(missingPlanProblem(problemTarget(gate.parsed.indexes[i], item.id, "goal"), ref));
 							}
 						}
 					}
 				}
-				const result = { path, ok: problems.length === 0, problems, warnings };
+				const result = { path: gate.path, ok: problems.length === 0, problems, warnings };
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {}, isError: problems.length > 0 };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_check: ${message(error)}` }], details: {}, isError: true };
@@ -244,9 +253,10 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				if (params.action !== "start" && params.action !== "submit") throw new Error("action must be start or submit");
 				const required = params.action === "start" ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message", "summary"];
 				requireArguments(params, required, params.action === "start" ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "commit_message", "summary", "limitations", "empty_commit", "path"]);
-				const { path, ledger } = await readLedger(ctx, params.path, true);
-				const item = findItem(ledger, params.id, path);
-				const opts = await itemContext(ctx, path, ledger, item);
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const item = findItem(ledger, params.id, gate.path);
+				const opts = await itemContext(ctx, gate.path, ledger, item);
 				if (params.action === "start") {
 					const result = await startWork({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined });
 					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
@@ -271,9 +281,10 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				if (params.action !== "start" && params.action !== "submit") throw new Error("action must be start or submit");
 				const required = params.action === "start" ? ["id", "agent_id"] : ["id", "agent_id", "claim_token"];
 				requireArguments(params, required, params.action === "start" ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "close_findings", "new_findings", "path"]);
-				const { path, ledger } = await readLedger(ctx, params.path, true);
-				const item = findItem(ledger, params.id, path);
-				const opts = await itemContext(ctx, path, ledger, item);
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const item = findItem(ledger, params.id, gate.path);
+				const opts = await itemContext(ctx, gate.path, ledger, item);
 				const result = params.action === "start"
 					? await startReview({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined })
 					: await submitReview({ ...opts, agentId: params.agent_id, claimToken: params.claim_token, closeFindings: params.close_findings === undefined ? [] : params.close_findings, newFindings: params.new_findings === undefined ? [] : params.new_findings });

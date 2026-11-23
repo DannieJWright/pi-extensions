@@ -474,9 +474,69 @@ test("checkLedger keeps the existing missing short_goal problems", () => {
 	assert.deepEqual(checkLedger(duplicate), ["features[1] (alpha): missing short_goal", "features[1] (alpha): duplicate id"]);
 });
 
-test("parseLedger does not report duplicate ids: read tools keep their behavior", () => {
-	const { problems } = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: alpha\n      status: todo\n      short_goal: First item.\n    - id: alpha\n      status: todo\n      short_goal: Second item with the same id.\n");
-	assert.deepEqual(problems, []);
+// One gate for every action. A read validates the same way the check does, so it refuses a file the
+// check would reject, duplicate ids included, and reports the same lines for the same file.
+const GATE_FIXTURE = [
+	"ledger:",
+	"  branch: alpha",
+	"  features:",
+	"    - id: alpha",
+	"      status: todo",
+	"      goal: Do the thing.",
+	"      short_goal: Do the thing.",
+	"      max_failed_reviews: '5'",
+	"      acceptance_criteria: [],",
+	"      constraints: [],",
+	"      files: { in: [], out: [] }",
+	"      tests: [],",
+	"      limitations: [],",
+	"      summary: ''",
+	"      commits: {}",
+	// The second item repeats the id, which parse alone does not report.
+	"    - id: alpha",
+	"      status: done",
+	"      goal: Second item with the same id.",
+	"      short_goal: Second item with the same id.",
+	"      acceptance_criteria: [],",
+	"      constraints: [],",
+	"      files: { in: [], out: [] }",
+	"      tests: [],",
+	"      limitations: [],",
+	"      summary: ''",
+	"      commits: {}",
+].join("\n");
+
+test("every action validates through the shared gate before doing work, reads included", async () => {
+	const { dir, path, cleanup } = await setupRepo(GATE_FIXTURE);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		const ctx = createFakeContext(dir);
+		const before = await readFile(path, "utf8");
+		// The gate is the model check only: the filesystem and git findings stay in ledger_check.
+		const expected = checkLedger(before);
+		assert.deepEqual(expected, ["features[0] (alpha): max_failed_reviews must be a nonnegative integer", "features[1] (alpha): duplicate id"]);
+		// Each call names its tool then the same lines. Only presentation differs: the check returns data,
+		// an acting tool reports an error.
+		for (const [name, params] of [
+			["ledger_get_feature", { id: "alpha" }],
+			["ledger_orchestrate", { action: "list" }],
+			["ledger_orchestrate", { action: "next" }],
+			["ledger_orchestrate", { action: "release", id: "alpha", agent_id: "worker", claim_token: "token" }],
+			["ledger_work", { action: "start", id: "alpha", agent_id: "worker" }],
+			["ledger_work", { action: "submit", id: "alpha", agent_id: "worker", claim_token: "token", commit_message: "test: gate runs first", summary: "Nothing was read as work." }],
+			["ledger_review", { action: "start", id: "alpha", agent_id: "reviewer" }],
+			["ledger_review", { action: "submit", id: "alpha", agent_id: "reviewer", claim_token: "token" }],
+		] as const) {
+			const result = await api.tools[name].execute(null, params, null, null, ctx);
+			assert.ok(result.isError, name);
+			assert.equal(result.content[0].text, `${name}: invalid ledger: ${expected.join("; ")}`, name);
+			// A read path never writes, so every call sees the same file.
+			assert.equal(await readFile(path, "utf8"), before, `${name} wrote the ledger`);
+		}
+		// The check reports those same lines for the same file.
+		const checked = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, ctx)).content[0].text);
+		assert.deepEqual(checked.problems, expected);
+	} finally { await cleanup(); }
 });
 
 test("orchestrateList keeps file order and reports each item as the file records it", () => {
@@ -639,8 +699,8 @@ test("a bullet that parses as a mapping is reported as a problem line", () => {
 	assert.deepEqual(checkLedger(quoted), []);
 	assert.deepEqual(parseLedger(quoted).ledger!.features[0].constraints, ["Read-only: the tool never writes the ledger."]);
 
-	// Read tools keep their behavior: the mapping entry still reaches the reader as [object Object], and
-	// a read view reports the item even though the check would reject it.
+	// parseLedger keeps the bad value so the problem line can name it. A tool call on this file is
+	// refused by the shared gate, so these are the core read views on an already-parsed model.
 	const { ledger } = parseLedger(mapping);
 	assert.deepEqual(orchestrateList(ledger!).items[0].id, "alpha");
 	assert.equal(orchestrateNext(ledger!).next!.id, "alpha");
