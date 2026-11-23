@@ -404,36 +404,10 @@ export function checkParsed(parsed: { ledger: Ledger | null; problems: string[];
 	return problems;
 }
 
-export interface LedgerListEntry {
-	id: string;
-	status: ItemStatus;
-	short_goal: string;
-	workspace: string;
-	commits: { start: string | null; end: string | null };
-}
-
-// branch is only present when the file has it. It is an author-written label, not a git read.
-export interface LedgerListResult {
-	branch?: string;
-	items: LedgerListEntry[];
-}
-
 export type LedgerState = "todo" | "in-progress" | "done";
 
-export interface LedgerNextEntry {
-	id: string;
-	status: ItemStatus;
-	short_goal: string;
-	workspace: string;
-}
-
-export interface LedgerNextResult {
-	next: LedgerNextEntry | null;
-	status: LedgerState;
-}
-
-// Read-only views. Order is file order; nothing here writes the ledger.
-// commits.start is null for a todo item, commits.end is null for an in-progress item.
+// Orchestration reads are read-only. Order is file order; nothing here writes the ledger.
+// branch is only present when the file has it. It is an author-written label, not a git read.
 // An item with no short_goal value is an error here: parseLedger reports it as a problem but
 // still parses the item, so a read view must not hand a reader an empty overview.
 
@@ -448,39 +422,10 @@ function itemWorkspace(ledger: Ledger, item: LedgerItem): string {
 	return item.workspace || ledger.workspace || ".";
 }
 
-export function listItems(ledger: Ledger): LedgerListResult {
-	const result: LedgerListResult = {
-		items: ledger.features.map((item) => ({
-			id: item.id,
-			status: item.status,
-			short_goal: requireShortGoal(item),
-			workspace: itemWorkspace(ledger, item),
-			commits: { start: item.commits.start ?? null, end: item.commits.end ?? null },
-		})),
-	};
-	if (ledger.branch) result.branch = ledger.branch;
-	return result;
-}
-
-// The next item is the first in-progress one, else the first todo.
-// Root status: todo when nothing is started, done when everything is done,
-// otherwise in-progress (at least one item is in-progress or done).
-
-export function nextItem(ledger: Ledger): LedgerNextResult {
-	const statuses = ledger.features.map((item) => item.status);
-	const state: LedgerState = statuses.length === 0 || statuses.every((status) => status === "todo")
-		? "todo"
-		: statuses.every((status) => status === "done")
-			? "done"
-			: "in-progress";
-	const item = ledger.features.find((feature) => feature.status === "in-progress") ?? ledger.features.find((feature) => feature.status === "todo") ?? null;
-	return {
-		next: item ? { id: item.id, status: item.status, short_goal: requireShortGoal(item), workspace: itemWorkspace(ledger, item) } : null,
-		status: state,
-	};
-}
-
 // Claims block new todo work but not other eligible retries.
+// Selection priority: review first, then an eligible unassigned in-progress item, then a todo
+// item only when nothing is in flight. Root status stays todo when nothing is started and done
+// when everything is done; otherwise in-progress (at least one item is in-progress or done).
 export function orchestrateList(ledger: Ledger) {
 	return {
 		...(ledger.branch ? { branch: ledger.branch } : {}),
@@ -575,125 +520,10 @@ export interface ItemContext {
 	exec: Exec;
 }
 
-export interface StartResult {
-	item: LedgerItem;
-	brief: {
-		workspace: string;
-		goal: string;
-		acceptance_criteria: string[];
-		constraints: string[];
-		files_in: string[];
-		tests: string[];
-		validation_scripts: string[];
-	};
-}
-
-export async function startItem(opts: ItemContext): Promise<StartResult> {
-	const path = opts.ledgerPath;
-	const ledger = opts.ledger;
-	assertReviewFields(ledger);
-	const item = findItem(ledger, opts.id, path);
-	if (item.review === true) throw new Error(`item ${opts.id} has review enabled; legacy ledger_start cannot manage review`);
-	if (item.status !== "todo") throw new Error(`item ${opts.id} is already ${item.status}; one writer per item`);
-	// A per-item branch is an author-written label. It is checked against the repository the item
-	// works in, and a mismatch is an error before any work starts.
-	if (item.branch && opts.branch && item.branch !== opts.branch) {
-		throw new Error(`item ${opts.id} says branch ${item.branch}, but ${opts.workspace} is on ${opts.branch}`);
-	}
-	const head = (await opts.exec("git", ["rev-parse", "--short", "HEAD"], opts.repoRoot)).stdout.trim();
-	if (!head) throw new Error("cannot read HEAD");
-	item.status = "in-progress";
-	item.commits = { ...item.commits, start: head };
-	await ensureParent(path);
-	await writeFile(path, serializeLedger(ledger));
-	return {
-		item,
-		brief: {
-			workspace: opts.workspace,
-			goal: item.goal,
-			acceptance_criteria: item.acceptance_criteria,
-			constraints: item.constraints,
-			files_in: item.files.in,
-			tests: item.tests,
-			validation_scripts: item.validation_scripts ?? ledger.validation_scripts,
-		},
-	};
-}
-
 export type SubmitResult =
 	| { rejected: true; script: string; exit: number; logPath: string; lastOutput: string }
 	| { rejected: false; commit: string; filesOut: string[]; outOfRepo: string[] };
 
-export async function submitItem(opts: ItemContext & {
-	commitMessage: string;
-	summary: string;
-	limitations: string[];
-	logDir?: string;
-	stat?: EntryStat;
-}): Promise<SubmitResult> {
-	const path = opts.ledgerPath;
-	const ledger = opts.ledger;
-	assertReviewFields(ledger);
-	const item = findItem(ledger, opts.id, path);
-	if (item.review === true) throw new Error(`item ${opts.id} has review enabled; legacy ledger_submit cannot manage review`);
-	if (item.status !== "in-progress") throw new Error(`item ${opts.id} is ${item.status}; submit requires in-progress`);
-	if (!item.commits.start) throw new Error(`item ${opts.id} has no commits.start`);
-
-	const head = (await opts.exec("git", ["rev-parse", "HEAD"], opts.repoRoot)).stdout.trim();
-	const startFull = (await opts.exec("git", ["rev-parse", item.commits.start], opts.repoRoot)).stdout.trim();
-	if (head !== startFull) throw new Error(`HEAD moved during the work (${item.commits.start} is not HEAD); the item must be one commit`);
-	const status = await opts.exec("git", ["status", "--porcelain", "-z"], opts.repoRoot);
-	const paths = await addablePaths(status.stdout, opts.repoRoot, opts.stat ?? lstat);
-	if (paths.length === 0) throw new Error("the working tree has no changes");
-
-	const scripts = item.validation_scripts ?? ledger.validation_scripts;
-	// Validation runs from the item's workspace root. A script that needs another repository cd's
-	// into it itself.
-	for (const script of scripts) {
-		const result = await opts.exec("sh", ["-c", script], opts.workspace);
-		if (result.code !== 0) {
-			const output = `${result.stdout}${result.stderr}`;
-			const logDir = opts.logDir ?? "/tmp";
-			const logPath = join(logDir, `ledger-${opts.id}-${Date.now()}.log`);
-			await writeFile(logPath, `$ ${script}\n${output}`);
-			const lastOutput = output.split("\n").filter((line) => line !== "").slice(-20).join("\n");
-			return { rejected: true, script, exit: result.code, logPath, lastOutput };
-		}
-	}
-
-	// -A so a removal inside the pathspec is recorded, not only the added files.
-	const staged = await opts.exec("git", ["add", "-A", "--", ...paths], opts.repoRoot);
-	if (staged.code !== 0) throw new Error(`git add failed: ${staged.stderr || staged.stdout}`);
-	const commit = await opts.exec("git", ["commit", "-m", opts.commitMessage], opts.repoRoot);
-	if (commit.code !== 0) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`);
-	const end = (await opts.exec("git", ["rev-parse", "--short", "HEAD"], opts.repoRoot)).stdout.trim();
-	const diff = await opts.exec("git", ["diff", "--name-only", item.commits.start, end], opts.repoRoot);
-	// Every entry reads from the session root: a path inside the item's workspace is prefixed with it.
-	const filesOut = prefixFromRoot(opts.cwd, opts.workspace, opts.repoRoot, diff.stdout.split("\n").filter((line) => line !== ""));
-	// Changes outside the item's repository are reported as a warning, never committed. Nothing is
-	// claimed when the session root is not a git repository. Porcelain paths read from the repository
-	// root, so the containment check and the printed path both use the session root's repository.
-	const outOfRepo: string[] = [];
-	const sessionRoot = await resolveRepoRoot(opts.cwd, opts.exec);
-	if (sessionRoot) {
-		const session = await opts.exec("git", ["status", "--porcelain", "-z"], opts.cwd);
-		if (session.code === 0) {
-			const outside = parsePorcelain(session.stdout).filter((entry) => !isInside(join(sessionRoot, entry.path), opts.repoRoot));
-			outOfRepo.push(...prefixFromRoot(opts.cwd, opts.cwd, sessionRoot, outside.map((entry) => entry.path)));
-		}
-	}
-
-	item.files = { in: item.files.in, out: filesOut };
-	item.summary = opts.summary;
-	item.limitations = [...item.limitations, ...opts.limitations];
-	item.commits = { start: item.commits.start, end };
-	item.status = "done";
-	await ensureParent(path);
-	await writeFile(path, serializeLedger(ledger));
-	return { rejected: false, commit: end, filesOut, outOfRepo };
-}
-
-// Worker lifecycle is separate from the legacy start/submit tools until their cutover.
 export interface PatchView {
 	files: string[];
 	stat: string;
