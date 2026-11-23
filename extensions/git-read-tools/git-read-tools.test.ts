@@ -17,6 +17,12 @@ function text(result: Awaited<ReturnType<typeof inspectGit>>) { return result.co
 // The first line report() builds: the plain label, or the label with the run directory and top level when either differs.
 // Comparing this line exactly lets a test assert both that the header appears and that it does not.
 function headerLine(result: Awaited<ReturnType<typeof inspectGit>>) { return text(result).split("\n")[0]; }
+// The candidate names report() appends when nothing resolves. Asserting them as one exact string proves byte-wise order rather than membership.
+function listedNames(result: Awaited<ReturnType<typeof inspectGit>>) {
+ const match = text(result).match(/Candidates under this directory \([^)]*\): (.+?)(?:\. Some candidates may not resolve)?\.\]/);
+ assert.ok(match, text(result));
+ return match[1];
+}
 // Runs one kind and returns the result. `base` is not named `dir` because `dir` is a tool argument.
 // Limitation: the helper derives the git dir by running Git at `base`, so index immutability can only be
 // checked when `base` is itself inside a repository. For a target outside any repository, assert content only
@@ -363,10 +369,150 @@ test("the report header names the run directory and top level only when either d
   assert.equal(unresolved.isError, true);
   assert.equal(headerLine(unresolved), `Could not locate repository root (run directory ${plainChild}):`);
   assert.match(text(unresolved), /not a git repository/);
-  assert.match(text(unresolved), /\[Git failed \(exit 128\)\.\]/);
+  // report() puts its own anomaly notes first, then the guidance for the dir parameter, so the bracket holds both. An empty target has no candidates, which is reported as none.
+  assert.match(text(unresolved), /\[Git failed \(exit 128\)\. No repository found from [^\n]* Candidates under this directory \([^)]*\): none\.\]/);
   assert.deepEqual(unresolved.details, { exitCode: 128, truncated: false, timedOut: false, cancelled: false });
  } finally { await rm(parent, { recursive: true, force: true }); }
 }));
+
+test("failed discovery keeps Git wording, names the dir parameter, states the depth limit, lists candidates, and does not auto-select", async () => {
+ // These assertions stay inside their own temp parent because upward discovery consults ancestors of it; the test tmpdir is assumed outside any repository, as elsewhere in this file.
+ const parent = await mkdtemp(join(tmpdir(), "candidate-parent-"));
+ try {
+  const main = join(parent, "A");
+  await mkdir(main); git(main, "init", "-q");
+  await writeFile(join(main, "space name"), "first\n"); git(main, "add", "--", "."); git(main, "commit", "-qm", "subject A");
+  // Variant 1 — one child containing .git as a directory. Nothing is auto-selected, so the error keeps Git's wording and names the parameter.
+  const single = await inspectGit("status", {}, { cwd: parent });
+  assert.equal(single.isError, true);
+  assert.match(text(single), /^Could not locate repository root:/);
+  assert.match(text(single), /not a git repository/);
+  assert.match(text(single), /Pass the "dir" parameter/);
+  assert.match(text(single), /\(immediate children only,[^)]*\)/);
+  assert.equal(listedNames(single), "A");
+  // Variant 2 — a main repository plus its linked worktree. Both contain .git, so both are listed rather than the worktree alone.
+  const worktree = join(parent, "B");
+  git(main, "worktree", "add", "-qb", "candidate-test", worktree);
+  try {
+   assert.equal(listedNames(await inspectGit("log", { limit: 1 }, { cwd: parent })), "A, B");
+   // Naming a candidate inspects that candidate, and its index is untouched. The helper routes the index check through the candidate itself.
+   const named = await unchanged(worktree, "status", { dir: "B" }, { cwd: parent });
+   assert.equal(named.isError, false, text(named));
+   assert.equal(headerLine(named), `Git inspection (run directory ${worktree}, repository ${git(worktree, "rev-parse", "--show-toplevel")}):`);
+   // Paths resolve against the target, not against the caller working directory.
+   await writeFile(join(worktree, "space name"), "relative to B\n");
+   const diff = await unchanged(worktree, "diff", { dir: "B", paths: ["space name"] }, { cwd: parent });
+   assert.equal(diff.isError, false, text(diff));
+   assert.match(text(diff), /relative to B/);
+  } finally { git(main, "worktree", "remove", "--force", worktree); }
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("candidates are reported byte-wise sorted rather than in insertion order, and names needing quotes are quoted not stripped", async () => {
+ // Fixture names are restricted to ASCII per the plan. Insertion order deliberately differs from Buffer.compare order.
+ const parent = await mkdtemp(join(tmpdir(), "candidate-order-"));
+ try {
+  for (const name of ["zz-last", "mm-middle", "aa-first", "multi\nline"]) { await mkdir(join(parent, name)); await mkdir(join(parent, name, ".git")); }
+  const result = await inspectGit("status", {}, { cwd: parent });
+  assert.equal(result.isError, true);
+  // Names come from fs.readdir, so they bypass clean(); the newline stays and is shown quoted as decided.
+  assert.equal(listedNames(result), 'aa-first, mm-middle, "multi\\nline", zz-last');
+  assert.match(text(result), /Some candidates may not resolve\./);
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("symlinked children are not followed as candidates", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "candidate-symlink-"));
+ try {
+  const main = join(parent, "A");
+  await mkdir(main); git(main, "init", "-q");
+  await writeFile(join(main, "file"), "x\n"); git(main, "add", "--", "."); git(main, "commit", "-qm", "subject A");
+  await symlink(main, join(parent, "link-to-A"));
+  const result = await inspectGit("status", {}, { cwd: parent });
+  assert.equal(result.isError, true);
+  assert.equal(listedNames(result), "A");
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("a candidate whose repository cannot be resolved is an unverified hint that answers with Git's own fatal", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "candidate-stale-"));
+ try {
+  const stale = join(parent, "stale");
+  await mkdir(stale); await writeFile(join(stale, ".git"), "/definitely-not-a-worktree\n");
+  const listed = await inspectGit("status", {}, { cwd: parent });
+  assert.equal(listed.isError, true);
+  assert.equal(listedNames(listed), "stale");
+  assert.match(text(listed), /Some candidates may not resolve\./);
+  // Running an inspection at the candidate itself shows why it is only a hint. Detection here costs no extra invocation because the caller asked for that directory anyway.
+  const atCandidate = await inspectGit("status", { dir: "stale" }, { cwd: parent });
+  assert.equal(atCandidate.isError, true);
+  assert.match(text(atCandidate), /invalid gitfile format/);
+  assert.match(text(atCandidate), /Pass the "dir" parameter/);
+  assert.equal(atCandidate.details.exitCode, 128);
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("anomalies on the lookup keep the no-repository label and still reach the guidance line", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "candidate-anomaly-"));
+ try {
+  const candidate = join(parent, "A");
+  await mkdir(candidate); await mkdir(join(candidate, ".git"));
+  const script = join(parent, "fake-git");
+  // The fixture is outside any repository, so only the lookup runs here and every case reaches the same note path.
+  await writeFile(script, '#!/bin/sh\ncase " $* " in\n *" rev-parse --show-toplevel "*) sleep 2 ;;\n *) exec git "$@" ;;\nesac\n', { mode: 0o755 });
+  const timedOut = await inspectGit("status", {}, { cwd: parent, executable: script, timeoutMs: 300 });
+  assert.equal(timedOut.isError, true);
+  assert.match(text(timedOut), /^Could not locate repository root:[\s\S]*Git timed out/);
+  assert.match(text(timedOut), /Pass the "dir" parameter/);
+  assert.equal(listedNames(timedOut), "A");
+  const failedSpawn = await inspectGit("status", {}, { cwd: parent, executable: join(parent, "missing") });
+  assert.equal(failedSpawn.isError, true);
+  assert.match(text(failedSpawn), /^Could not locate repository root:[\s\S]*Could not start Git/);
+  assert.equal(listedNames(failedSpawn), "A");
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+test("more than 20 candidates prove report truncation and more than 50 entries prove the scan cap by count and format", async () => {
+ const reported = await mkdtemp(join(tmpdir(), "candidate-report-limit-"));
+ const scanned = await mkdtemp(join(tmpdir(), "candidate-scan-limit-"));
+ try {
+  // Below the scan cap every entry is seen, so byte-wise order decides which names appear.
+  for (let i = 0; i < 25; i++) { const name = `r${String(i).padStart(2, "0")}`; await mkdir(join(reported, name)); await mkdir(join(reported, name, ".git")); }
+  const truncated = await inspectGit("status", {}, { cwd: reported });
+  assert.equal(truncated.isError, true);
+  assert.equal(listedNames(truncated), Array.from({ length: 20 }, (_, i) => `r${String(i).padStart(2, "0")}`).join(", "));
+  // Above the scan cap membership depends on readdir order, so this asserts the stated limit plus count and format, not specific names.
+  for (let i = 0; i < 60; i++) { const name = `s${String(i).padStart(2, "0")}`; await mkdir(join(scanned, name)); await mkdir(join(scanned, name, ".git")); }
+  const capped = await inspectGit("status", {}, { cwd: scanned });
+  assert.equal(capped.isError, true);
+  assert.match(text(capped), /at most 50 entries scanned, stopped at that limit/);
+  const names = listedNames(capped).split(", ");
+  assert.equal(names.length, 20);
+  assert.ok(names.every((name) => /^s\d{2}$/.test(name)), text(capped));
+ } finally { await rm(reported, { recursive: true, force: true }); await rm(scanned, { recursive: true, force: true }); }
+});
+
+test("upward discovery wins over the candidate scan", async () => {
+ const ancestor = await mkdtemp(join(tmpdir(), "ancestor-repo-"));
+ try {
+  git(ancestor, "init", "-q");
+  await writeFile(join(ancestor, "file"), "x\n"); git(ancestor, "add", "--", "."); git(ancestor, "commit", "-qm", "ancestor repository");
+  const nested = join(ancestor, "nested");
+  await mkdir(nested);
+  // A real candidate inside the run directory. Upward discovery finds the ancestor repository first, so nothing is listed.
+  const child = join(nested, "child");
+  await mkdir(child); git(child, "init", "-q");
+  await writeFile(join(child, "file"), "y\n"); git(child, "add", "--", "."); git(child, "commit", "-qm", "own repository");
+  const fromNested = await unchanged(ancestor, "log", { dir: "nested", limit: 1 }, { cwd: ancestor });
+  assert.equal(fromNested.isError, false, text(fromNested));
+  assert.match(text(fromNested), /ancestor repository/);
+  assert.doesNotMatch(text(fromNested), /Candidates under this directory|Pass the "dir" parameter/);
+  // The candidate answers with its own repository when it is named directly, which is what the caller would have to do instead.
+  const inChild = await unchanged(child, "log", { limit: 1 }, { cwd: child });
+  assert.equal(inChild.isError, false, text(inChild));
+  assert.match(text(inChild), /own repository/);
+ } finally { await rm(ancestor, { recursive: true, force: true }); }
+});
 
 test("bare repositories keep log and show working with no top level in the header", async () => {
  const parent = await mkdtemp(join(tmpdir(), "git-bare-"));

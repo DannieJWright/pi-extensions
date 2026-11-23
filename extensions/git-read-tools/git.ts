@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { lstat, stat } from "node:fs/promises";
+import { lstat, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
@@ -94,6 +94,36 @@ const UNEXPECTED_ROOT_OUTPUT = "Could not locate repository root: unexpected Git
 // A bare repository has no top level, so the lookup answers with this fatal instead of printing one. Working-tree commands report the same fatal there, so it is matched as a stable substring only, never as a full sentence.
 const WORK_TREE_FATAL = /must be run in a work tree/i;
 
+// Nothing is auto-selected when discovery fails: the caller gets candidates for the dir parameter and re-issues. Candidates are immediate children that contain .git as a directory or file; dotfiles count, symlinks are not followed, and the depth limit is one level. Names come from fs.readdir, so they bypass clean(); names containing control characters or newlines are quoted rather than stripped, because stripping makes two different names collide. Candidate detection costs no Git invocation, so each name is an unverified hint: a stale gitfile answers with `fatal: invalid gitfile format: <path>`, exit 128, when the caller runs an inspection there.
+const CANDIDATE_SCAN_LIMIT = 50;
+const CANDIDATE_REPORT_LIMIT = 20;
+const NEEDS_QUOTING = /[\x00-\x1f\x7f-\x9f]/;
+// Byte-wise order as defined by the plan. For valid scalar values UTF-8 byte order equals code-point order, so this matches JS default sort; fixture names are restricted to ASCII.
+const byteCompare = (a: string, b: string) => Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+const quoteName = (name: string) => NEEDS_QUOTING.test(name) ? JSON.stringify(name) : name;
+
+// Collect all candidate names first, then sort, then truncate. The scan cap counts every entry read, including entries skipped because they are symlinks or not directories.
+async function scanCandidates(target: string) {
+ const entries = await readdir(target, { withFileTypes: true }).catch(() => null);
+ if (!entries) return { names: [], capped: false };
+ const names: string[] = [];
+ for (const entry of entries.slice(0, CANDIDATE_SCAN_LIMIT)) {
+  if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+  // lstat keeps a symlinked .git from being counted through its target, consistent with not following symlinks.
+  const marker = await lstat(path.join(target, entry.name, ".git")).catch(() => null);
+  if (marker && (marker.isDirectory() || marker.isFile())) names.push(entry.name);
+ }
+ return { names: names.sort(byteCompare).slice(0, CANDIDATE_REPORT_LIMIT), capped: entries.length > CANDIDATE_SCAN_LIMIT };
+}
+
+// Built as a report() note so Git's own wording, content and details stay intact.
+function noRepositoryNote(target: string, candidates: { names: string[]; capped: boolean }) {
+ const limits = ["immediate children only", `at most ${CANDIDATE_SCAN_LIMIT} entries scanned${candidates.capped ? `, stopped at that limit` : ""}`, `first ${CANDIDATE_REPORT_LIMIT} reported sorted byte-wise`].join(", ");
+ const parts = [`No repository found from ${target}.`, `Pass the "dir" parameter with a directory inside a Git repository or linked worktree.`, `Candidates under this directory (${limits}): ${candidates.names.map(quoteName).join(", ") || "none"}.`];
+ if (candidates.names.length) parts.push("Some candidates may not resolve.");
+ return parts.join(" ");
+}
+
 // Confirming bareness costs an extra invocation, so it runs only after a lookup failed with that fatal. It fails closed on the shape like the lookup above: anything other than exactly true falls back to reporting the failed lookup as no repository found.
 async function confirmBare(options: RunOptions) {
  const result = await runGit(["rev-parse", "--is-bare-repository"], options);
@@ -148,7 +178,7 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
   // Anomalies on this lookup — timeout, cancellation, spawn failure, any non-zero exit — go under the no-repository label, except the work-tree fatal, which is how a bare repository answers. A bare repository has no top level to resolve or print, but log and show still work there, so that case is confirmed before the label is used.
   let bare = false, prefix = "";
   if (root.code !== 0 || root.cancelled || root.timedOut || root.error) {
-   if (!(WORK_TREE_FATAL.test(root.text) && await confirmBare(runAt))) return report(root, "Could not locate repository root", scope);
+   if (!(WORK_TREE_FATAL.test(root.text) && await confirmBare(runAt))) return report(root, "Could not locate repository root", scope, [noRepositoryNote(dir, await scanCandidates(dir))]);
    bare = true;
   } else {
    const top = root.stdout.trim();
@@ -199,9 +229,10 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
 }
 
 // The header names the run directory and the repository top level only when either differs from the caller's working directory, so the ordinary case keeps the plain label and byte-for-byte output.
-function report(result: ProcessResult, label: string, scope: ReportScope) {
+function report(result: ProcessResult, label: string, scope: ReportScope, extraNotes: string[] = []) {
  const differs = scope.target !== scope.cwd || (scope.top !== undefined && scope.top !== scope.cwd);
  const header = `${label}${differs ? ` (run directory ${scope.target}${scope.top ? `, repository ${scope.top}` : ""})` : ""}`;
- const notes = [result.truncated && "Output truncated at limit; process stopped.", result.timedOut && "Git timed out; process stopped.", result.cancelled && "Git cancelled; process stopped.", result.error && `Could not start Git: ${result.error}`, !result.truncated && result.code !== 0 && !result.timedOut && !result.cancelled && !result.error && `Git failed (exit ${result.code}).`].filter(Boolean);
+ // Anomaly notes come first, then the guidance for the dir parameter, in the order the caller acts on them.
+ const notes = [result.truncated && "Output truncated at limit; process stopped.", result.timedOut && "Git timed out; process stopped.", result.cancelled && "Git cancelled; process stopped.", result.error && `Could not start Git: ${result.error}`, !result.truncated && result.code !== 0 && !result.timedOut && !result.cancelled && !result.error && `Git failed (exit ${result.code}).`, ...extraNotes].filter(Boolean);
  return { content: [{ type: "text" as const, text: `${header}:\n${result.text}${notes.length ? `\n[${notes.join(" ")}]` : ""}` }], details: { exitCode: result.code, truncated: result.truncated, timedOut: result.timedOut, cancelled: result.cancelled }, isError: !!(result.error || result.timedOut || result.cancelled || (!result.truncated && result.code !== 0)) };
 }
