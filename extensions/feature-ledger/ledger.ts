@@ -836,3 +836,123 @@ export async function submitWork(opts: ItemContext & {
 		throw error;
 	}
 }
+
+export type NewFinding = Pick<Finding, "details" | "rationale" | "severity" | "required_checks">;
+
+// A review claim uses the same workspace and diff context as a worker claim.
+export async function startReview(opts: ItemContext & { agentId: string; artifactDir?: string }): ReturnType<typeof startWork> {
+	assertReviewFields(opts.ledger);
+	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
+	if (!opts.agentId?.trim()) throw new Error("agent_id: must be a non-empty string");
+	if (item.status !== "review") throw new Error(`item ${item.id} is ${item.status}; reviewer start requires review`);
+	if (item.assignment) throw new Error(`item ${item.id} is already assigned to ${item.assignment.agent_id}`);
+	requireWorkerBranch(opts, item);
+	if (!item.commits.start) throw new Error(`item ${item.id} has no feature base commit`);
+	const head = (await gitResult(opts, ["rev-parse", "HEAD"])).trim();
+	if (!head) throw new Error("cannot read HEAD");
+	const cumulative_diff = await workDiff(opts, item.commits.start, head, opts.artifactDir);
+	const latest = item.commits.submissions?.at(-1);
+	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, opts.artifactDir) : null;
+	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-reviewer`, role: "reviewer", agent_id: opts.agentId, claim_token: randomUUID() };
+	try {
+		await ensureParent(opts.ledgerPath);
+		await writeFile(opts.ledgerPath, serializeLedger(opts.ledger));
+	} catch (error) {
+		throw new Error(`reviewer start could not write the claim; ledger write may be partial, inspect ${opts.ledgerPath} before retrying: ${String(error)}`);
+	}
+	return { item, config: { ...effectiveReviewConfig(opts.ledger, item), validation_scripts: item.validation_scripts ?? opts.ledger.validation_scripts }, pending_findings: (item.findings ?? []).filter((finding) => finding.status === "open"), workspace: opts.workspace, cumulative_diff, latest_diff };
+}
+
+// Resolve the ledger repository independently of the workspace. An untracked path is not committed.
+async function trackedLedger(opts: ItemContext): Promise<{ root: string; path: string; head: string } | null> {
+	const dir = dirname(opts.ledgerPath);
+	const result = await opts.exec("git", ["rev-parse", "--show-toplevel"], dir);
+	if (result.code !== 0) {
+		if (/not a git repository/i.test(result.stderr)) return null;
+		throw new Error(`cannot inspect ledger repository: ${result.stderr || result.stdout}`);
+	}
+	const root = result.stdout.trim();
+	if (!root || !isInside(opts.ledgerPath, root)) throw new Error("cannot resolve ledger repository path");
+	const path = relative(root, opts.ledgerPath);
+	const files = await opts.exec("git", ["ls-files", "-z", "--", `:(literal)${path}`], root);
+	if (files.code !== 0) throw new Error(`cannot check whether ledger is tracked: ${files.stderr || files.stdout}`);
+	const head = await opts.exec("git", ["rev-parse", "--verify", "HEAD"], root);
+	if (head.code !== 0 || !head.stdout.trim()) {
+		if (head.stderr.includes("Needed a single revision")) {
+			const branch = await opts.exec("git", ["symbolic-ref", "--quiet", "HEAD"], root);
+			if (branch.code === 0 && branch.stdout.trim()) {
+				if (!files.stdout.split("\0").includes(path)) return null;
+				return { root, path, head: "(unborn)" };
+			}
+		}
+		throw new Error(`cannot read ledger repository HEAD: ${head.stderr || head.stdout}`);
+	}
+	if (!files.stdout.split("\0").includes(path)) {
+		// A path staged for deletion is absent from the index but remains tracked at HEAD.
+		const tree = await opts.exec("git", ["ls-tree", "--name-only", "-z", "HEAD", "--", `:(literal)${path}`], root);
+		if (tree.code !== 0) throw new Error(`cannot inspect ledger at HEAD: ${tree.stderr || tree.stdout}`);
+		if (!tree.stdout.split("\0").includes(path)) return null;
+	}
+	return { root, path, head: head.stdout.trim() };
+}
+
+export async function submitReview(opts: ItemContext & {
+	agentId: string;
+	claimToken: string;
+	closeFindings: string[];
+	newFindings: NewFinding[];
+}): Promise<{ status: ItemStatus; failed_reviews: number; open_findings: Finding[]; ledger_commit: string | null; ledger_commit_note: string }> {
+	assertReviewFields(opts.ledger);
+	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
+	if (item.status !== "review") throw new Error(`item ${item.id} is ${item.status}; reviewer submit requires review`);
+	if (!opts.agentId?.trim() || !opts.claimToken?.trim() || !item.assignment || item.assignment.role !== "reviewer" || item.assignment.agent_id !== opts.agentId || item.assignment.claim_token !== opts.claimToken) throw new Error(`item ${item.id} has no matching reviewer claim (agent_id and claim_token required)`);
+	requireWorkerBranch(opts, item);
+	if (!Array.isArray(opts.closeFindings) || opts.closeFindings.some((id) => typeof id !== "string" || !id.trim())) throw new Error("close_findings must be a list of non-empty IDs");
+	if (new Set(opts.closeFindings).size !== opts.closeFindings.length) throw new Error("close_findings contains duplicate IDs");
+	const findings = item.findings ?? [];
+	for (const id of opts.closeFindings) if (!findings.some((finding) => finding.id === id)) throw new Error(`unknown finding ID ${id}`);
+	if (!Array.isArray(opts.newFindings)) throw new Error("new_findings must be a list");
+	for (const [index, finding] of opts.newFindings.entries()) {
+		if (!isRecord(finding) || Object.keys(finding).some((key) => !["details", "rationale", "severity", "required_checks"].includes(key)) || typeof finding.details !== "string" || !finding.details.trim() || typeof finding.rationale !== "string" || !finding.rationale.trim() || !FINDING_SEVERITIES.includes(finding.severity as Finding["severity"]) || !Array.isArray(finding.required_checks) || finding.required_checks.some((check: unknown) => typeof check !== "string" || !check.trim())) throw new Error(`new_findings[${index}] requires non-empty details and rationale, valid severity, and a list of non-empty required_checks`);
+	}
+	const iteration = item.failed_reviews ?? 0;
+	const ids = new Set(findings.map((finding) => finding.id));
+	const additions: Finding[] = opts.newFindings.map((finding) => {
+		let id: string;
+		do { id = `finding-${randomUUID()}`; } while (ids.has(id));
+		ids.add(id);
+		return { id, status: "open", ...finding, first_found_iteration: iteration };
+	});
+	const updated = [...findings.map((finding) => opts.closeFindings.includes(finding.id) ? { ...finding, status: "closed" as const } : finding), ...additions];
+	const open = updated.filter((finding) => finding.status === "open");
+	if (open.length && !Number.isSafeInteger(iteration + 1)) throw new Error("failed_reviews cannot be incremented safely");
+	const tracked = await trackedLedger(opts);
+	item.findings = updated;
+	item.failed_reviews = open.length ? iteration + 1 : iteration;
+	item.status = open.length ? "in-progress" : "done";
+	delete item.assignment;
+	try {
+		await writeFile(opts.ledgerPath, serializeLedger(opts.ledger));
+	} catch (error) {
+		throw new Error(`review ledger write failed; ${opts.ledgerPath} may be partially written, no commit attempted. Inspect and reconcile before retrying: ${String(error)}`);
+	}
+	if (!tracked) return { status: item.status, failed_reviews: item.failed_reviews, open_findings: open, ledger_commit: null, ledger_commit_note: "Ledger is untracked, ignored, or outside a repository; written without a commit." };
+	let commitAttempted = false;
+	let commit = "";
+	try {
+		if (tracked.head !== "(unborn)") {
+			const diff = await opts.exec("git", ["diff", "--quiet", "HEAD", "--", `:(literal)${tracked.path}`], tracked.root);
+			if (diff.code !== 0 && diff.code !== 1) throw new Error(`cannot inspect ledger diff: ${diff.stderr || diff.stdout}`);
+			if (diff.code === 0) return { status: item.status, failed_reviews: item.failed_reviews, open_findings: open, ledger_commit: null, ledger_commit_note: "Tracked ledger was written but already matches HEAD; no commit needed." };
+		}
+		commitAttempted = true;
+		const result = await opts.exec("git", ["commit", "--only", "-m", `Review ${item.id}`, "--", `:(literal)${tracked.path}`], tracked.root);
+		if (result.code !== 0) throw new Error(`git commit failed: ${result.stderr || result.stdout}`);
+		const head = await opts.exec("git", ["rev-parse", "HEAD"], tracked.root);
+		if (head.code !== 0 || !head.stdout.trim()) throw new Error(`cannot read new ledger HEAD: ${head.stderr || head.stdout}`);
+		commit = head.stdout.trim();
+		return { status: item.status, failed_reviews: item.failed_reviews, open_findings: open, ledger_commit: commit, ledger_commit_note: "Committed the entire tracked ledger file, including pre-existing edits; unrelated staged files were excluded." };
+	} catch (error) {
+		throw new Error(`review ledger was written at ${opts.ledgerPath}; ${commit ? `created commit ${commit}` : commitAttempted ? "a commit may have been created (result or HEAD uncertain)" : "no commit was attempted"}. Prior ledger HEAD ${tracked.head}. Do not retry blindly; inspect ledger, HEAD, and index and reconcile: ${String(error)}`);
+	}
+}

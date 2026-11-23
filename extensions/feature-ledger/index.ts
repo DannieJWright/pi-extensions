@@ -9,7 +9,7 @@ import { access, readFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, findItem, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, startWork, submitWork, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
+import { checkParsed, findItem, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
@@ -64,6 +64,25 @@ const WORK_PARAMS = {
 			type: "object",
 			properties: { action: { const: "submit" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, summary: { type: "string", minLength: 1 }, limitations: { type: "array", items: { type: "string" } }, empty_commit: { type: "boolean" }, path: PATH_PROPERTY },
 			required: ["action", "id", "agent_id", "claim_token", "commit_message", "summary"], additionalProperties: false,
+		},
+	],
+} as unknown as TSchema;
+
+const REVIEW_PARAMS = {
+	anyOf: [
+		{
+			type: "object",
+			properties: { action: { const: "start" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
+			required: ["action", "id", "agent_id"], additionalProperties: false,
+		},
+		{
+			type: "object",
+			properties: {
+				action: { const: "submit" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, path: PATH_PROPERTY,
+				close_findings: { type: "array", items: { type: "string", minLength: 1 } },
+				new_findings: { type: "array", items: { type: "object", properties: { details: { type: "string", minLength: 1 }, rationale: { type: "string", minLength: 1 }, severity: { enum: ["blocker", "major", "minor", "nit"] }, required_checks: { type: "array", items: { type: "string", minLength: 1 } } }, required: ["details", "rationale", "severity", "required_checks"], additionalProperties: false } },
+			},
+			required: ["action", "id", "agent_id", "claim_token"], additionalProperties: false,
 		},
 	],
 } as unknown as TSchema;
@@ -262,6 +281,30 @@ export default function featureLedger(pi: ExtensionAPI): void {
 				return { content: [{ type: "text", text: `ledger_work: ${params.id} is ${item.status} (commit ${result.commit})\nfiles.out:\n${result.filesOut.map((file) => `- ${file}`).join("\n")}${warning}` }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_work: ${message(error)}` }], details: {}, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "ledger_review",
+		label: "Ledger review",
+		description: "Start or submit a reviewer claim. Submit closes finding IDs and adds findings; any open finding fails review. A tracked ledger is committed in its own repository in full, including pre-existing ledger edits, without other staged files. Untracked, ignored, or outside-repository ledgers are written without a commit. Claims fence stale sequential runs, not concurrent writers.",
+		parameters: REVIEW_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				if (params.action !== "start" && params.action !== "submit") throw new Error("action must be start or submit");
+				const required = params.action === "start" ? ["id", "agent_id"] : ["id", "agent_id", "claim_token"];
+				const missing = missingRequired(params, required);
+				if (missing.length) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
+				const { path, ledger } = await readLedger(ctx, params.path, true);
+				const item = findItem(ledger, params.id, path);
+				const opts = await itemContext(ctx, path, ledger, item);
+				const result = params.action === "start"
+					? await startReview({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined })
+					: await submitReview({ ...opts, agentId: params.agent_id, claimToken: params.claim_token, closeFindings: params.close_findings ?? [], newFindings: params.new_findings ?? [] });
+				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
+			} catch (error) {
+				return { content: [{ type: "text", text: `ledger_review: ${message(error)}` }], details: {}, isError: true };
 			}
 		},
 	});
