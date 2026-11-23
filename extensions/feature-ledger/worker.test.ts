@@ -83,7 +83,7 @@ test("ledger_work exposes action-specific schemas and submits an initial non-rev
 	} finally { await cleanup(); }
 });
 
-test("ledger_work retains claims on validation failure and rejects moved HEAD, wrong branch and review cap", async () => {
+test("ledger_work retains claims on validation failure and rejects moved HEAD and wrong branch", async () => {
 	const { dir, path, cleanup } = await setup(true);
 	try {
 		const api = createFakeApi(); featureLedger(api);
@@ -96,14 +96,26 @@ test("ledger_work retains claims on validation failure and rejects moved HEAD, w
 		assert.match(failure.content[0].text, /exit 7.*claim retained/s);
 		assert.match(failure.content[0].text, /expected-failure/);
 		assert.equal((await readItem(path)).assignment!.claim_token, params.claim_token);
-		await changeItem(path, item => { item.failed_reviews = 5; item.assignment!.id = "alpha-5-worker"; });
-		assert.match((await call(api, dir, params)).content[0].text, /failed-review limit 5/);
-		await changeItem(path, item => { item.failed_reviews = 0; item.assignment!.id = "alpha-0-worker"; item.branch = "wrong-branch"; });
+		await changeItem(path, item => { item.branch = "wrong-branch"; });
 		assert.match((await call(api, dir, params)).content[0].text, /wrong-branch/);
 		await changeItem(path, item => { delete item.branch; });
 		assert.equal((await exec("git", ["commit", "--allow-empty", "-m", "move HEAD"], dir)).code, 0);
 		assert.match((await call(api, dir, params)).content[0].text, /HEAD moved since worker start/);
 		assert.equal((await readItem(path)).assignment!.claim_token, params.claim_token);
+	} finally { await cleanup(); }
+});
+
+test("a limit lowered during a held claim does not block that submission", async () => {
+	const { dir, path, cleanup } = await setup(true);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		const brief = await start(api, dir, path, "a");
+		await writeFile(join(dir, "src/a.ts"), "change\n");
+		// The limit governs starting another attempt only, so the held claim can still finish.
+		await changeItem(path, item => { item.failed_reviews = 5; item.max_failed_reviews = 3; item.assignment!.id = "alpha-5-worker"; });
+		const result = await call(api, dir, submitArgs(path, "a", brief.item.assignment.claim_token));
+		assert.ok(!result.isError, result.content[0].text);
+		assert.equal((await readItem(path)).status, "review");
 	} finally { await cleanup(); }
 });
 
@@ -301,7 +313,7 @@ test("ledger_work reports post-commit failures with the commit and recovery guid
 	} finally { await cleanup(); }
 });
 
-test("ledger_work start enforces state, branch, cap and raised or unlimited limits", async () => {
+test("ledger_work start enforces state, branch, the start-only cap and raised or unlimited limits", async () => {
 	const { dir, path, cleanup } = await setup(true);
 	try {
 		const api = createFakeApi(); featureLedger(api);
@@ -312,7 +324,10 @@ test("ledger_work start enforces state, branch, cap and raised or unlimited limi
 		assert.match((await call(api, dir, params)).content[0].text, /not-this-branch/);
 		const head = (await exec("git", ["rev-parse", "HEAD"], dir)).stdout.trim();
 		await changeItem(path, item => { delete item.branch; item.status = "in-progress"; item.failed_reviews = 5; item.commits.start = head; });
-		assert.match((await call(api, dir, params)).content[0].text, /failed-review limit 5/);
+		const cappedStart = (await call(api, dir, params)).content[0].text;
+		assert.match(cappedStart, /failed-review limit 5/);
+		// The cap governs starting another attempt only, so the error names it as a start refusal.
+		assert.match(cappedStart, /before starting another attempt/);
 		await changeItem(path, item => { item.max_failed_reviews = 0; });
 		const brief = await start(api, dir, path, "a");
 		assert.equal(brief.config.max_failed_reviews, 0);

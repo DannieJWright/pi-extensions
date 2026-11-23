@@ -246,7 +246,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "ledger_work",
 		label: "Ledger work",
-		description: `Start or submit worker work. Start claims a todo or eligible in-progress item for agent_id and returns a fresh claim token, full item, effective config, pending findings and implementation/ledger diff views. Submit requires the same agent_id and claim_token, runs validations and commits work. empty_commit is only for an explained review fix. Claims fence stale sequential runs, not concurrent writers. Each patch preview is limited to 4 KiB; larger patches include a full-patch artifact path. ${PATH_DESCRIPTION}`,
+		description: `Start or submit worker work. Start claims a todo or eligible in-progress item for agent_id and returns a fresh claim token, full item, effective config, pending findings and implementation/ledger diff views; the failed-review limit blocks start only. Submit requires the same agent_id and claim_token, runs validations and commits work, so a held claim still completes at the cap. empty_commit is only for an explained review fix. Claims fence stale sequential runs, not concurrent writers. Each patch preview is limited to 4 KiB; larger patches include a full-patch artifact path. ${PATH_DESCRIPTION}`,
 		parameters: WORK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {

@@ -605,10 +605,11 @@ function requireWorkerBranch(opts: ItemContext, item: LedgerItem): void {
 	if (item.branch && item.branch !== opts.branch) throw new Error(`item ${opts.id} says branch ${item.branch}, but ${opts.workspace} is on ${opts.branch}`);
 }
 
-function requireWorkerEligibility(ledger: Ledger, item: LedgerItem): void {
+/** The limit governs starting an attempt only. A claim already held may still finish, so submit does not call this. */
+function requireWorkerStartEligibility(ledger: Ledger, item: LedgerItem): void {
 	const config = effectiveReviewConfig(ledger, item);
 	if (config.max_failed_reviews > 0 && (item.failed_reviews ?? 0) >= config.max_failed_reviews) {
-		throw new Error(`item ${item.id} reached the failed-review limit ${config.max_failed_reviews}; change the limit or resolve the item before starting or submitting`);
+		throw new Error(`item ${item.id} reached the failed-review limit ${config.max_failed_reviews}; change the limit or resolve the item before starting another attempt`);
 	}
 }
 
@@ -625,7 +626,7 @@ export async function startWork(opts: ItemContext & { agentId: string; artifactD
 	if (!opts.agentId?.trim()) throw new Error("agent_id: must be a non-empty string");
 	if (item.status !== "todo" && item.status !== "in-progress") throw new Error(`item ${item.id} is ${item.status}; worker start requires todo or in-progress`);
 	if (item.assignment) throw new Error(`item ${item.id} is already assigned to ${item.assignment.agent_id}`);
-	requireWorkerEligibility(opts.ledger, item);
+	requireWorkerStartEligibility(opts.ledger, item);
 	requireWorkerBranch(opts, item);
 	const head = (await gitResult(opts, ["rev-parse", "HEAD"])).trim();
 	if (!head) throw new Error("cannot read HEAD");
@@ -663,7 +664,6 @@ export async function submitWork(opts: ItemContext & {
 	if (!opts.agentId?.trim() || !opts.claimToken?.trim() || !item.assignment || item.assignment.role !== "worker" || item.assignment.agent_id !== opts.agentId || item.assignment.claim_token !== opts.claimToken) throw new Error(`item ${item.id} has no matching worker claim (agent_id and claim_token required)`);
 	if (!opts.commitMessage?.trim() || !opts.summary?.trim()) throw new Error("commit_message and summary must be non-empty strings");
 	if (opts.emptyCommit && (item.failed_reviews ?? 0) === 0) throw new Error("an empty commit is allowed only for a review-fix iteration");
-	requireWorkerEligibility(opts.ledger, item);
 	requireWorkerBranch(opts, item);
 	if (!item.commits.start || !item.commits.expected) throw new Error(`item ${item.id} lacks the feature base or expected HEAD`);
 	const checkHead = async () => {

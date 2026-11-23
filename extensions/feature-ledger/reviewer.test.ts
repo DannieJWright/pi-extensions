@@ -96,7 +96,10 @@ test("ledger_review schema, claims, validation and finding history through retri
 		const failedAgain = await call(api, "ledger_review", dir, { ...secondArgs, close_findings: ids.slice(0, 3) });
 		assert.ok(!failedAgain.isError, failedAgain.content[0].text);
 		assert.equal(JSON.parse(failedAgain.content[0].text).failed_reviews, 2);
-		assert.match((await call(api, "ledger_work", dir, { action: "start", id: "alpha", agent_id: "fixer", path })).content[0].text, /failed-review limit 2/);
+		const cappedFixerStart = (await call(api, "ledger_work", dir, { action: "start", id: "alpha", agent_id: "fixer", path })).content[0].text;
+		assert.match(cappedFixerStart, /failed-review limit 2/);
+		// The cap governs starting another attempt only, so the error names it as a start refusal.
+		assert.match(cappedFixerStart, /before starting another attempt/);
 		await change(path, item => { item.max_failed_reviews = 3; });
 		await fix(api, dir, path);
 		const third = await reviewStart(api, dir, path);
