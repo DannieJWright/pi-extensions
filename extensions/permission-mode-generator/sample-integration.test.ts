@@ -39,6 +39,8 @@ function compareFixture(actual: unknown, expected: unknown, sourceFile: string, 
   const here = keyPath || "(root)";
   if (isMarker(expected)) {
     assert.ok(expected["$reference"] !== undefined, `${here}: marker does not record the reference as authored`);
+    // A marked key path present in the fixture but absent from the generated output has nothing to hash; name the key path and the recorded reference instead of hashing undefined.
+    if (actual === undefined) assert.fail(`${here}: the generated output has no value at this key path; the fixture records ${JSON.stringify(expected["$reference"])}.`);
     checkReadScope(expected["$reference"], sourceFile, here, homeRoot);
     // A stored digest must match what the recorded reference resolves to through the resolver, so a changed reference list fails too.
     const fromReference = digestOf(resolveFiles(expected["$reference"], sourceFile, here, homeRoot));
@@ -104,6 +106,10 @@ test("markers are driven by the fixture and fail on a wrong digest or a changed 
     // The stored digest can still be right while the reference list has changed to another file.
     assert.throws(() => compareFixture(resolvedFirst, { "$digest": digestOf(resolvedFirst), "$reference": second }, src, home, keyPath), /digest mismatch/);
     assert.throws(() => compareFixture(resolvedFirst, { "$digest": digestOf(resolvedFirst) }, src, home, keyPath), /does not record the reference/);
+    // A marker whose key path is absent from the generated output fails naming the key path and the recorded reference instead of hashing undefined.
+    let absentFailure = "";
+    try { compareFixture(undefined, marker, src, home, keyPath); } catch (error) { absentFailure = (error as Error).message; }
+    for (const part of [keyPath, JSON.stringify(first)]) assert.ok(absentFailure.includes(part), `the absence failure must name ${part}: ${absentFailure}`);
     // A recorded reference outside both roots fails naming the key path and the reference before any comparison happens.
     for (const raw of ["/outside-this-run/outside.md", "../outside-the-stand-in-root.md"]) {
       let scopeFailure = "";

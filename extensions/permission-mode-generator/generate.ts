@@ -50,9 +50,9 @@ function trimBoundary(text: string): string { return text.replace(/\s+$/, ""); }
 
 /** Remove a frontmatter block delimited by --- lines at offset 0; its fields are not interpreted. */
 function stripFrontmatter(text: string, keyPath: string, file: string): string {
-	// Keep line terminators so the remaining content is returned byte for byte.
+	// Keep line terminators so the remaining content is returned byte for byte. A closing delimiter must be a complete line; the opening one counts even when the file ends at it with no trailing newline, so such a file reports an unclosed block instead of returning its own content verbatim.
 	const lines = text.match(/[^\r\n]*(?:\r?\n|$)/g) ?? [];
-	if (lines[0] !== "---\n" && lines[0] !== "---\r\n") return text;
+	if ((lines[0] ?? "").replace(/\r?\n$/, "") !== "---") return text;
 	for (let i = 1; i < lines.length; i++) if (lines[i] === "---\n" || lines[i] === "---\r\n") return lines.slice(i + 1).join("");
 	throw new Error(`${keyPath}: frontmatter opened in ${file} has no closing delimiter`);
 }

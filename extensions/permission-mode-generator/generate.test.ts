@@ -103,13 +103,18 @@ test("read scope fails naming the key path and the reference outside the reposit
 
 test("stripFrontmatter removes a leading --- block only when the entry asks for it", (t) => {
 	const dir = temporaryDirectory(t);
-	const home = standInHomeRoot(temporaryDirectory(t), { "with-frontmatter.md": "---\ntitle: illustrative stand-in\n---\nbody line\n", "unclosed.md": "---\ntitle: illustrative stand-in\nbody line\n" });
+	// Unclosed blocks are reported naming key path and file: no second delimiter, only the opening delimiter at end of file (which would otherwise be returned verbatim), and a final --- line with no trailing newline.
+	const home = standInHomeRoot(dir, { "with-frontmatter.md": "---\ntitle: illustrative stand-in\n---\nbody line\n", "spaced-after-block.md": "---\ntitle: illustrative stand-in\n---\nbody line   \ntail", "unclosed.md": "---\ntitle: illustrative stand-in\nbody line\n", "opens-at-end-of-file.md": "---", "ends-without-newline.md": "---\ntitle: illustrative stand-in\nbody line\n---" });
 	const sourceFile = path.join(home, "src.jsonc");
 	const value = { files: [{ path: "with-frontmatter.md" }, { path: "with-frontmatter.md", stripFrontmatter: true }] };
 	assert.equal((resolveWithinScope({ permissionModes: { modes: { one: { systemPrompt: value } } } }, sourceFile, "", home) as JsonObject).permissionModes.modes.one.systemPrompt,
 		"---\ntitle: illustrative stand-in\n---\nbody line\n\nbody line");
-	assert.throws(() => resolveWithinScope({ subagents: { agents: { worker: { systemPrompt: { files: [{ path: "unclosed.md", stripFrontmatter: true }] } } } } }, sourceFile, "", home),
-		new RegExp(`subagents\\.agents\\.worker\\.systemPrompt\\.files\\[0\\]: frontmatter opened in .*unclosed\\.md has no closing delimiter`));
+	// Content after a closed block is returned byte for byte, including the spacing inside it.
+	assert.equal((resolveWithinScope({ subagents: { agents: { worker: { systemPrompt: { files: [{ path: "spaced-after-block.md", stripFrontmatter: true }] } } } } }, sourceFile, "", home) as JsonObject).subagents.agents.worker.systemPrompt, "body line   \ntail");
+	for (const name of ["unclosed.md", "opens-at-end-of-file.md", "ends-without-newline.md"]) {
+		assert.throws(() => resolveWithinScope({ subagents: { agents: { worker: { systemPrompt: { files: [{ path: name, stripFrontmatter: true }] } } } } }, sourceFile, "", home),
+			new RegExp(`subagents\\.agents\\.worker\\.systemPrompt\\.files\\[0\\]: frontmatter opened in .*${name} has no closing delimiter`));
+	}
 });
 
 test("missing prompt references name their key path and resolved path", (t) => {
@@ -128,6 +133,8 @@ test("empty or malformed prompt values report the key path", (t) => {
 	assert.throws(() => resolveWithinScope(prompt({ files: [] }), sourceFile, "", home), /systemPrompt: must contain at least one file or text/);
 	assert.throws(() => resolveWithinScope(prompt({ files: ["prompts/x.md"], extra: true }), sourceFile, "", home), /systemPrompt: prompt reference has unsupported fields: extra/);
 	assert.throws(() => resolveWithinScope(prompt({ files: [{ path: "prompts/x.md", other: 1 }] }), sourceFile, "", home), /systemPrompt\.files\[0\]: unsupported fields: other/);
+	// An entry object that carries only the flag, with no path, still reports its key path.
+	assert.throws(() => resolveWithinScope(prompt({ files: [{ stripFrontmatter: true }] }), sourceFile, "", home), /permissionModes\.modes\.one\.systemPrompt\.files\[0\]: path must be a path string/);
 	// A single-key $file object is not subject to unknown-key rejection.
 	assert.equal((resolveWithinScope(prompt({ $file: "prompts/x.md" }), sourceFile, "", home) as JsonObject).permissionModes.modes.one.systemPrompt, "kept verbatim\n");
 });
