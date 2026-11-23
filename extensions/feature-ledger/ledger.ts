@@ -381,8 +381,8 @@ function list(value: unknown, field: string, problems: string[]): string[] {
 }
 
 // The check: parseLedger problems plus duplicate id detection. One flat problem list,
-// no severity levels. parseLedger itself is unchanged: read tools do not error on
-// duplicate ids, so a duplicate is a check-time finding only.
+// no severity levels. Every tool call runs through this check before any work, reads
+// included, so every reader reports the same lines for the same file, duplicates included.
 // The location line is added by the caller (the CLI or the tool), not here, so both
 // share this core. Problem lines name the position in the file, taken from the indexes
 // parseLedger returns, so a skipped item does not shift the numbering.
@@ -404,7 +404,8 @@ export function checkParsed(parsed: { ledger: Ledger | null; problems: string[];
 	return problems;
 }
 
-export type LedgerState = "todo" | "in-progress" | "done";
+// The tool-owned states are the model statuses without review; see STATUSES above.
+export type LedgerState = Exclude<ItemStatus, "review">;
 
 // Orchestration reads are read-only. Order is file order; nothing here writes the ledger.
 // branch is only present when the file has it. It is an author-written label, not a git read.

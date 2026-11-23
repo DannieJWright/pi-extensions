@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compile } from "@earendil-works/pi-schema";
-import { parseLedger, PATCH_BUDGET_BYTES, serializeLedger, submitReview, type LedgerItem } from "./ledger.ts";
+import { FINDING_SEVERITIES, parseLedger, PATCH_BUDGET_BYTES, serializeLedger, submitReview, type LedgerItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -82,7 +82,7 @@ test("ledger_review schema, claims, validation and finding history through retri
 			assert.equal(kept.assignment?.agent_id, "alpha-0-reviewer");
 			assert.equal(kept.assignment?.claim_token, brief.item.assignment.claim_token);
 		}
-		const first = await call(api, "ledger_review", dir, { ...args, new_findings: ["blocker", "major", "minor", "nit"].map(finding) });
+		const first = await call(api, "ledger_review", dir, { ...args, new_findings: FINDING_SEVERITIES.map(finding) });
 		assert.ok(!first.isError, first.content[0].text);
 		const failed = JSON.parse(first.content[0].text);
 		assert.equal(failed.status, "in-progress"); assert.equal(failed.failed_reviews, 1);
@@ -120,7 +120,7 @@ test("ledger_review schema, claims, validation and finding history through retri
 });
 
 test("ledger_review empty pass and each severity independently fail", async () => {
-	for (const severity of [null, "blocker", "major", "minor", "nit"]) {
+	for (const severity of [null, ...FINDING_SEVERITIES]) {
 		const { dir, path, cleanup } = await setupRepo(fixture);
 		try {
 			const api = createFakeApi(); featureLedger(api); await initialWork(api, dir, path);
