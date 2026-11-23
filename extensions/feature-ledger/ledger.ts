@@ -156,6 +156,13 @@ export function missingInputWarning(at: string, path: string): string {
 	return `${at} names a path that does not exist yet (${path})`;
 }
 
+// The allowed values named in a problem line come from the same array that defines the type, so adding a
+// value to a vocabulary cannot leave an older message behind. Every path reaches this through parseLedger,
+// so the wording matches for the same file.
+export function allowedValues(values: readonly string[]): string {
+	return values.join(", ");
+}
+
 // A field that must be a plain value is shown as it was written, so a flow sequence such as
 // [sub-repo-1] reads as a list and not as its joined text.
 export function badValueProblem(at: string, value: unknown): string {
@@ -264,7 +271,7 @@ function validateReviewFields(ledger: Record<string, unknown>, problems: string[
 				for (const key of ["id", "agent_id", "claim_token"]) {
 					if (typeof assignment[key] !== "string" || assignment[key].trim() === "") problems.push(`${at(`assignment.${key}`)} must be a non-empty string`);
 				}
-				if (!ASSIGNMENT_ROLES.includes(assignment.role as Assignment["role"])) problems.push(`${at("assignment.role")} must be worker or reviewer`);
+				if (!ASSIGNMENT_ROLES.includes(assignment.role as Assignment["role"])) problems.push(`${at("assignment.role")} must be ${allowedValues(ASSIGNMENT_ROLES)}`);
 				else {
 					if (assignment.id !== `${raw.id}-${iteration}-${assignment.role}`) problems.push(`${at("assignment.id")} does not match the feature, iteration, and role`);
 					if ((assignment.role === "worker" && raw.status !== "in-progress") || (assignment.role === "reviewer" && raw.status !== "review")) problems.push(`${at("assignment.role")} is incompatible with status ${String(raw.status)}`);
@@ -286,8 +293,8 @@ function validateReviewFields(ledger: Record<string, unknown>, problems: string[
 						if (ids.has(finding.id)) problems.push(`${at(`${location}.id`)} is a duplicate`);
 						ids.add(finding.id);
 					}
-					if (!FINDING_STATUSES.includes(finding.status as Finding["status"])) problems.push(`${at(`${location}.status`)} must be open or closed`);
-					if (!FINDING_SEVERITIES.includes(finding.severity as Finding["severity"])) problems.push(`${at(`${location}.severity`)} must be blocker, major, minor, or nit`);
+					if (!FINDING_STATUSES.includes(finding.status as Finding["status"])) problems.push(`${at(`${location}.status`)} must be ${allowedValues(FINDING_STATUSES)}`);
+					if (!FINDING_SEVERITIES.includes(finding.severity as Finding["severity"])) problems.push(`${at(`${location}.severity`)} must be ${allowedValues(FINDING_SEVERITIES)}`);
 					if (!nonnegativeInteger(finding.first_found_iteration)) problems.push(`${at(`${location}.first_found_iteration`)} must be a nonnegative integer`);
 					else if (finding.first_found_iteration > iteration) problems.push(`${at(`${location}.first_found_iteration`)} exceeds failed_reviews`);
 					if (!Array.isArray(finding.required_checks) || finding.required_checks.some((check: unknown) => typeof check !== "string" || check.trim() === "")) problems.push(`${at(`${location}.required_checks`)} must be a list of non-empty strings`);
@@ -317,7 +324,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 		// One index per parsed item, so indexes[i] is the file position of features[i].
 		// An item skipped here is not in the parsed list, so it must not be in indexes.
 		indexes.push(n);
-		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${STATUSES.join(", ")}, got ${String(item.status)}`);
+		if (!STATUSES.includes(item.status as ItemStatus)) problems.push(`features[${n}] (${item.id}): status must be ${allowedValues(STATUSES)}, got ${String(item.status)}`);
 		if (typeof item.short_goal !== "string" || item.short_goal === "") problems.push(`features[${n}] (${item.id}): missing short_goal`);
 		const at = (field: string) => problemTarget(n, item.id, field);
 		// A workspace or branch that is not a plain value is reported, not dropped: a typo would otherwise

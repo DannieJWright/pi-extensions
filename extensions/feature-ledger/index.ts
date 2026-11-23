@@ -9,12 +9,22 @@ import { access, readFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, effectiveReviewConfig, findItem, orchestrateList, orchestrateNext, releaseClaim, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
+import { allowedValues, checkParsed, effectiveReviewConfig, FINDING_SEVERITIES, findItem, orchestrateList, orchestrateNext, releaseClaim, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
 const PATH_DESCRIPTION = "Ledger file. Without it the path is resolved in order: PI_LEDGER_PATH, then the first line of plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted; a relative path resolves against the session root.";
 const PATH_PROPERTY = { type: "string", description: PATH_DESCRIPTION };
+
+// Action names belong to the tools, not to the model, so they stay here: one list per tool, read by both
+// the schema and the guard at call time, so an action is named once per tool. Vocabularies the model owns,
+// such as finding severity below, are referenced through the exported arrays in ledger.ts rather than copied.
+const ORCHESTRATE_ACTIONS = ["list", "next", "release"] as const;
+const WORK_ACTIONS = ["start", "submit"] as const;
+const REVIEW_ACTIONS = ["start", "submit"] as const;
+const [ORCHESTRATE_LIST, ORCHESTRATE_NEXT, ORCHESTRATE_RELEASE] = ORCHESTRATE_ACTIONS;
+const [WORK_START, WORK_SUBMIT] = WORK_ACTIONS;
+const [REVIEW_START, REVIEW_SUBMIT] = REVIEW_ACTIONS;
 
 const GET_PARAMS = {
 	type: "object", properties: { id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
@@ -23,8 +33,8 @@ const GET_PARAMS = {
 
 const ORCHESTRATE_PARAMS = {
 	anyOf: [
-		...(["list", "next"] as const).map((action) => ({ type: "object", properties: { action: { const: action }, path: PATH_PROPERTY }, required: ["action"], additionalProperties: false })),
-		{ type: "object", properties: { action: { const: "release" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, path: PATH_PROPERTY }, required: ["action", "id", "agent_id", "claim_token"], additionalProperties: false },
+		...[ORCHESTRATE_LIST, ORCHESTRATE_NEXT].map((action) => ({ type: "object", properties: { action: { const: action }, path: PATH_PROPERTY }, required: ["action"], additionalProperties: false })),
+		{ type: "object", properties: { action: { const: ORCHESTRATE_RELEASE }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, path: PATH_PROPERTY }, required: ["action", "id", "agent_id", "claim_token"], additionalProperties: false },
 	],
 } as unknown as TSchema;
 
@@ -39,12 +49,12 @@ const WORK_PARAMS = {
 	anyOf: [
 		{
 			type: "object",
-			properties: { action: { const: "start" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
+			properties: { action: { const: WORK_START }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
 			required: ["action", "id", "agent_id"], additionalProperties: false,
 		},
 		{
 			type: "object",
-			properties: { action: { const: "submit" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, summary: { type: "string", minLength: 1 }, limitations: { type: "array", items: { type: "string" } }, empty_commit: { type: "boolean" }, path: PATH_PROPERTY },
+			properties: { action: { const: WORK_SUBMIT }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, summary: { type: "string", minLength: 1 }, limitations: { type: "array", items: { type: "string" } }, empty_commit: { type: "boolean" }, path: PATH_PROPERTY },
 			required: ["action", "id", "agent_id", "claim_token", "commit_message", "summary"], additionalProperties: false,
 		},
 	],
@@ -54,15 +64,17 @@ const REVIEW_PARAMS = {
 	anyOf: [
 		{
 			type: "object",
-			properties: { action: { const: "start" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
+			properties: { action: { const: REVIEW_START }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
 			required: ["action", "id", "agent_id"], additionalProperties: false,
 		},
 		{
 			type: "object",
 			properties: {
-				action: { const: "submit" }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, path: PATH_PROPERTY,
+				action: { const: REVIEW_SUBMIT }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, path: PATH_PROPERTY,
 				close_findings: { type: "array", items: { type: "string", minLength: 1 } },
-				new_findings: { type: "array", items: { type: "object", properties: { details: { type: "string", minLength: 1 }, rationale: { type: "string", minLength: 1 }, severity: { enum: ["blocker", "major", "minor", "nit"] }, required_checks: { type: "array", items: { type: "string", minLength: 1 } } }, required: ["details", "rationale", "severity", "required_checks"], additionalProperties: false } },
+				// The allowed severities are the model's list, so a schema cannot accept a value the shared gate
+				// would reject, and the two lists cannot drift apart.
+				new_findings: { type: "array", items: { type: "object", properties: { details: { type: "string", minLength: 1 }, rationale: { type: "string", minLength: 1 }, severity: { enum: [...FINDING_SEVERITIES] }, required_checks: { type: "array", items: { type: "string", minLength: 1 } } }, required: ["details", "rationale", "severity", "required_checks"], additionalProperties: false } },
 			},
 			required: ["action", "id", "agent_id", "claim_token", "commit_message"], additionalProperties: false,
 		},
@@ -178,13 +190,13 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: ORCHESTRATE_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				if (!["list", "next", "release"].includes(params.action)) throw new Error("action must be list, next, or release");
-				const release = params.action === "release";
+				if (!ORCHESTRATE_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(ORCHESTRATE_ACTIONS)}`);
+				const release = params.action === ORCHESTRATE_RELEASE;
 				requireArguments(params, release ? ["id", "agent_id", "claim_token"] : [], release ? ["action", "id", "agent_id", "claim_token", "path"] : ["action", "path"]);
 				const gate = await validateLedger(ctx, params.path);
 				const ledger = requireValid(gate);
 				const result = release ? { item: await releaseClaim(ledger, gate.path, params.id, params.agent_id, params.claim_token) }
-					: params.action === "list" ? orchestrateList(ledger) : orchestrateNext(ledger);
+					: params.action === ORCHESTRATE_LIST ? orchestrateList(ledger) : orchestrateNext(ledger);
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_orchestrate: ${message(error)}` }], details: {}, isError: true };
@@ -250,14 +262,14 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: WORK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				if (params.action !== "start" && params.action !== "submit") throw new Error("action must be start or submit");
-				const required = params.action === "start" ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message", "summary"];
-				requireArguments(params, required, params.action === "start" ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "commit_message", "summary", "limitations", "empty_commit", "path"]);
+				if (!WORK_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(WORK_ACTIONS)}`);
+				const required = params.action === WORK_START ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message", "summary"];
+				requireArguments(params, required, params.action === WORK_START ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "commit_message", "summary", "limitations", "empty_commit", "path"]);
 				const gate = await validateLedger(ctx, params.path);
 				const ledger = requireValid(gate);
 				const item = findItem(ledger, params.id, gate.path);
 				const opts = await itemContext(ctx, gate.path, ledger, item);
-				if (params.action === "start") {
+				if (params.action === WORK_START) {
 					const result = await startWork({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined });
 					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 				}
@@ -278,14 +290,14 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: REVIEW_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				if (params.action !== "start" && params.action !== "submit") throw new Error("action must be start or submit");
-				const required = params.action === "start" ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message"];
-				requireArguments(params, required, params.action === "start" ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "commit_message", "close_findings", "new_findings", "path"]);
+				if (!REVIEW_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(REVIEW_ACTIONS)}`);
+				const required = params.action === REVIEW_START ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message"];
+				requireArguments(params, required, params.action === REVIEW_START ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "commit_message", "close_findings", "new_findings", "path"]);
 				const gate = await validateLedger(ctx, params.path);
 				const ledger = requireValid(gate);
 				const item = findItem(ledger, params.id, gate.path);
 				const opts = await itemContext(ctx, gate.path, ledger, item);
-				const result = params.action === "start"
+				const result = params.action === REVIEW_START
 					? await startReview({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined })
 					: await submitReview({ ...opts, agentId: params.agent_id, claimToken: params.claim_token, commitMessage: params.commit_message, closeFindings: params.close_findings === undefined ? [] : params.close_findings, newFindings: params.new_findings === undefined ? [] : params.new_findings });
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };

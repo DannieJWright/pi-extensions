@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compile } from "@earendil-works/pi-schema";
 import featureLedger from "./index.ts";
-import { checkLedger, parseLedger, serializeLedger } from "./ledger.ts";
+import { allowedValues, ASSIGNMENT_ROLES, checkLedger, FINDING_SEVERITIES, FINDING_STATUSES, parseLedger, serializeLedger, STATUSES } from "./ledger.ts";
 import { createFakeApi, createFakeContext, setupRepo } from "./test-harness.ts";
 
 const fixture = `ledger:
@@ -209,6 +209,13 @@ test("complete review loop crosses orchestration and role tools through selectiv
   } finally { await cleanup(); }
 });
 
+// One minimal valid argument set per action, for the positive half of the same check.
+const VALID_ACTION_ARGS = {
+  ledger_orchestrate: [{ action: "list" }, { action: "next" }, { action: "release", id: "x", agent_id: "a", claim_token: "t" }],
+  ledger_work: [{ action: "start", id: "x", agent_id: "a" }, { action: "submit", id: "x", agent_id: "a", claim_token: "t", commit_message: "Work x", summary: "s" }],
+  ledger_review: [{ action: "start", id: "x", agent_id: "a" }, { action: "submit", id: "x", agent_id: "a", claim_token: "t", commit_message: "Review x round 0" }],
+} as const;
+
 test("action schemas and tool calls reject missing, wrong-action, and malformed arguments", async () => {
   const { dir, path, cleanup } = await setupRepo(fixture);
   try {
@@ -220,6 +227,17 @@ test("action schemas and tool calls reject missing, wrong-action, and malformed 
       assert.equal(schema.check({ action: "wrong" }), false, name);
       assert.equal(schema.check({ action: name === "ledger_orchestrate" ? "release" : "submit", id: "x", agent_id: "agent" }), false, name);
     }
+    // Each action a tool declares is accepted with its own arguments; nothing outside that list is.
+    for (const [name, actions] of Object.entries(VALID_ACTION_ARGS)) {
+      const schema = compile(api.tools[name].parameters);
+      for (const params of actions) assert.ok(schema.check(params), `${name} ${params.action}`);
+    }
+    // The review schema takes its severities from FINDING_SEVERITIES, so every value the model defines is
+    // accepted and nothing outside it is.
+    const reviewSchema = compile(api.tools.ledger_review.parameters);
+    const findingArgs = (severity: string) => ({ action: "submit", id: "x", agent_id: "a", claim_token: "t", commit_message: "Review x round 0", new_findings: [{ details: "issue", rationale: "why", severity, required_checks: ["check"] }] });
+    for (const severity of FINDING_SEVERITIES) assert.ok(reviewSchema.check(findingArgs(severity)), severity);
+    assert.ok(!reviewSchema.check(findingArgs("critical")), "a severity outside the model list is rejected");
     assert.equal(compile(api.tools.ledger_get_feature.parameters).check({}), false);
     for (const [name, params] of [
       ["ledger_get_feature", {}], ["ledger_orchestrate", { action: "release", id: "x" }],
@@ -228,4 +246,33 @@ test("action schemas and tool calls reject missing, wrong-action, and malformed 
       ["ledger_review", { action: "submit", id: "x", agent_id: "a" }],
     ] as const) assert.ok((await call(api, dir, name, { ...params, path })).isError, name);
   } finally { await cleanup(); }
+});
+
+// The problem lines name the values from the arrays that define them, so a tool cannot reject a value the
+// shared gate accepts or report a different vocabulary for the same file.
+test("problem lines list the allowed values from the model constants", () => {
+  const doc = [
+    "ledger:",
+    "  features:",
+    "    - id: alpha",
+    "      status: wrong",
+    "      short_goal: A",
+    "      goal: A",
+    "      assignment: { agent_id: a, role: wrong }",
+    "      findings:",
+    "        - id: f1",
+    "          status: wrong",
+    "          details: d",
+    "          rationale: r",
+    "          severity: critical",
+    "          first_found_iteration: 0",
+    "          required_checks: [c]",
+  ].join("\n");
+  const problems = checkLedger(doc);
+  for (const expected of [
+    `features[0] (alpha): status must be ${allowedValues(STATUSES)}, got wrong`,
+    `features[0] (alpha): assignment.role must be ${allowedValues(ASSIGNMENT_ROLES)}`,
+    `features[0] (alpha): findings[0].status must be ${allowedValues(FINDING_STATUSES)}`,
+    `features[0] (alpha): findings[0].severity must be ${allowedValues(FINDING_SEVERITIES)}`,
+  ]) assert.ok(problems.includes(expected), expected);
 });
