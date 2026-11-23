@@ -1,6 +1,6 @@
 # Migrate to the unified permissions source
 
-The source moved from `~/.pi/agent/permission-mode/permission-mode.src.jsonc` to `~/.pi/agent/permissions.src.jsonc`. It now contains `permissionModes` and an optional `subagents`. The generator owns the entire `settings.json` → `subagents` value when that section is present; it retains all other settings keys. The new settings baseline is `~/.pi/agent/.subagents.last-generated.json`; the modes baseline remains in the permission-mode directory. The old CLI `--out` and `--state` flags are now `--modes-out` and `--modes-state`; `--settings` and `--subagents-state` select the new files. `subagents.config` is not yet supported.
+The source moved from `~/.pi/agent/permission-mode/permission-mode.src.jsonc` to `~/.pi/agent/permissions.src.jsonc`. It now contains `permissionModes` and an optional `subagents`. The generator owns the entire `settings.json` → `subagents` value when that section is present; it retains all other settings keys. The new settings baseline is `~/.pi/agent/.subagents.last-generated.json`; the modes baseline remains in the permission-mode directory. The old CLI `--out` and `--state` flags are now `--modes-out` and `--modes-state`; `--settings` and `--subagents-state` select the new files. Migration does not create `subagents.config` entries; when you configure `subagents.config` yourself, the generator still owns those config keys.
 
 ## Automatic migration
 

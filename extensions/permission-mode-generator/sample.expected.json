@@ -31,7 +31,7 @@
           "/var/folders/*": "allow",
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
-          "/tmp/acp-delegate/*": "allow",
+          "<temp>/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
           "~/.pi/agent/install/releases/*": "allow"
         },
@@ -108,9 +108,9 @@
           "~/.agents/skills",
           "~/.pi/agent/skills",
           "~/.pi/agent/npm/node_modules",
-          "/tmp/acp-delegate",
+          "<temp>/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just",
+          "<runtime-dir>/just",
           "~/.pi/agent/install/releases"
         ],
         "network": {
@@ -152,7 +152,7 @@
           "/var/folders/*": "allow",
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
-          "/tmp/acp-delegate/*": "allow",
+          "<temp>/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
           "~/.pi/agent/install/releases/*": "allow"
         },
@@ -243,9 +243,9 @@
           "~/.agents/skills",
           "~/.pi/agent/skills",
           "~/.pi/agent/npm/node_modules",
-          "/tmp/acp-delegate",
+          "<temp>/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just",
+          "<runtime-dir>/just",
           "~/.pi/agent/install/releases"
         ],
         "network": {
@@ -299,7 +299,7 @@
           "/var/folders/*": "allow",
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
-          "/tmp/acp-delegate/*": "allow",
+          "<temp>/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
           "~/.pi/agent/install/releases/*": "allow"
         },
@@ -378,9 +378,9 @@
           "~/.agents/skills",
           "~/.pi/agent/skills",
           "~/.pi/agent/npm/node_modules",
-          "/tmp/acp-delegate",
+          "<temp>/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just",
+          "<runtime-dir>/just",
           "~/.pi/agent/install/releases"
         ],
         "network": {
@@ -426,7 +426,7 @@
           "/var/folders/*": "allow",
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
-          "/tmp/acp-delegate/*": "allow",
+          "<temp>/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
           "~/.pi/agent/install/releases/*": "allow"
         },
@@ -517,9 +517,9 @@
           "~/.agents/skills",
           "~/.pi/agent/skills",
           "~/.pi/agent/npm/node_modules",
-          "/tmp/acp-delegate",
+          "<temp>/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just",
+          "<runtime-dir>/just",
           "~/.pi/agent/install/releases"
         ],
         "network": {
@@ -573,7 +573,7 @@
           "/var/folders/*": "allow",
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
-          "/tmp/acp-delegate/*": "allow",
+          "<temp>/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
           "~/.pi/agent/install/releases/*": "allow"
         },
@@ -652,9 +652,9 @@
           "~/.agents/skills",
           "~/.pi/agent/skills",
           "~/.pi/agent/npm/node_modules",
-          "/tmp/acp-delegate",
+          "<temp>/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just",
+          "<runtime-dir>/just",
           "~/.pi/agent/install/releases"
         ],
         "network": {
@@ -700,7 +700,7 @@
           "/var/folders/*": "allow",
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
-          "/tmp/acp-delegate/*": "allow",
+          "<temp>/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
           "~/.pi/agent/install/releases/*": "allow"
         },
@@ -779,9 +779,9 @@
           "~/.agents/skills",
           "~/.pi/agent/skills",
           "~/.pi/agent/npm/node_modules",
-          "/tmp/acp-delegate",
+          "<temp>/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just",
+          "<runtime-dir>/just",
           "~/.pi/agent/install/releases"
         ],
         "network": {

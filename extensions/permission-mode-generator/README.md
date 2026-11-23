@@ -103,6 +103,7 @@ Inheritance semantics are unchanged because references are resolved before merge
   Position matters for pattern maps, where the last matching key wins, so `*` must come first.
 - `"$replace": true` in an object: replace the inherited object fully, in your own order.
 - Arrays: replace. `"key+": [...]` appends to the inherited array (deduplicated).
+  When the value under a `key+` is not an array, it behaves as plain assignment under the stripped base name.
 - `null`: delete the inherited key. A type change (string to map) replaces.
 - `extends`, `$replace`, and `key+` are stripped from the output.
 
@@ -148,7 +149,7 @@ Permissions and the sandbox change when the mode switches. The active mode's pro
 
 ## Drift
 
-The modes baseline is `~/.pi/agent/permission-mode/.last-generated.json`; `~/.pi/agent/.subagents.last-generated.json` separately records generated settings and owned config values. Each output is checked independently. A differing existing output without a baseline is not adopted; matching output is adopted by `gen`, not `check`. Move changes into the source or deliberately overwrite with `just perm gen --force`. pi-subagents `disable`, `enable`, `eject` and `reset` modify the owned subagents key. `check` never writes, but concurrent writers may produce transient drift or read errors.
+The modes baseline is `~/.pi/agent/permission-mode/.last-generated.json`; `~/.pi/agent/.subagents.last-generated.json` separately records generated settings and owned config values. Each output is checked independently. For ownership scope, `check` reports clean when none of the generator's own keys differ: under `subagents.config`, keys you add that are in neither the recorded baseline nor the generated set are never flagged, so `clean` there means no owned-key drift rather than byte equality (the owned `subagents` value itself is compared in full). A differing existing output without a baseline is not adopted; matching output is adopted by `gen`, not `check`. Move changes into the source or deliberately overwrite with `just perm gen --force`. pi-subagents `disable`, `enable`, `eject` and `reset` modify the owned subagents key. `check` never writes, but concurrent writers may produce transient drift or read errors.
 
 Numbers must survive JSON parsing and serialization without changing their decimal value. Every numeric token is checked, including values overwritten by duplicate keys; numbers inside strings and JSONC comments are not tokens. The generator rejects source numbers such as `-0`, `1e400`, `1e-400`, and `9007199254740993`, rather than producing a changed value or perpetual drift. Before `gen` (including `--force`), it also checks all active outputs and baselines, including unrelated settings and config keys; fix any reported number manually before generating. `check` retains the existing comparison semantics for output files, but rejects unsafe source numbers. Migration applies the same conservative check to the entire old source and settings file, even unrelated settings, before creating the new source. Equivalent decimal spellings such as `1.00` and `1` are accepted.
 

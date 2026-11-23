@@ -124,7 +124,6 @@ function atomicWrite(file: string, text: string, assertOwned: () => void): void 
 	const temp = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`);
 	try {
 		fs.writeFileSync(temp, text, { flag: "wx", mode });
-		fs.chmodSync(temp, mode);
 		const fd = fs.openSync(temp, "r");
 		try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 		assertOwned();
@@ -336,12 +335,13 @@ export async function run(options: RunOptions): Promise<RunResult> {
 			return { specs, configSource };
 		};
 		const process = ({ specs, configSource }: { specs: OutputSpec[]; configSource?: JsonObject }, owned: () => void): RunResult => {
-			const jobs = specs.map((spec) => () => processOutput(spec, action, !!options.force, owned));
-			if (configSource) jobs.push(() => processOutput(configOutput(configSource, subagentConfig, subagentsState, action === "gen"), action, !!options.force, owned));
-			const results = jobs.map((job) => { try { return job(); } catch (error) { return { status: "error" as const, lines: [message(error)] }; } });
+			// Each job records the section it processes so reporting keys on names rather than job order.
+			const jobs: { name: string; run: () => RunResult }[] = specs.map((spec) => ({ name: spec.name, run: () => processOutput(spec, action, !!options.force, owned) }));
+			if (configSource) jobs.push({ name: "subagents.config", run: () => processOutput(configOutput(configSource, subagentConfig, subagentsState, action === "gen"), action, !!options.force, owned) });
+			const results = jobs.map((job) => { try { return { name: job.name, ...job.run() }; } catch (error) { return { name: job.name, status: "error" as const, lines: [message(error)] }; } });
 			const status: RunStatus = results.some((x) => x.status === "error") ? "error" : results.some((x) => x.status === "drift") ? "drift" : results.some((x) => x.status === "wrote") ? "wrote" : "clean";
 			const lines = results.flatMap((x) => x.lines);
-			if (results.some((x, i) => i === 1 && x.status === "drift")) lines.push("pi-subagents disable, enable, eject and reset modify subagents; move those changes into the source or use --force.");
+			if (results.some((x) => x.name === "subagents" && x.status === "drift")) lines.push("pi-subagents disable, enable, eject and reset modify subagents; move those changes into the source or use --force.");
 			return { status, lines };
 		};
 		// Preflight serialization hazards across active inputs before changing any output.
@@ -365,7 +365,10 @@ export async function run(options: RunOptions): Promise<RunResult> {
 			}
 		};
 		if (action === "check") return process(loadSpecs(), () => {});
-		for (;;) {
+		// The retry only happens when the active lock set changes between loading and locking. A source that
+		// keeps changing sections would loop forever, so bound the retries; a single pass is unaffected.
+		const maxAttempts = 5;
+		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			const initial = loadSpecs();
 			preflight(initial);
 			const result = await withOutputLocks([...initial.specs.flatMap((spec) => [spec.out, spec.state]), ...(initial.configSource ? [subagentConfig, subagentsState] : [])], initial.specs.length === 1 ? undefined : settings, (owned) => {
@@ -377,9 +380,10 @@ export async function run(options: RunOptions): Promise<RunResult> {
 			});
 			if (result !== undefined) return result;
 		}
+		throw new Error(`the active output set changed on every attempt (${maxAttempts} attempts); check for a concurrent edit to the source or outputs`);
 	} catch (error) { return { status: "error", lines: [message(error)] }; }
 }
-export function formatResult(result: RunResult, _paths: Paths): string | null {
+export function formatResult(result: RunResult): string | null {
 	if (result.status === "clean") return null;
 	return [`permissions generator: ${result.status}`, ...result.lines, result.status === "drift" ? "Move changes into permissions.src.jsonc or run `just perm gen --force`." : ""].filter(Boolean).join("\n");
 }
@@ -410,7 +414,7 @@ async function main(): Promise<void> {
 			return;
 		}
 		const result = await run({ ...paths, action, force });
-		const report = formatResult(result, paths);
+		const report = formatResult(result);
 		if (report) process.stderr.write(`${report}\n`);
 		if (result.status === "drift") process.exitCode = 1;
 		if (result.status === "error") process.exitCode = 2;

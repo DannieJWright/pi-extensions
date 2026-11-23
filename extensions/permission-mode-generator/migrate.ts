@@ -19,6 +19,8 @@ export function settingsEqual(a: unknown, b: unknown, keyPath = "subagents"): bo
 	if (isObject(a) && isObject(b)) {
 		const keys = Object.keys(a);
 		if (keys.length !== Object.keys(b).length || keys.some((key) => !Object.hasOwn(b, key))) return false;
+		// Scope of this special case: it fires only at this exact key path, so a comparison made under
+		// config (keyPath "config") gets no model-scope handling. Harmless today because config has no modelScope.
 		if (keyPath === "subagents.modelScope.agents") {
 			const last = (value: JsonObject): string[] => {
 				const result = new Map<string, string>();
