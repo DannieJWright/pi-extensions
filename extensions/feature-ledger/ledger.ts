@@ -804,6 +804,14 @@ async function trackedLedger(opts: ItemContext): Promise<{ root: string; path: s
 	return { root, path, head: head.stdout.trim() };
 }
 
+// A generated finding id is `finding-<uuid>` and must not repeat an id already on the item. An id written
+// by hand is accepted unchanged, so the generator can be supplied for deterministic tests.
+export function nextFindingId(taken: Set<string>, generate: () => string = randomUUID): string {
+	let id: string;
+	do { id = `finding-${generate()}`; } while (taken.has(id));
+	return id;
+}
+
 export async function submitReview(opts: ItemContext & {
 	agentId: string;
 	claimToken: string;
@@ -829,8 +837,7 @@ export async function submitReview(opts: ItemContext & {
 	const iteration = item.failed_reviews ?? 0;
 	const ids = new Set(findings.map((finding) => finding.id));
 	const additions: Finding[] = opts.newFindings.map((finding) => {
-		let id: string;
-		do { id = `finding-${randomUUID()}`; } while (ids.has(id));
+		const id = nextFindingId(ids);
 		ids.add(id);
 		return { id, status: "open", ...finding, first_found_iteration: iteration };
 	});

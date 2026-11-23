@@ -33,6 +33,8 @@ Every tool validates the resolved file through one shared gate before doing any 
 
 Statuses are tool-owned: `todo` → `in-progress` → `done` without review, or → `review` with review enabled. A review with any open finding returns to `in-progress`; only a review with no open findings reaches `done`. Do not edit live ledger state by hand. Use the read tools, not a direct read of the entire ledger, except when authoring it.
 
+A finding `id` is generated as `finding-<uuid>` and cannot repeat an `id` already on the item. An `id` written by hand is accepted unchanged, so an authored slug in an example stays valid. Duplicate finding `id`s are checked per item within its own findings list.
+
 A reviewer supplies the commit message for a review submission. It is required, non-empty, and recorded unchanged so the project's commit conventions apply. Recommended form: `Review <item-id> round <iteration>` plus a short description.
 
 ## Safety and unavailable tools

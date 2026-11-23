@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { addablePaths, badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, orchestrateList, orchestrateNext, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startWork, submitWork } from "./ledger.ts";
+import { addablePaths, badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextFindingId, orchestrateList, orchestrateNext, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startReview, startWork, submitReview, submitWork } from "./ledger.ts";
 import { effectiveReviewConfig, type Finding } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
@@ -130,6 +130,67 @@ test("checker rejects invalid review configuration, finding fields, assignments,
 	assert.match(checkLedger(itemLedger(["      assignment: []"])).join("\n"), /assignment.*mapping/);
 	assert.match(checkLedger(itemLedger(["      findings: invalid"])).join("\n"), /findings.*list/);
 	assert.match(checkLedger(itemLedger([]).replace("      commits: {}", "      commits: {submissions: [123]}")).join("\n"), /commits.submissions/);
+});
+
+test("a generated finding id matches finding-<uuid> and skips an id already on the item", () => {
+	const form = /^finding-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+	assert.match(nextFindingId(new Set()), form);
+	// An authored id can happen to look like a generated one, so the generator moves past it. Submit records
+	// each id it hands out, so a later finding in the same run cannot repeat an earlier one.
+	const drawn = ["00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
+	let next = 0;
+	const draw = () => drawn[next++];
+	const taken = new Set([`finding-${drawn[0]}`]);
+	const first = nextFindingId(taken, draw);
+	taken.add(first);
+	assert.equal(first, `finding-${drawn[1]}`, "the first candidate repeated the authored id");
+	assert.equal(nextFindingId(taken, draw), `finding-${drawn[2]}`);
+});
+
+test("reviewer findings get generated ids while an authored id is kept as written", async () => {
+	const fixture = itemLedger(["      review: true"]).replace("feature-x", "{BRANCH}");
+	const { dir, branch, path, cleanup } = await setupRepo(fixture);
+	try {
+		const started = await startWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker" }));
+		await writeFile(join(dir, "work.txt"), "work\n");
+		await submitWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker", claimToken: started.item.assignment!.claim_token, commitMessage: "feat: alpha", summary: "Done.", limitations: [], logDir: dir }));
+		// An id written by hand before the review continues is accepted unchanged.
+		const authored = parseLedger(await readFile(path, "utf8")).ledger!;
+		authored.features[0].findings = [{ id: "search-result-labels-finding-1", status: "open", details: "Authored by hand.", rationale: "Kept as written.", severity: "minor", first_found_iteration: 0, required_checks: [] }];
+		await writeFile(path, serializeLedger(authored));
+		const reviewed = await startReview(itemOpts(dir, path, "alpha", { branch, agentId: "reviewer" }));
+		const result = await submitReview(itemOpts(dir, path, "alpha", { branch, agentId: "reviewer", claimToken: reviewed.item.assignment!.claim_token, commitMessage: "Review alpha round 0", closeFindings: [], newFindings: [{ details: "New finding.", rationale: "Because.", severity: "nit", required_checks: [] }] }));
+		assert.match(result.open_findings[1].id, /^finding-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		// The file keeps both forms: the authored slug verbatim and the generated id in its own form.
+		const reread = parseLedger(await readFile(path, "utf8")).ledger!;
+		assert.deepEqual(reread.features[0].findings!.map((finding) => finding.id), ["search-result-labels-finding-1", result.open_findings[1].id]);
+	} finally { await cleanup(); }
+});
+
+test("finding ids are checked for duplicates per item within its own findings list", () => {
+	const finding = (indent: string, id: string) => [
+		`${indent}- id: ${id}`, `${indent}  status: open`, `${indent}  details: Detail`, `${indent}  rationale: Reason`,
+		`${indent}  severity: minor`, `${indent}  first_found_iteration: 0`, `${indent}  required_checks: []`,
+	].join("\n");
+	// In-progress so an open finding is allowed; only the duplicate is reported.
+	const sameItem = itemLedger(["      findings:", finding("        ", "hand-authored-id"), finding("        ", "hand-authored-id")]).replace("status: todo", "status: in-progress");
+	assert.deepEqual(checkLedger(sameItem), ["features[0] (alpha): findings[1].id is a duplicate"]);
+	// The same id on two different items is not a duplicate: the check is scoped to one findings list.
+	const acrossItems = [
+		"ledger:",
+		"  features:",
+		"    - id: alpha",
+		"      status: in-progress",
+		"      short_goal: First item.",
+		"      findings:",
+		finding("        ", "shared-id"),
+		"    - id: beta",
+		"      status: in-progress",
+		"      short_goal: Second item.",
+		"      findings:",
+		finding("        ", "shared-id"),
+	].join("\n");
+	assert.deepEqual(checkLedger(acrossItems), []);
 });
 
 test("role writes reject invalid review data and leave the ledger unchanged", async () => {
