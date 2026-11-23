@@ -480,6 +480,55 @@ export function nextItem(ledger: Ledger): LedgerNextResult {
 	};
 }
 
+// Claims block new todo work but not other eligible retries.
+export function orchestrateList(ledger: Ledger) {
+	return {
+		...(ledger.branch ? { branch: ledger.branch } : {}),
+		items: ledger.features.map((item) => ({
+			id: item.id, status: item.status, short_goal: requireShortGoal(item),
+			workspace: itemWorkspace(ledger, item), commits: item.commits,
+			assignment: item.assignment ?? null,
+			failed_reviews: item.failed_reviews ?? 0,
+			config: effectiveReviewConfig(ledger, item),
+			capped: isReviewCapped(ledger, item),
+		})),
+	};
+}
+
+function isReviewCapped(ledger: Ledger, item: LedgerItem): boolean {
+	const { max_failed_reviews } = effectiveReviewConfig(ledger, item);
+	return item.status === "in-progress" && max_failed_reviews > 0 && (item.failed_reviews ?? 0) >= max_failed_reviews;
+}
+
+export function orchestrateNext(ledger: Ledger) {
+	const { items } = orchestrateList(ledger);
+	const assigned = items.filter((item) => item.assignment !== null);
+	const capped = items.filter((item) => item.capped);
+	const inFlight = items.some((item) => item.status === "review" || item.status === "in-progress" || item.assignment !== null);
+	const next = items.find((item) => item.status === "review" && !item.assignment)
+		?? items.find((item) => item.status === "in-progress" && !item.assignment && !item.capped)
+		?? (!inFlight ? items.find((item) => item.status === "todo" && !item.assignment) : undefined)
+		?? null;
+	const status: LedgerState = items.length === 0 || items.every((item) => item.status === "todo") ? "todo"
+		: items.every((item) => item.status === "done") ? "done" : "in-progress";
+	return { next, status, assigned, capped };
+}
+
+export async function releaseClaim(ledger: Ledger, path: string, id: string, agentId: string, claimToken: string): Promise<LedgerItem> {
+	assertReviewFields(ledger);
+	const item = findItem(ledger, id, path);
+	if (!agentId?.trim() || !claimToken?.trim() || !item.assignment || item.assignment.agent_id !== agentId || item.assignment.claim_token !== claimToken) {
+		throw new Error(`item ${id} has no matching claim (agent_id and claim_token required)`);
+	}
+	delete item.assignment;
+	try {
+		await writeFile(path, serializeLedger(ledger));
+	} catch (error) {
+		throw new Error(`release could not write the ledger; ${path} may be partially written. Inspect before retrying: ${String(error)}`);
+	}
+	return item;
+}
+
 const ITEM_KEYS = ["id", "status", "goal", "short_goal", "workspace", "branch", "review", "max_failed_reviews", "failed_reviews", "assignment", "findings", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
 
 export function serializeLedger(ledger: Ledger): string {
