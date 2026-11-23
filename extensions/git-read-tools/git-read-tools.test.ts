@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSubmoduleIndexParser, inspectGit, runGit } from "./git.ts";
@@ -30,6 +30,8 @@ test("tool registration has strict typed schemas and child cwd", async () => fix
  const tools: any[] = []; extension({ registerTool(tool: any) { tools.push(tool); } } as any);
  assert.deepEqual(tools.map((t) => t.name), ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"]);
  assert.ok(tools.every((t) => t.parameters.additionalProperties === false && t.description));
+ // Every definition carries the shared optional run directory.
+ assert.ok(tools.every((t) => t.parameters.properties.dir?.type === "string" && t.parameters.properties.dir.maxLength === 4096 && t.description.includes("dir")));
  const result = await tools[1].execute("id", {}, undefined, undefined, { cwd: dir }); assert.match(text(result), /##/);
 }));
 
@@ -220,6 +222,50 @@ test("ambiguous ref warnings do not corrupt the resolved hash", async () => fixt
  const result = await inspectGit("show", { ref: "ambiguous" }, { cwd: dir });
  assert.equal(result.isError, false); assert.match(text(result), /first/);
 }));
+
+test("dir values are rejected like the other scalar arguments through the plain catch path", async () => fixture(async (base) => {
+ // Omitting dir keeps the passed working directory as the run directory.
+ assert.match(text(await unchanged(base, "status")), /^## /m);
+ for (const bad of ["", "\0", "x".repeat(4097), 5]) {
+  // A tool call answers at the schema maxLength first, so an over-long value never reaches git.ts; calling inspectGit directly reaches validate().
+  const result = await unchanged(base, "show", { ref: "HEAD", dir: bad });
+  assert.equal(result.isError, true); assert.match(text(result), /dir must be a nonempty path string/);
+ }
+ // dir is in the allowed key lists, so an unknown parameter alongside it is still the reported problem.
+ const unknown = await unchanged(base, "status", { dir: ".", flags: "--help" });
+ assert.equal(unknown.isError, true); assert.match(text(unknown), /Unknown parameter: flags/);
+ // Nonexistent and non-directory targets are validation-stage rejections: no label and no header.
+ await writeFile(join(base, "plain-file"), "x\n");
+ for (const target of [join(base, "no-such-directory"), join(base, "plain-file")]) {
+  const result = await unchanged(base, "status", { dir: target });
+  assert.equal(result.isError, true); assert.match(text(result), /dir must exist and be a directory/);
+  assert.doesNotMatch(text(result), /^(Could not locate repository root|Git inspection):/);
+ }
+}));
+
+test("dir selects the run directory relative to the working directory, accepts absolute paths outside the session subtree, and follows only the target itself when it is a symlink", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "git-dir-outer-"));
+ try {
+  const main = join(parent, "A");
+  await mkdir(main); git(main, "init", "-q"); await writeFile(join(main, "space name"), "first\n"); git(main, "add", "--", "."); git(main, "commit", "-qm", "subject A");
+  const outside = await mkdtemp(join(tmpdir(), "git-dir-outside-"));
+  try {
+   git(outside, "init", "-q"); await writeFile(join(outside, "other file"), "x\n"); git(outside, "add", "--", "."); git(outside, "commit", "-qm", "subject B");
+   // The plain parent is not a repository, so a successful call proves the relative value resolved against its cwd.
+   const relative = await unchanged(main, "log", { dir: "A", limit: 1 }, { cwd: parent });
+   assert.equal(relative.isError, false, text(relative)); assert.match(text(relative), /subject A/); assert.doesNotMatch(text(relative), /subject B/);
+   const absolute = await unchanged(main, "log", { dir: main }, { cwd: outside });
+   assert.equal(absolute.isError, false, text(absolute)); assert.match(text(absolute), /subject A/); assert.doesNotMatch(text(absolute), /subject B/);
+   // The passed target may itself be a symlink that resolves to a directory; children under it are not followed.
+   await symlink(main, join(parent, "link-to-A"));
+   const throughLink = await unchanged(main, "log", { dir: "link-to-A", limit: 1 }, { cwd: parent });
+   assert.equal(throughLink.isError, false, text(throughLink)); assert.match(text(throughLink), /subject A/);
+   await symlink(join(main, "space name"), join(parent, "file-link"));
+   const notDirectory = await inspectGit("status", { dir: join(parent, "file-link") }, { cwd: parent });
+   assert.equal(notDirectory.isError, true); assert.match(text(notDirectory), /dir must exist and be a directory/);
+  } finally { await rm(outside, { recursive: true, force: true }); }
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
 
 test("helper forwards extra run options while keeping its default run directory", async () => fixture(async (base) => {
  // Without extra options the run directory is still the helper argument.

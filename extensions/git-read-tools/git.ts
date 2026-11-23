@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { lstat, stat } from "node:fs/promises";
+import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
 export const OUTPUT_LIMIT = 64 * 1024;
@@ -79,10 +81,13 @@ async function scanSubmodules(cdup: string, options: RunOptions) {
  return { result, ...parser.finish() };
 }
 
-function validate(kind: Kind, input: Input): { paths: string[]; refs: string[]; args: string[] } {
+// validate() stays synchronous: it resolves dir against the caller's working directory but does not check that it exists, because report() has no access to the run options. The existence and directory-type check belongs in inspectGit.
+function validate(kind: Kind, input: Input, options: RunOptions): { dir: string; paths: string[]; refs: string[]; args: string[] } {
  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected an argument object");
- const allowed = kind === "diff" ? ["mode", "from", "to", "paths"] : kind === "status" ? [] : kind === "log" ? ["ref", "limit", "paths"] : ["ref", "paths"];
+ const allowed = kind === "diff" ? ["mode", "from", "to", "paths", "dir"] : kind === "status" ? ["dir"] : kind === "log" ? ["ref", "limit", "paths", "dir"] : ["ref", "paths", "dir"];
  for (const key of Object.keys(input)) if (!allowed.includes(key)) throw new Error(`Unknown parameter: ${key}`);
+ // Through a tool call the schema maxLength answers first, so an over-long value never reaches this check; direct calls are rejected here with the same rule.
+ if (input.dir !== undefined && (typeof input.dir !== "string" || !input.dir || input.dir.length > 4096 || input.dir.includes("\0"))) throw new Error("dir must be a nonempty path string of at most 4096 characters");
  const paths = input.paths === undefined ? [] : input.paths;
  if (!Array.isArray(paths) || paths.length > 100 || paths.some((p) => typeof p !== "string" || !p || p.length > 4096 || p.includes("\0"))) throw new Error("paths must be an array of at most 100 nonempty path strings");
  const refs: string[] = [];
@@ -104,16 +109,21 @@ function validate(kind: Kind, input: Input): { paths: string[]; refs: string[]; 
   if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 100) throw new Error("limit must be an integer from 1 to 100");
   args = ["log", "--no-color", "--no-decorate", "--format=%H %s", `--max-count=${limit}`];
  } else { ref(input.ref, "ref"); args = ["show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=fuller", "--first-parent", "-m"]; }
- return { paths, refs, args };
+ return { dir: path.resolve(options.cwd, input.dir ?? "."), paths, refs, args };
 }
 
 export async function inspectGit(kind: Kind, input: Input, options: RunOptions) {
  try {
-  const { paths, refs, args } = validate(kind, input);
+  const { dir, paths, refs, args } = validate(kind, input, options);
+  // A passed dir may itself be a symlink that resolves to a directory; candidate children under it are never followed. lstat is used on the target so a symlink is identified as one instead of being reported by its target's type.
+  const link = await lstat(dir).catch(() => null);
+  const type = link?.isSymbolicLink() ? await stat(dir).catch(() => null) : link;
+  if (!type?.isDirectory()) throw new Error(`dir must exist and be a directory: ${dir}`);
+  const runAt = { ...options, cwd: dir };
   // Worktree comparisons and status can run repository-configured clean/process filters.
   // Refuse rather than silently produce an unfiltered, misleading comparison.
   if (kind === "status" || (kind === "diff" && (input.mode === undefined || input.mode === "unstaged"))) {
-   const filters = await runGit(["config", "--get-regexp", "^filter\\."], options);
+   const filters = await runGit(["config", "--get-regexp", "^filter\\."], runAt);
    if (filters.truncated) throw new Error("Working-tree inspection refused: filter configuration check exceeded output limit.");
    if (filters.code !== 1 || filters.cancelled || filters.timedOut || filters.error) {
     if (filters.code === 0 && !filters.cancelled && !filters.timedOut && !filters.error) throw new Error("Working-tree inspection refused: repository config contains filter drivers.");
@@ -121,12 +131,12 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
    }
    // Git may inspect a submodule's working tree using that repository's filters.
    // Check the whole superproject index even when called from a subdirectory.
-   const root = await runGit(["rev-parse", "--show-cdup"], options);
+   const root = await runGit(["rev-parse", "--show-cdup"], runAt);
    if (root.truncated) throw new Error("Working-tree inspection refused: repository root check exceeded output limit.");
    if (root.code !== 0 || root.cancelled || root.timedOut || root.error) return report(root, "Could not locate repository root");
    const cdup = root.stdout.trim();
    if (cdup && !/^(?:\.\.\/)+$/.test(cdup)) throw new Error("Could not locate repository root: unexpected Git output");
-   const index = await scanSubmodules(cdup, options);
+   const index = await scanSubmodules(cdup, runAt);
    if (index.result.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
    if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules");
    if (index.invalid) throw new Error("Working-tree inspection refused: unexpected submodule check output.");
@@ -134,13 +144,13 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
   }
   const hashes: string[] = [];
   for (const ref of refs) {
-   const result = await runGit(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], options);
+   const result = await runGit(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], runAt);
    if (result.code !== 0 || result.truncated || result.cancelled || result.timedOut || result.error) return report(result, `Could not resolve ref ${ref}`);
    const hash = result.stdout.trim();
    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(hash)) throw new Error(`Could not resolve ref ${ref}: unexpected Git output`);
    hashes.push(hash);
   }
-  const result = await runGit([...args, ...hashes, "--", ...paths], options);
+  const result = await runGit([...args, ...hashes, "--", ...paths], runAt);
   return report(result, "Git inspection");
  } catch (error) { return { content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }], details: {}, isError: true }; }
 }
