@@ -1,0 +1,141 @@
+# Third-party sources
+
+This file is the single record of content taken from another repository. `LICENSE` covers
+only work authored here and points here; the root README links here instead of naming any
+source. Add an entry when code, prompt text, or other content is taken from another
+repository, and do not restate an entry anywhere else.
+
+Fields for each entry: source repository URL, license, copyright holder, version observed,
+where the content is used in this repository, what was changed, and that source's copyright
+and permission notice. A field that cannot be established from evidence in this repository
+(package metadata, a fetched source, git history, or existing text here) is recorded as unknown
+with the evidence available; do not guess a license.
+
+## pi-subagents
+
+- Source repository: https://github.com/nicobailon/pi-subagents
+- License: MIT
+- Copyright holder: Copyright (c) 2026 Nico Bailon
+- Version observed: 0.89.2, read from package.json of the package installed at
+  `~/.pi/agent/npm/node_modules/pi-subagents` on 2026-11-22. Nothing here pins that version;
+  generation output depends on what is installed on the machine running it.
+- Where the content is used: reference only — no prompt body from this source is committed.
+  The install-path form appears as a comment line in `configs/permissions.example.src.jsonc:296`, as
+  example paths in `README.md:39` and in `extensions/permission-mode-generator/README.md:31` and :80,
+  where docs describe resolving a reference against an installed package. When a user points a
+  reference at their own install, that file's content enters generated output at generation time under
+  this license.
+- What was changed: nothing from this source. Our contribution next to it is original:
+  `configs/prompts/reviewer-addendum.md`, which states precedence over conflicting statements
+  above it.
+- Permission notice:
+
+```
+MIT License
+
+Copyright (c) 2026 Nico Bailon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## opencode-tooling (ported skills)
+
+- Source repository: https://github.com/DannieJWright/opencode-tooling
+- License: MIT
+- Copyright holder: Copyright (c) 2026 DannieJWright
+- Version observed: unknown — not pinned. The port came from the default branch (`main`) with no
+  release or tag, taken before commit 07f3eb3 (2026-11-18). Upstream has diverged since; for
+  example upstream `model-organization` now holds only `SKILL.md`.
+- Where the content is used: `skills/creating-skills/*`, `skills/testing/*`,
+  `skills/model-organization/SKILL.md`, added by commit 07f3eb3 ("feat: Ports skills from
+  opencode-tooling repo (create skills, modeling, testing) (#8)"). Identical lines remaining against
+  upstream main as checked on 2026-11-22: creating-skills 388 of about 528 lines (SKILL.md 54/58,
+  resources/authoring-guide.md 166/184, examples.md 77/87, requirements-interview.md 41/42,
+  testing-validation.md 50/57); testing 221 lines, several files fully identical (SKILL.md 68/70,
+  unit-tests.md 31/33, ui-tests.md 17/27); model-organization/SKILL.md 17/72, and its detail docs
+  have no upstream counterpart today.
+- What was changed: descriptions rewritten for trigger phrases (commit b9c369f also moved docs under
+  `resources/` and fixed paths), internal references made relative to each skill folder root, and a
+  stable-test-hooks section folded into testing's UI resource (commits 85afe21 and 07f3eb3). Lines
+  counted above are unchanged source text; everything else in those files is ours.
+- Permission notice:
+
+```
+MIT License
+
+Copyright (c) 2026 DannieJWright
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## pi-permission-modes (schema reference)
+
+- Source repository: https://github.com/wynainfo/pi-permission-modes
+- License: MIT
+- Copyright holder: Copyright (c) 2026 Nico Merz
+- Version observed: 2.7.2, read from package.json of the package installed at
+  `~/.pi/agent/npm/node_modules/pi-permission-modes` on 2026-11-22. The referenced schema URL points
+  at that repository's default branch (`main`) and is not pinned to this version.
+- Where the content is used: reference only — no text taken. `configs/permissions.example.src.jsonc:10`
+  sets `$schema` to
+  `https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json`,
+  and that value passes through unchanged into generated output, including
+  `extensions/permission-mode-generator/sample.expected.json:2`.
+- What was changed: nothing; the URL is emitted as written.
+- Permission notice:
+
+```
+MIT License
+
+Copyright (c) 2026 Nico Merz
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

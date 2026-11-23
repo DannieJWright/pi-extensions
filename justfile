@@ -7,7 +7,7 @@ REPO := justfile_directory()
 _list-recipes:
     just --list
 
-# Run the permission-mode generator check, the just-tools tests, the provider rules check, the feature-ledger check and tests, and the skill script tests. Prints one line per group at the end: name, pass count, fail count. The full output is still written to the log file. Exit is non-zero when any group fails.
+# Run the permission-mode generator tests, the sample fixture comparison, subagent config, just-tools and git-tools tests, provider rules check, feature-ledger check and tests, and skill tests. Prints one line per group; exits non-zero on failure.
 [group('test')]
 test:
     #!/usr/bin/env bash
@@ -45,8 +45,15 @@ test:
         summary+=("${name} pass=${pass} fail=${fail}")
     }
 
-    run_group "perm check" just -f "${justfile}" perm check
+    gen_dir="{{ REPO }}/extensions/permission-mode-generator"
+    # Generator tests author their own fixtures in temporary directories, so a failure there cannot come from a changed
+    # configuration file. The sample comparison reads this repository's example configuration and its committed fixture,
+    # so it is reported as a separate group. Running `just perm test` directly still runs every *.test.ts here at once.
+    run_group "perm generator test" node --test "${gen_dir}/generate.test.ts" "${gen_dir}/json-roundtrip.test.ts" "${gen_dir}/merge.test.ts" "${gen_dir}/migrate.test.ts" "{{ REPO }}/lib/settings-lock.test.ts"
+    run_group "perm sample test" node --test "${gen_dir}/sample-integration.test.ts"
+    run_group "subagent config test" node --test "{{ REPO }}/extensions/permission-mode-generator/config.test.ts"
     run_group "just-tools test" just -f "${justfile}" just-tools test
+    run_group "git-tools test" just -f "${justfile}" git-tools test
     run_group "provider-rules check" just -f "${justfile}" provider-rules check
     run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
     run_group "feature-ledger test" just -f "${justfile}" feature-ledger test
@@ -82,8 +89,32 @@ just-tools action="test" *args="":
             ;;
     esac
 
-# Generate, check, or test the permission-mode config from ~/.pi/agent/permission-mode/permission-mode.src.jsonc. Actions: gen, check, or test. Use --force with gen to overwrite a drifted output. Pass-through flags go after `--` (for example `just perm test -- --only merge`).
-[arg('action', pattern='gen|check|test', help='gen, check, or test')]
+# Run the Git inspection tool tests. Pass Node options after `--` (for example `just git-tools test -- --test-name-pattern=diff`).
+[arg('action', pattern='test', help='test')]
+[group('test')]
+git-tools action="test" *args="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    action="$1"
+    shift; # Shift for `action`
+    extra=()
+    for arg in "$@"; do
+        if [ -n "${arg}" ]; then extra+=("${arg}"); fi
+    done
+
+    case "${action}" in
+        test)
+            node --test "{{ REPO }}/extensions/git-read-tools/git-read-tools.test.ts" "{{ REPO }}/extensions/git-read-tools/runtime.integration.test.ts" ${extra[@]+"${extra[@]}"}
+            ;;
+        *)
+            echo "unknown action: ${action}" >&2
+            exit 2
+            ;;
+    esac
+
+# Generate/check permissionModes and optional subagents outputs from ~/.pi/agent/permissions.src.jsonc; $file paths are source-relative. Migrate imports the old source and settings. Use --force with gen to overwrite drift; pass-through flags go after `--`.
+[arg('action', pattern='gen|check|migrate|test', help='gen, check, migrate, or test')]
 [arg('force', long='force', value='true', help='Specify --force with gen to overwrite a drifted output')]
 [group('perm')]
 perm action="gen" force="false" *args="":
@@ -111,8 +142,11 @@ perm action="gen" force="false" *args="":
         check)
             node "${gen_dir}/generate.ts" check ${extra[@]+"${extra[@]}"}
             ;;
+        migrate)
+            node "${gen_dir}/generate.ts" migrate ${extra[@]+"${extra[@]}"}
+            ;;
         test)
-            node --test "${gen_dir}"/*.test.ts ${extra[@]+"${extra[@]}"}
+            node --test "${gen_dir}"/*.test.ts "{{ REPO }}/lib/settings-lock.test.ts" ${extra[@]+"${extra[@]}"}
             ;;
         *)
             echo "unknown action: ${action}" >&2

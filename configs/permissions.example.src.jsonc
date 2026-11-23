@@ -1,10 +1,11 @@
-// Source for ~/.pi/agent/permission-mode/permission-mode.json.
-// Edit this file, then run `just perm-gen` in ~/.pi. See README.md for the merge rules.
+// Source: ~/.pi/agent/permissions.src.jsonc. Edit it, then run `just perm` in ~/.pi.
+// Prompt references name files outside this repository; their sources are recorded in NOTICE. See the generator README for merge rules.
 //
 // Pattern maps (path, external_directory, write, bash, tool, ...): the LAST matching key wins,
 // so "*" must come first. When a mode overrides an inherited key, the key keeps its position;
 // new keys are appended at the end. Use "$replace": true to write a full map in your own order.
 {
+  "permissionModes": {
   "output": {
     "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
     "defaultMode": "default",
@@ -48,14 +49,13 @@
         ],
         // Bash: paths under these roots are not "escapes" (no prompt, runs sandboxed, read-only).
         "insideRoots": [
-          "/home/nhbody/.agents/skills",
+          "~/.agents/skills",
           "~/.pi/agent/skills", 
           "~/.pi/agent/npm/node_modules",
-          "/tmp/acp-delegate",
+          "<temp>/acp-delegate",
           "/tmp/just-tools/outputs",
-          "/run/user/1000/just",
-          "~/.pi/agent/install/releases",
-          "/home/nhbody/.pi/agent/install/releases/"
+          "<runtime-dir>/just",
+          "~/.pi/agent/install/releases"
         ],
         "network": {
           "allowedDomains": [
@@ -79,7 +79,7 @@
           "*": "ask",
           "~/.agent/skills": "allow",
           "~/.agent/skills/*": "allow",
-          "/home/nhbody/.agents/skills/*": "allow",
+          "~/.agents/skills/*": "allow",
           "~/.pi/agent/skills": "allow",
           "~/.pi/agent/skills/*": "allow",
           "~/.pi/agent/npm/node_modules": "allow",
@@ -88,10 +88,9 @@
           "/var/folders/*": "allow",
           "/private/var/folders": "allow",
           "/private/var/folders/*": "allow",
-          "/tmp/acp-delegate/*": "allow",
+          "<temp>/acp-delegate/*": "allow",
           "/tmp/just-tools/outputs/*": "allow",
-          "~/.pi/agent/install/releases/*": "allow",
-          "/home/nhbody/.pi/agent/install/releases/*" : "allow"
+          "~/.pi/agent/install/releases/*": "allow"
         },
         "read": "allow",
         "grep": "allow",
@@ -132,7 +131,12 @@
           "source_check": "allow",
           "search_context": "allow",
           "acp_delegate_cancel": "allow",
-          "just_test": "allow"
+          "just_test": "allow",
+          "git_r_*": "allow",
+          // Ledger tools bypass file-tool path gates; submit also runs unsandboxed commands.
+          "ledger_check": "allow",
+          "ledger_list": "allow",
+          "ledger_next": "allow"
           // "": "allow",
           // "": "allow",
         },
@@ -163,7 +167,11 @@
       "label": "Plan Mode",
       "color": "mdLink",
       // A custom prompt avoids the @plan approval UI. show_plan still displays files.
-      "systemPrompt": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions.",
+      // Both value forms in one value: an object-form reference plus inline text. The golden fixture records this as a marker.
+      "systemPrompt": {
+        "files": [{ "path": "../extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md", "stripFrontmatter": true }],
+        "text": "## Plan mode is active\n\nInspect the task, discuss unclear requirements, and prepare or review plans. Do not implement code in this mode. Bash is read-only; only Markdown files can be created or edited. When the user requests a plan, clarify open questions first, then write a concise plan under plan/ and use show_plan to display it. A plan can be reviewed and revised in later runs. Do not request approval through /plan approve or delete plan files unless the user asks. These planning instructions apply only while this mode is active; a switch to Build permits implementation under Build's permissions."
+      },
       "sandbox": {
         "writable": false
       },
@@ -202,7 +210,8 @@
         },
         "bash": {
           "*": "allow"
-        }
+        },
+        "tool": { "ledger_start": "deny", "ledger_submit": "deny" }
       }
     },
 
@@ -214,7 +223,8 @@
       "permission": {
         "write": { "*": "allow" },
         "edit": { "*": "allow" },
-        "bash": { "*": "allow" }
+        "bash": { "*": "allow" },
+        "tool": { "ledger_start": "allow", "ledger_submit": "allow" }
       }
     },
 
@@ -256,6 +266,50 @@
         "web_search": "allow",
         "tool": "allow",
         "skill": "allow"
+      }
+    }
+  }
+  },
+  "subagents": {
+    // Optional native child permissions; omit config to leave config.json unchanged:
+    // "config": { "permissions": { "rules": { "edit": "ask" } } },
+    "fragments": {
+      "gitReadTools": {
+        "tools+": ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"],
+        "subagentOnlyExtensions+": ["~/.pi/agent/git/github.com/DannieJWright/pi-extensions/extensions/git-read-tools/index.ts"]
+      },
+      // Operator-supplied worker override: ledger_next, ledger_start, ledger_submit,
+      // ledger_check and mutationTools. ledger_list is added for the sample.
+      // The provider uses ~ for portability; adjust paths for your installation.
+      "ledgerTools": {
+        "extends": ["gitReadTools"],
+        "tools+": ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"],
+        "subagentOnlyExtensions+": ["~/.pi/agent/git/github.com/DannieJWright/pi-extensions/extensions/feature-ledger/index.ts"],
+        "mutationTools+": ["ledger_start", "ledger_submit"]
+      }
+    },
+    "agents": {
+      "reviewer": {
+        "extends": ["gitReadTools"],
+        "tools+": ["read", "grep", "find", "ls", "watchdog_diff", "contact_supervisor"],
+        // Real-world form: point at your own install, e.g.
+        //   { "files": [{ "path": "~/npm/node_modules/pi-subagents/agents/reviewer.md", "stripFrontmatter": true }, { "path": "prompts/reviewer-addendum.md", "stripFrontmatter": true }] }
+        // An install path is machine-specific, so adjust it; the package must be present for generation to succeed.
+        // This test layer uses this repository's own fixture agent file instead of an installed package.
+        "systemPrompt": {
+          "files": [
+            { "path": "../extensions/permission-mode-generator/test-fixtures/agents/agent-with-frontmatter.md", "stripFrontmatter": true },
+            { "path": "prompts/reviewer-addendum.md", "stripFrontmatter": true }
+          ]
+        }
+      },
+      "scout": {
+        "extends": ["gitReadTools"],
+        "tools+": ["read", "grep", "find", "ls", "bash", "write", "contact_supervisor"]
+      },
+      "worker": {
+        "extends": ["ledgerTools"],
+        "tools+": ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"]
       }
     }
   }

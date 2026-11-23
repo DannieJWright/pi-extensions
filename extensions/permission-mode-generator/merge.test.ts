@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { buildConfig } from "./merge.ts";
+import { buildConfig, buildSubagents, MergeError } from "./merge.ts";
 import { parseJsonc, stripJsonc } from "../../lib/jsonc.ts";
 
 function build(source: Record<string, unknown>): Record<string, unknown> {
@@ -15,6 +15,11 @@ function mode(config: Record<string, unknown>, name: string): Record<string, unk
 
 function map(config: Record<string, unknown>, name: string, key: string): Record<string, unknown> {
 	return mode(config, name)[key] as Record<string, unknown>;
+}
+
+/** Prompt text in either value form, so a content assertion does not depend on which form the source used. */
+function promptText(value: unknown): string {
+	return typeof value === "string" ? value : (value as Record<string, unknown>)["text"] as string;
 }
 
 test("deep merge keeps inherited key order and appends new keys", () => {
@@ -128,8 +133,27 @@ test("unknown extends is an error", () => {
 test("extends cycle is an error", () => {
 	assert.throws(
 		() => build({ fragments: { a: { extends: ["b"] }, b: { extends: ["a"] } }, modes: { m: { extends: ["a"] } } }),
-		/extends cycle: m -> a -> b -> a/,
+		/extends cycle: permissionModes\.modes\.m -> permissionModes\.fragments\.a -> permissionModes\.fragments\.b -> permissionModes\.fragments\.a/,
 	);
+	assert.throws(
+		() => buildSubagents({ agents: { reviewer: { extends: ["worker"] }, worker: { extends: ["reviewer"] } } }),
+		/extends cycle: subagents\.agents\.reviewer -> subagents\.agents\.worker -> subagents\.agents\.reviewer/,
+	);
+	assert.throws(
+		() => buildSubagents({ fragments: { reviewer: { extends: ["reviewer"] } }, agents: { reviewer: { extends: ["reviewer"] } } }),
+		/extends cycle: subagents\.agents\.reviewer -> subagents\.fragments\.reviewer -> subagents\.fragments\.reviewer/,
+	);
+});
+
+test("entries can extend same-named fragments", () => {
+	assert.deepEqual(buildSubagents({
+		fragments: { reviewer: { tools: ["read"] } },
+		agents: { reviewer: { extends: ["reviewer"], enabled: true } },
+	}), { agentOverrides: { reviewer: { tools: ["read"], enabled: true } } });
+	assert.deepEqual(mode(buildConfig({
+		fragments: { plan: { label: "Plan" } },
+		modes: { plan: { extends: ["plan"], enabled: true } },
+	}), "plan"), { label: "Plan", enabled: true });
 });
 
 test("output block is copied as-is", () => {
@@ -168,20 +192,24 @@ test("comments inside strings are kept", () => {
 });
 
 test("configured prompts follow mode inheritance without enabling plan approval", () => {
-	const path = new URL("../../configs/permission-mode.example.src.jsonc", import.meta.url);
-	const config = build(parseJsonc(readFileSync(path, "utf8"), path.pathname) as Record<string, unknown>);
+	const path = new URL("../../configs/permissions.example.src.jsonc", import.meta.url);
+	const source = parseJsonc(readFileSync(path, "utf8"), path.pathname) as Record<string, unknown>;
+	const sourceModes = source.permissionModes as Record<string, unknown>;
+	const config = build(sourceModes);
+	const authored = (name: string) => ((sourceModes.modes as Record<string, Record<string, unknown>>)[name]).systemPrompt;
 	const planPrompt = mode(config, "plan").systemPrompt;
 	const buildPrompt = mode(config, "build").systemPrompt;
 
-	assert.equal(typeof planPrompt, "string");
+	// Inheritance carries the configured value through unchanged whatever form it was authored in, so this asserts the value itself rather than its type.
+	assert.deepEqual(planPrompt, authored("plan"));
 	assert.notEqual(planPrompt, "@plan");
-	assert.match(planPrompt as string, /show_plan/);
-	assert.match(planPrompt as string, /Do not implement code/);
-	assert.equal(mode(config, "plan-local").systemPrompt, planPrompt);
+	assert.match(promptText(planPrompt), /show_plan/);
+	assert.match(promptText(planPrompt), /Do not implement code/);
+	assert.deepEqual(mode(config, "plan-local").systemPrompt, planPrompt);
 	assert.equal(typeof buildPrompt, "string");
-	assert.match(buildPrompt as string, /Implement the user's current request/);
+	assert.match(promptText(buildPrompt), /Implement the user's current request/);
 	for (const name of ["build-local", "build-yolo"]) {
-		assert.equal(mode(config, name).systemPrompt, buildPrompt);
+		assert.deepEqual(mode(config, name).systemPrompt, buildPrompt);
 	}
 	for (const name of ["default", "yolo"]) {
 		assert.equal(mode(config, name).systemPrompt, undefined);
@@ -217,4 +245,117 @@ test("the shipped source generates the shipped modes", () => {
 		},
 		label: "Plan (local)",
 	});
+});
+
+test("subagent settings and agents retain absence, empty, false and merge rules", () => {
+	assert.deepEqual(buildSubagents({ settings: { disableBuiltins: false } }), { disableBuiltins: false });
+	assert.deepEqual(buildSubagents({ settings: { disableBuiltins: false }, agents: {} }), {
+		disableBuiltins: false, agentOverrides: {},
+	});
+	const result = buildSubagents({
+		settings: { defaultExtensions: ["ext"], disableBuiltins: false },
+		fragments: {
+			base: { tools: ["a"], nested: { first: 1, removed: true }, enabled: true },
+			more: { extends: ["base"], "tools+": ["b"], enabled: false },
+		},
+		agents: { worker: { extends: ["more"], "tools+": ["b", "c"], nested: { removed: null, second: 2 } } },
+	});
+	assert.deepEqual(result, {
+		defaultExtensions: ["ext"], disableBuiltins: false,
+		agentOverrides: { worker: { tools: ["a", "b", "c"], nested: { first: 1, second: 2 }, enabled: false } },
+	});
+});
+
+test("subagent agents rejects present non-object values", () => {
+	for (const agents of [["reviewer"], [], null, "reviewer", 42, false, undefined]) {
+		assert.throws(() => buildSubagents({ agents }), {
+			name: "Error",
+			message: "subagents.agents: must be an object mapping agent names to overrides",
+			constructor: MergeError,
+		});
+	}
+});
+
+test("settings.agentOverrides is rejected whether agents is absent or present", () => {
+	for (const extra of [{}, { agents: {} }]) {
+		assert.throws(() => buildSubagents({ settings: { agentOverrides: {} }, ...extra }),
+			/subagents\.settings\.agentOverrides: use subagents\.agents instead/);
+	}
+});
+
+test("extends lookup is section-local and names the failing entry", () => {
+	assert.throws(() => buildConfig({ modes: { plan: { extends: ["reviewer"] } } }),
+		/permissionModes\.modes\.plan: unknown extends "reviewer"/);
+	assert.throws(() => buildSubagents({ agents: { reviewer: { extends: ["plan"] } } }),
+		/subagents\.agents\.reviewer: unknown extends "plan"/);
+	assert.throws(() => buildSubagents({ agents: { reviewer: { extends: ["toString"] } } }),
+		/subagents\.agents\.reviewer: unknown extends "toString"/);
+});
+
+test("an agent entry inherits from a sibling agent entry", () => {
+	const source = {
+		agents: {
+			workerBase: { tools: ["read", "grep", "find"], mutationTools: ["bash"] },
+			"worker-ledger": {
+				extends: ["workerBase"],
+				"tools+": ["grep", "ledger_start"],
+				"mutationTools+": ["ledger_submit"],
+			},
+			"worker-readonly": {
+				extends: ["workerBase"],
+				mutationTools: null,
+			},
+		},
+	};
+
+	const result = buildSubagents(source);
+	assert.deepEqual(result, {
+		agentOverrides: {
+			workerBase: { tools: ["read", "grep", "find"], mutationTools: ["bash"] },
+			"worker-ledger": { tools: ["read", "grep", "find", "ledger_start"], mutationTools: ["bash", "ledger_submit"] },
+			"worker-readonly": { tools: ["read", "grep", "find"] },
+		},
+	});
+
+	// Append order is the inherited array first, then the variant's own additions in source order.
+	const overrides = result.agentOverrides as Record<string, Record<string, unknown>>;
+	assert.deepEqual(overrides["worker-ledger"].tools as string[], ["read", "grep", "find", "ledger_start"]);
+	assert.deepEqual(Object.keys(overrides["worker-readonly"]), ["tools"]);
+});
+
+test("sibling resolved fragments replace arrays instead of appending", () => {
+	const fragments = { a: { tools: ["a"] }, b: { tools: ["b"] } };
+	assert.deepEqual(mode(buildConfig({ fragments, modes: { m: { extends: ["a", "b"] } } }), "m"), { tools: ["b"] });
+	assert.deepEqual(buildSubagents({ fragments, agents: { worker: { extends: ["a", "b"] } } }),
+		{ agentOverrides: { worker: { tools: ["b"] } } });
+});
+
+test("unsafe append names are rejected in inherited fragments before repeated merges", () => {
+	for (const base of ["__proto__", "constructor", "prototype"]) {
+		for (const suffix of ["++", "+++"]) {
+			const key = base + suffix;
+			const source = JSON.parse(`{"fragments":{"base":{"nested":{"${key}":{"polluted":true}}},"derived":{"extends":["base"]}},"modes":{"m":{"extends":["derived"]}},"agents":{"worker":{"extends":["derived"]}}}`);
+			assert.throws(() => buildConfig(source), (error: Error) => {
+				assert.equal(error.message, `permissionModes.fragments.base.nested.${key}: unsafe property name; rename this key`);
+				return true;
+			});
+			assert.throws(() => buildSubagents(source), (error: Error) => {
+				assert.equal(error.message, `subagents.fragments.base.nested.${key}: unsafe property name; rename this key`);
+				return true;
+			});
+			assert.equal(({} as Record<string, unknown>).polluted, undefined);
+		}
+	}
+});
+
+test("unsafe JSON property names are rejected without prototype pollution or data loss", () => {
+	for (const key of ["__proto__", "constructor", "prototype", "__proto__+"]) {
+		const source = JSON.parse(`{"modes":{"m":{"nested":{"${key}":{"polluted":true}}}}}`);
+		assert.throws(() => buildConfig(source), /permissionModes\.modes\.m\.nested\..*: unsafe property name; rename this key/);
+		const agents = JSON.parse(`{"agents":{"worker":{"${key}":{"polluted":true}}}}`);
+		assert.throws(() => buildSubagents(agents), /subagents\.agents\.worker\..*: unsafe property name; rename this key/);
+		assert.equal(({} as Record<string, unknown>).polluted, undefined);
+	}
+	assert.throws(() => buildConfig(JSON.parse('{"fragments":{"__proto__":{}},"modes":{}}')),
+		/permissionModes\.fragments\.__proto__: unsafe property name/);
 });
