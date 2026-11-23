@@ -7,17 +7,22 @@ REPO := justfile_directory()
 _list-recipes:
     just --list
 
-# Run the permission-mode generator tests, the sample fixture comparison, subagent config, just-tools and git-tools tests, provider rules check, feature-ledger check and tests, and skill tests. Prints one line per group; exits non-zero on failure.
+# Run every check and test group under the isolation guard. Prints one line per group; exits non-zero on failure.
 [group('test')]
-test action="full":
+test:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    action="$1"
     justfile="{{ REPO }}/justfile"
     fixture_dir="{{ REPO }}/configs"
     test_dir="$(mktemp -d)"
     trap 'rm -rf "${test_dir}"' EXIT
+    # Every child process inherits these, so any access to the live Pi home fails loudly in the group that touched it.
+    guard_href="$(node -e 'process.stdout.write(new URL("file://" + process.argv[1]).href)' "{{ REPO }}/tests/suite-isolation-guard.mjs")"
+    export ISOLATION_GUARD_HOME="${HOME}"
+    export ISOLATION_GUARD_LOG="${test_dir}/violations.log"
+    : > "${ISOLATION_GUARD_LOG}"
+    export NODE_OPTIONS="--import=${guard_href}"
     summary=()
     overall=0
 
@@ -58,17 +63,12 @@ test action="full":
     run_group "subagent config test" node --test "{{ REPO }}/extensions/permission-mode-generator/config.test.ts"
     run_group "just-tools test" just -f "${justfile}" just-tools test
     run_group "git-tools test" just -f "${justfile}" git-tools test
-    run_group "perm check" node "{{ REPO }}/extensions/permission-mode-generator/generate.ts" check --src "${fixture_dir}/permission-mode.example.src.jsonc" --out "${fixture_dir}/permission-mode.example.json" --state "${test_dir}/permission-mode-state.json"
-    run_group "just-tools test" just -f "${justfile}" just-tools test
     run_group "provider-rules check" node "{{ REPO }}/extensions/provider-rules/check.ts" --config "${fixture_dir}/provider-rules.example.jsonc"
     run_group "provider-rules test" just -f "${justfile}" provider-rules test
     run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
     run_group "feature-ledger test" just -f "${justfile}" feature-ledger test
     run_group "skills test" just -f "${justfile}" skills test
-    # The isolation test reruns these groups under guarded fake homes, not itself.
-    if [ "${action}" = "full" ]; then
-        run_group "suite isolation" node --test "{{ REPO }}/tests/suite-isolation.test.ts"
-    fi
+    run_group "suite isolation" node --test "{{ REPO }}/tests/suite-isolation.test.ts"
 
     echo
     echo "summary:"

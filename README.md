@@ -51,14 +51,14 @@ just provider-rules test     # provider rules tests
 
 No test reads an installed package. Unit tests author their own fixtures in temporary directories; the sample group (`perm sample test`) compares against this repository's committed golden fixture and its own agent fixture files under `extensions/permission-mode-generator/test-fixtures/agents/`, so results do not change with what happens to be installed. Checking a real install is a manual step, gated on the version recorded in `NOTICE`, and is not part of `just test`. Third-party sources are named once in `NOTICE`; docs link to it instead of restating them.
 
-The suite checks `configs/permission-mode.example.src.jsonc` against the committed expected output
-`configs/permission-mode.example.json`, using a temporary generator baseline. It validates
-`configs/provider-rules.example.jsonc` rather than a personal provider configuration. The ledger
-check uses `skills/feature-ledger/references/ledger.yaml`; its tests use temporary repositories.
-The just-tools and capture tests use temporary homes, logs, and outputs. The isolation regression,
-which is part of `just test`, runs `just test groups` with absent, malformed, and different fake Pi
-configurations, records and blocks attempted access even when errors are swallowed, and checks that
-they remain unchanged. The groups-only action avoids recursively running the isolation regression.
+Every group runs under an isolation guard (`tests/suite-isolation-guard.mjs`). `just test` loads it
+through NODE_OPTIONS, so every child process inherits it. The guard blocks access to personal Pi
+configuration and records any attempt as a failure naming the operation and path. The sample group
+generates `configs/permissions.example.src.jsonc` into a temporary directory and compares the result
+against `extensions/permission-mode-generator/sample.expected.json`, using a temporary generator
+baseline. It validates `configs/provider-rules.example.jsonc` rather than a personal provider
+configuration. The ledger check uses `skills/feature-ledger/references/ledger.yaml`; its tests use
+temporary repositories. The just-tools and capture tests use temporary homes, logs, and outputs.
 Feature-ledger test helpers and fixtures live alongside the extension tests; their Git subprocesses
 use isolated configuration and repositories. Suite-wide isolation coverage lives in `tests/`.
 
@@ -66,8 +66,8 @@ These isolated tests are distinct from explicitly invoked personal operations: `
 `just perm check` use the live permission-mode source, output, and baseline by default;
 `just provider-rules check` uses the live current or legacy provider configuration by default.
 The generator CLI also accepts `--src`, `--out`, and `--state`; supply all three to operate on other
-files. When intentionally updating the permission-mode example, regenerate the expected output with
-those three paths (using a temporary state path), review the result, and commit it alongside the source.
+files. When the example source changes, update `extensions/permission-mode-generator/sample.expected.json`
+by hand, review the result, and commit it alongside the source.
 
 ## Credits
 

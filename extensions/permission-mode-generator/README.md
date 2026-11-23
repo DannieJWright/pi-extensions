@@ -13,10 +13,10 @@ just perm test            # run generator, migration, merge and lock tests
 ```
 
 Flags after `--` pass through, for example `just perm test -- --only merge`. A clean check creates a
-missing baseline. These commands use the live personal paths by default; `just test` instead checks the
-repository's `configs/permission-mode.example.src.jsonc` and `configs/permission-mode.example.json`
-with a temporary baseline. The `generate.ts` CLI accepts `--src`, `--out`, and `--state` to specify all
-three paths explicitly.
+missing baseline. These commands use the live personal paths by default; `just test` instead generates
+the repository's `configs/permissions.example.src.jsonc` into a temporary directory and compares the
+result with `extensions/permission-mode-generator/sample.expected.json`, using a temporary baseline. The
+`generate.ts` CLI accepts `--src`, `--out`, and `--state` to specify all three paths explicitly.
 
 The extension runs the same code path at startup and on `/reload`. It writes when the output is
 clean, reports a diff when the output has drifted, and says nothing when there is no change.
@@ -167,7 +167,7 @@ Generator locks are taken in sorted physical-path order for each active output (
 
 - `configs/permissions.example.src.jsonc` — the example source. It references prompt files rather than copying their bodies, and some values combine a reference with the source's own inline text; its own added text is `configs/prompts/reviewer-addendum.md`, which states precedence over any conflicting statement above it.
 - `test-fixtures/agents/agent-with-frontmatter.md` and `test-fixtures/agents/agent-without-frontmatter.md` — small illustrative agent files owned by this repository, used by the test layer in place of an installed package. Their text is original here; no prompt body from another project is committed, and third-party sources are recorded once in the repository-root `NOTICE`.
-- `configs/permission-mode.example.json` — the committed expected output for the isolated suite check.
+- `extensions/permission-mode-generator/sample.expected.json` — the committed expected output that the sample test compares against.
 - `../../lib/jsonc.ts` — comment and trailing-comma handling (shared with the other extensions).
 - `merge.ts` — merge rules, no fs and no pi imports.
 - `generate.ts` — `run()` plus the CLI entry; options are `--src`, `--modes-out`, `--modes-state`, `--settings`, `--subagents-state`, `--subagent-config`, and `--force`.

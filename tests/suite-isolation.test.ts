@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile, spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -20,17 +20,10 @@ async function assertNoGuardViolations(log: string): Promise<void> {
 	assert.equal(violations, "", `personal Pi access was attempted:\n${violations}`);
 }
 
-async function snapshot(dir: string): Promise<Record<string, string>> {
-	const files: Record<string, string> = {};
-	async function visit(path: string): Promise<void> {
-		for (const entry of await readdir(path, { withFileTypes: true })) {
-			const file = join(path, entry.name);
-			if (entry.isDirectory()) await visit(file);
-			else files[relative(dir, file)] = (await readFile(file)).toString("base64");
-		}
-	}
-	await visit(dir);
-	return files;
+// A body line from `just --json` is a list of text parts, and an interpolated variable is itself a nested list.
+function lineText(line: unknown): string {
+	if (typeof line === "string") return line;
+	return (line as unknown[]).map(lineText).join("");
 }
 
 test("guard records swallowed forbidden accesses from parallel children even when its path contains spaces", async () => {
@@ -58,47 +51,61 @@ try { await fs.promises.readFile(file); } catch {}`;
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("the repository check and test groups ignore and never access personal Pi configuration", { timeout: 240_000 }, async () => {
-	const dir = await mkdtemp(join(tmpdir(), "repository isolation "));
+test("the guard blocks accesses under the guarded home while allowing paths outside it", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "guard scope "));
 	try {
-		const guard = join(dir, "guard.mjs");
-		await copyFile(guardSource, guard);
-		let summary: string | undefined;
-		for (const scenario of ["absent", "malformed", "different"]) {
-			const home = join(dir, scenario);
-			await mkdir(home);
-			if (scenario !== "absent") {
-				const contents = scenario === "malformed" ? "not json {" : '{"different":true}';
-				for (const name of ["agent/permission-mode/permission-mode.src.jsonc", "agent/permission-mode/permission-mode.json", "agent/permission-mode/.last-generated.json", "agent/provider-rules.jsonc", "agent/provider-prompt-rules.jsonc", "just-tools.jsonc", "agent/ledger.yaml"]) {
-					const file = join(home, ".pi", name);
-					await mkdir(dirname(file), { recursive: true });
-					await writeFile(file, contents);
-				}
-			}
-			const before = await snapshot(home);
-			const runtime = join(dir, `runtime-${scenario}`);
-			await mkdir(runtime);
-			const log = join(dir, `${scenario}-violations.log`);
-			await writeFile(log, "");
-			const env = { ...guardEnv(home, log, guard), XDG_RUNTIME_DIR: runtime, PI_LEDGER_PATH: join(home, ".pi", "agent", "ledger.yaml") };
-			delete env.NODE_TEST_CONTEXT;
-			// Run every ordinary group without re-entering this suite-isolation test.
-			const result = spawnSync("just", ["-f", join(repo, "justfile"), "test", "groups"], {
-				cwd: repo, encoding: "utf8", timeout: 75_000, maxBuffer: 8 * 1024 * 1024,
-				env,
-			});
-			await assertNoGuardViolations(log);
-			assert.equal(result.status, 0, `${scenario}: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
-			assert.deepEqual(await snapshot(home), before, `${scenario}: personal files changed`);
-			const current = result.stdout.slice(result.stdout.lastIndexOf("summary:"));
-			assert.match(current, /perm check pass=1 fail=0/);
-			assert.match(current, /provider-rules check pass=1 fail=0/);
-			assert.match(current, /feature-ledger test pass=[1-9]\d* fail=0/);
-			assert.doesNotMatch(current, /suite isolation/);
-			assert.match(result.stdout, /ledger_orchestrate prioritizes review/);
-			assert.match(result.stdout, /orchestration fixture wins over an inherited ledger path/);
-			if (summary === undefined) summary = current;
-			else assert.equal(current, summary, `${scenario}: group results changed`);
+		const home = join(dir, "home");
+		const otherHome = join(dir, "other-home");
+		const log = join(dir, "violations.log");
+		for (const d of [join(home, ".pi", "agent"), join(otherHome, ".pi", "agent")]) {
+			await mkdir(d, { recursive: true });
+			await writeFile(join(d, "settings.json"), "{}");
 		}
+		await writeFile(log, "");
+		const base = { ...guardEnv(home, log, guardSource), TMPDIR: dir };
+		const run = async (env: NodeJS.ProcessEnv, attempts: string[]) => (await exec(process.execPath, ["--input-type=module", "--eval", `import fs from 'node:fs';\n${attempts.join("\n")}`], { env })).stdout.trim().split("\n").map(line => JSON.parse(line));
+		const attempt = (operation: string, target: string, ...rest: unknown[]) => `{ const outcome = { path: ${JSON.stringify(target)} }; try { fs.${operation}(${[JSON.stringify(target), ...rest.map(value => JSON.stringify(value))].join(", ")}); outcome.allowed = true; } catch (error) { outcome.message = error.message; } console.log(JSON.stringify(outcome)); }`;
+		const inside = join(home, ".pi", "agent", "settings.json");
+		const outside = join(dir, "outside.txt");
+		const elsewhere = join(otherHome, ".pi", "agent", "settings.json");
+
+		assert.deepEqual(await run(base, [attempt("readFileSync", inside)]), [{ path: inside, message: `personal Pi access: ${inside}` }]);
+		assert.deepEqual(await run(base, [attempt("writeFileSync", outside, "ok")]), [{ path: outside, allowed: true }]);
+		assert.equal(await readFile(outside, "utf8"), "ok");
+
+		// The guarded root is resolved at import time, so changing HOME does not move it.
+		const moved = { ...base, HOME: otherHome };
+		assert.deepEqual(await run(moved, [attempt("readFileSync", inside), attempt("readFileSync", elsewhere)]), [
+			{ path: inside, message: `personal Pi access: ${inside}` },
+			{ path: elsewhere, allowed: true },
+		]);
+
+		const violations = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+		assert.deepEqual(violations, [
+			{ operation: "readFileSync", path: inside },
+			{ operation: "readFileSync", path: inside },
+		]);
 	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the test recipe installs the isolation guard for every group without running anything", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const recipe = json.recipes["test"];
+	assert.deepEqual(recipe.parameters, [], "the test recipe takes no arguments");
+	const lines = recipe.body.map(lineText);
+	const exported = new Map<string, string>();
+	for (const line of lines) {
+		const match = /^export ([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+		if (match) exported.set(match[1], match[2]);
+	}
+	assert.ok(exported.has("ISOLATION_GUARD_HOME"));
+	assert.ok(exported.has("ISOLATION_GUARD_LOG"));
+	assert.match(exported.get("NODE_OPTIONS")!, /\$\{guard_href\}/);
+	assert.ok(lines.some(line => line.startsWith("guard_href=") && line.includes("tests/suite-isolation-guard.mjs")));
+
+	const groups = lines.filter(line => line.startsWith('run_group "'));
+	assert.ok(groups.length > 0, "the test recipe has no groups to install the guard for");
+	for (const group of groups) {
+		assert.doesNotMatch(group.replace(/^run_group "[^"]*" /, ""), /^just(?: -f "[^"]*")* test(?=\s|$)/, group);
+	}
 });
