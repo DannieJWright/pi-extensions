@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { compile } from "@earendil-works/pi-schema";
-import { parseLedger, serializeLedger, type LedgerItem } from "./ledger.ts";
+import { parseLedger, PATCH_BUDGET_BYTES, serializeLedger, type LedgerItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo as setupBaseRepo } from "./test-harness.ts";
 
@@ -196,6 +196,51 @@ test("ledger_work separates tracked ledger metadata and stores full oversized pa
 		assert.ok(brief.cumulative_diff.implementation.full_patch_path);
 		assert.match(await readFile(brief.cumulative_diff.implementation.full_patch_path, "utf8"), /x{40000}/);
 		assert.deepEqual(brief.latest_diff.ledger_metadata.files, []);
+	} finally { await cleanup(); }
+});
+
+// A truncated view returns the bytes it was allowed plus the truncation notice naming its artifact.
+function splitPreview(patch: string): { preview: string; artifact: string } | null {
+	const match = /^([\s\S]*?)\n\[Patch truncated; full patch: ([^\]]+)\]$/.exec(patch);
+	return match ? { preview: match[1], artifact: match[2] } : null;
+}
+
+test("worker start applies one shared patch budget across its four views", async () => {
+	const { dir, path, cleanup } = await setup(true);
+	try {
+		assert.equal((await exec("git", ["add", "-f", "plan/ledger.yaml"], dir)).code, 0);
+		assert.equal((await exec("git", ["commit", "-m", "Track metadata"], dir)).code, 0);
+		const api = createFakeApi(); featureLedger(api);
+		const first = await start(api, dir, path, "a");
+		await writeFile(join(dir, "src/a.ts"), "x".repeat(6000) + "\n");
+		const submitted = await call(api, dir, submitArgs(path, "a", first.item.assignment.claim_token));
+		assert.ok(!submitted.isError, submitted.content[0].text);
+		// A worker submission commits implementation only, so the oversized ledger change needs its own commit.
+		await changeItem(path, item => { item.status = "in-progress"; item.failed_reviews = 1; item.limitations.push("y".repeat(6000)); });
+		assert.equal((await exec("git", ["add", "-f", "plan/ledger.yaml"], dir)).code, 0);
+		assert.equal((await exec("git", ["commit", "-m", "Review metadata"], dir)).code, 0);
+		const brief = await start(api, dir, path, "b");
+		// Views are cumulative implementation, cumulative ledger metadata, latest implementation, latest ledger metadata.
+		const views = [brief.cumulative_diff.implementation, brief.cumulative_diff.ledger_metadata, brief.latest_diff.implementation, brief.latest_diff.ledger_metadata];
+		// The first view is larger than the whole allowance on its own, so it takes all of it.
+		assert.equal(splitPreview(views[0].patch)!.preview.length, PATCH_BUDGET_BYTES);
+		// Every later view with changes has nothing left, so it returns files and stat with a note naming its artifact.
+		for (const view of views.slice(1, 3)) {
+			const parts = splitPreview(view.patch);
+			assert.ok(parts, `view must report truncation with an artifact path: ${view.patch}`);
+			assert.equal(view.truncated, true);
+			assert.equal(parts.preview, "");
+			assert.equal(parts.artifact, view.full_patch_path);
+			assert.match(view.stat, /src\/a\.ts|plan\/ledger\.yaml/);
+		}
+		// The last view covers a commit with no change in that path, so there is nothing to truncate.
+		assert.deepEqual(views[3], { files: [], stat: "", patch: "", truncated: false });
+		let returnedBytes = 0;
+		for (const view of views) returnedBytes += view.truncated ? splitPreview(view.patch)!.preview.length : view.patch.length;
+		assert.ok(returnedBytes <= PATCH_BUDGET_BYTES, `response returned ${returnedBytes} bytes over the shared budget`);
+		assert.deepEqual(views.map((view) => view.files), [["src/a.ts"], ["plan/ledger.yaml"], ["src/a.ts"], []]);
+		assert.match(await readFile(views[0].full_patch_path!, "utf8"), /x{6000}/);
+		assert.match(await readFile(views[1].full_patch_path!, "utf8"), /y{6000}/);
 	} finally { await cleanup(); }
 });
 

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compile } from "@earendil-works/pi-schema";
-import { parseLedger, serializeLedger, submitReview, type LedgerItem } from "./ledger.ts";
+import { parseLedger, PATCH_BUDGET_BYTES, serializeLedger, submitReview, type LedgerItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
 
@@ -238,6 +238,57 @@ test("empty updates do not pass an open finding, and reviewer claim contains ove
 		assert.ok(!result.isError, result.content[0].text);
 		assert.equal(JSON.parse(result.content[0].text).status, "in-progress");
 		assert.equal((await itemAt(repo.path)).findings![0].id, "earlier");
+	} finally { await repo.cleanup(); }
+});
+
+// A truncated view returns the bytes it was allowed plus the truncation notice naming its artifact.
+function splitPreview(patch: string): { preview: string; artifact: string } | null {
+	const match = /^([\s\S]*?)\n\[Patch truncated; full patch: ([^\]]+)\]$/.exec(patch);
+	return match ? { preview: match[1], artifact: match[2] } : null;
+}
+
+test("reviewer start applies one shared patch budget across its four views", async () => {
+	const repo = await setupRepo(fixture);
+	try {
+		assert.equal((await exec("git", ["add", "-f", "plan/ledger.yaml"], repo.dir)).code, 0);
+		assert.equal((await exec("git", ["commit", "-m", "Track"], repo.dir)).code, 0);
+		const api = createFakeApi(); featureLedger(api);
+		// The implementation patch is smaller than the allowance, so it uses part of it.
+		const workStart = await call(api, "ledger_work", repo.dir, { action: "start", id: "alpha", agent_id: "worker", path: repo.path });
+		assert.ok(!workStart.isError, workStart.content[0].text);
+		await writeFile(join(repo.dir, "code.txt"), "x".repeat(3000));
+		const work = await call(api, "ledger_work", repo.dir, { action: "submit", id: "alpha", agent_id: "worker", claim_token: JSON.parse(workStart.content[0].text).item.assignment.claim_token, commit_message: "Work", summary: "Worked", path: repo.path });
+		assert.ok(!work.isError, work.content[0].text);
+		// A worker submission commits implementation only, so the oversized ledger change needs its own commit.
+		await change(repo.path, item => { item.limitations.push("y".repeat(6000)); });
+		assert.equal((await exec("git", ["add", "-f", "plan/ledger.yaml"], repo.dir)).code, 0);
+		assert.equal((await exec("git", ["commit", "-m", "Review metadata"], repo.dir)).code, 0);
+		const brief = await reviewStart(api, repo.dir, repo.path);
+		// Views are cumulative implementation, cumulative ledger metadata, latest implementation, latest ledger metadata.
+		const views = [brief.cumulative_diff.implementation, brief.cumulative_diff.ledger_metadata, brief.latest_diff.implementation, brief.latest_diff.ledger_metadata];
+		// The first view fits inside the allowance, so it is returned complete and the next oversized view gets only what is left.
+		assert.ok(!views[0].truncated && views[0].patch.includes("x".repeat(3000)));
+		const second = splitPreview(views[1].patch)!;
+		assert.ok(second, "the oversized view must report truncation with an artifact path");
+		assert.equal(views[1].truncated, true);
+		assert.ok(second.preview.length > 0 && second.preview.length < PATCH_BUDGET_BYTES);
+		assert.equal(second.preview.length, PATCH_BUDGET_BYTES - views[0].patch.length);
+		assert.equal(second.artifact, views[1].full_patch_path);
+		assert.match(await readFile(second.artifact, "utf8"), /y{6000}/);
+		// The allowance is spent, so a later view with changes returns files and stat plus the note pointing at its artifact.
+		const third = splitPreview(views[2].patch)!;
+		assert.ok(third, "a view past the allowance must still report truncation with an artifact path");
+		assert.equal(views[2].truncated, true);
+		assert.equal(third.preview, "");
+		assert.equal(third.artifact, views[2].full_patch_path);
+		assert.match(views[2].stat, /code\.txt/);
+		assert.match(await readFile(third.artifact, "utf8"), /x{3000}/);
+		// The last view covers no change in that path, so there is nothing to truncate.
+		assert.deepEqual(views[3], { files: [], stat: "", patch: "", truncated: false });
+		let returnedBytes = 0;
+		for (const view of views) returnedBytes += view.truncated ? splitPreview(view.patch)!.preview.length : view.patch.length;
+		assert.ok(returnedBytes <= PATCH_BUDGET_BYTES, `response returned ${returnedBytes} bytes over the shared budget`);
+		assert.deepEqual(views.map((view) => view.files), [["code.txt"], ["plan/ledger.yaml"], ["code.txt"], []]);
 	} finally { await repo.cleanup(); }
 });
 

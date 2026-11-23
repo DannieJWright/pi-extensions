@@ -539,8 +539,13 @@ export interface DiffView {
 	ledger_metadata: PatchView;
 }
 
-// A start response may contain four patches; keep their combined previews bounded.
-const PATCH_LIMIT_BYTES = 4 * 1024;
+// A start response can contain four patch previews: cumulative and latest, implementation and ledger
+// metadata. They share one byte budget for the whole response rather than each getting its own bound,
+// so a view includes only what remains of the allowance. An exhausted allowance returns files and stat
+// with a note pointing at the full-patch artifacts. The note itself is not counted against the budget.
+export const PATCH_BUDGET_BYTES = 4 * 1024;
+
+type PatchBudget = { remaining: number };
 
 async function gitResult(opts: ItemContext, args: string[]): Promise<string> {
 	const result = await opts.exec("git", args, opts.repoRoot);
@@ -552,24 +557,30 @@ function ledgerRepoPath(opts: ItemContext): string | undefined {
 	return isInside(opts.ledgerPath, opts.repoRoot) ? relative(opts.repoRoot, opts.ledgerPath) : undefined;
 }
 
-async function patchView(opts: ItemContext, from: string, to: string, pathspec: string[], artifactDir: string): Promise<PatchView> {
+async function patchView(opts: ItemContext, from: string, to: string, pathspec: string[], artifactDir: string, budget: PatchBudget): Promise<PatchView> {
 	const args = [from, to, "--", ...pathspec];
 	const files = (await gitResult(opts, ["diff", "--name-only", "-z", ...args])).split("\0").filter(Boolean);
 	const stat = await gitResult(opts, ["diff", "--stat", ...args]);
 	const fullPatch = await gitResult(opts, ["diff", "--binary", ...args]);
 	const bytes = Buffer.from(fullPatch);
-	if (bytes.length <= PATCH_LIMIT_BYTES) return { files, stat, patch: fullPatch, truncated: false };
+	if (!bytes.length || bytes.length <= budget.remaining) {
+		budget.remaining -= bytes.length;
+		return { files, stat, patch: fullPatch, truncated: false };
+	}
 	const dir = await mkdtemp(join(artifactDir, "ledger-patch-"));
 	const fullPatchPath = join(dir, "full.patch");
 	await writeFile(fullPatchPath, fullPatch);
-	return { files, stat, patch: `${bytes.subarray(0, PATCH_LIMIT_BYTES).toString("utf8")}\n[Patch truncated; full patch: ${fullPatchPath}]`, truncated: true, full_patch_path: fullPatchPath };
+	const share = Math.max(0, budget.remaining);
+	budget.remaining -= share;
+	return { files, stat, patch: `${bytes.subarray(0, share).toString("utf8")}\n[Patch truncated; full patch: ${fullPatchPath}]`, truncated: true, full_patch_path: fullPatchPath };
 }
 
-export async function workDiff(opts: ItemContext, from: string, to: string, artifactDir = tmpdir()): Promise<DiffView> {
+// The four views of one response share a single budget object created by the caller.
+export async function workDiff(opts: ItemContext, from: string, to: string, budget: PatchBudget, artifactDir = tmpdir()): Promise<DiffView> {
 	const ledgerPath = ledgerRepoPath(opts);
-	const implementation = await patchView(opts, from, to, ledgerPath ? [".", `:(exclude,literal)${ledgerPath}`] : ["."], artifactDir);
+	const implementation = await patchView(opts, from, to, ledgerPath ? [".", `:(exclude,literal)${ledgerPath}`] : ["."], artifactDir, budget);
 	const ledger_metadata = ledgerPath
-		? await patchView(opts, from, to, [`:(literal)${ledgerPath}`], artifactDir)
+		? await patchView(opts, from, to, [`:(literal)${ledgerPath}`], artifactDir, budget)
 		: { files: [], stat: "", patch: "", truncated: false };
 	return { from, to, implementation, ledger_metadata };
 }
@@ -604,9 +615,10 @@ export async function startWork(opts: ItemContext & { agentId: string; artifactD
 	if (!head) throw new Error("cannot read HEAD");
 	if (!item.commits.start && ((item.failed_reviews ?? 0) > 0 || (item.commits.submissions?.length ?? 0) > 0)) throw new Error(`item ${item.id} has no feature base commit`);
 	const base = item.commits.start ?? head;
-	const cumulative_diff = await workDiff(opts, base, head, opts.artifactDir);
+	const budget: PatchBudget = { remaining: PATCH_BUDGET_BYTES };
+	const cumulative_diff = await workDiff(opts, base, head, budget, opts.artifactDir);
 	const latest = item.commits.submissions?.at(-1);
-	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, opts.artifactDir) : null;
+	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, budget, opts.artifactDir) : null;
 	item.status = "in-progress";
 	item.commits = { ...item.commits, start: base, expected: head };
 	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-worker`, role: "worker", agent_id: opts.agentId, claim_token: randomUUID() };
@@ -729,9 +741,10 @@ export async function startReview(opts: ItemContext & { agentId: string; artifac
 	if (!item.commits.start) throw new Error(`item ${item.id} has no feature base commit`);
 	const head = (await gitResult(opts, ["rev-parse", "HEAD"])).trim();
 	if (!head) throw new Error("cannot read HEAD");
-	const cumulative_diff = await workDiff(opts, item.commits.start, head, opts.artifactDir);
+	const budget: PatchBudget = { remaining: PATCH_BUDGET_BYTES };
+	const cumulative_diff = await workDiff(opts, item.commits.start, head, budget, opts.artifactDir);
 	const latest = item.commits.submissions?.at(-1);
-	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, opts.artifactDir) : null;
+	const latest_diff = latest ? await workDiff(opts, `${latest}^`, latest, budget, opts.artifactDir) : null;
 	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-reviewer`, role: "reviewer", agent_id: opts.agentId, claim_token: randomUUID() };
 	try {
 		await ensureParent(opts.ledgerPath);
