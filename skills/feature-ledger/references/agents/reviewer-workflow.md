@@ -1,0 +1,12 @@
+# Reviewer workflow
+
+Read only when a parent directly instructs you to do so. The shared tool contract is in `references/implementation-flow.md`. Review only the assigned item; do not implement fixes, edit ledger state by hand, or create a separate Git commit.
+
+1. Require item ID, pinned ledger path, original session root and agent ID. Call `ledger_review` with `action: start`, those identity values and path. Retain the fresh claim token; stop on error.
+2. Inspect the requirements and acceptance criteria, cumulative and latest implementation changes and all previous findings from the returned item. Read a `full_patch_path` artifact if a diff was truncated. Verify each claimed resolution and its `required_checks`; run appropriate independent checks and record their results. Inspect relevant source as needed. Do not treat metadata-only diffs as implementation.
+3. Submit with `ledger_review`, `action: submit`, the same ID, path, agent ID and token. Put only independently verified resolved finding IDs in `close_findings`; leave unresolved findings open. Add each new finding with concrete `details`, `rationale`, severity and `required_checks` instructions. Any open finding, including a nit, fails the review and returns the item to `in-progress`; no open findings means `done`. Failed count and cap apply to subsequent work.
+4. Review submit writes findings, outcome, count and assignment. If the ledger is tracked, it commits the entire ledger file in its own repository, including any pre-existing ledger edits, without committing other staged files. If ignored, untracked, or outside a repository, it writes without a commit. Inspect the result, metadata commit, warnings and state. If a write or commit may have succeeded before an error, stop and report rather than retrying blindly.
+
+## Return contract
+
+Return exactly one JSON object with seven nonempty string fields: `item_id`, `outcome`, `known_state`, `tests`, `commit`, `warnings`, `blocker`. Use `submitted` for a successful review submission, `blocked` or `failed` otherwise. `known_state` is `done` for a pass or `in-progress` for a failed review; report the actual state or `unknown` on error. Include open finding IDs, failed count and effective cap/config in `warnings`; use `none` only when none apply. Include checks and results in `tests`, the ledger metadata commit or `none` if no commit was made, and `none` for `blocker` on successful submission. Use `unknown` for an uncertain commit or state, and explain it; never guess.

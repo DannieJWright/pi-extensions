@@ -71,7 +71,7 @@ ledger:
       # The item's workspace wins over the workspace at the ledger level. A path in files.in or
       # tests reads from the session root, so it is written with the workspace prefix.
       workspace: packages/web
-      # branch is a label the author writes. ledger_start compares it with the branch of the
+      # branch is a label the author writes. Role start compares it with the branch of the
       # item's repository and errors on a mismatch.
       branch: chat-ui
       acceptance_criteria:
