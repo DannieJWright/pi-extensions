@@ -288,12 +288,20 @@ test("the entry filter keeps regular files, symbolic links, and directories", ()
 	assert.ok(isAddableStatus("DD"));
 });
 
+// Rename bytes captured from one real run, fixed here as a static string. Captured through the test
+// harness in an isolated temporary repository (git 2.53): commit `old` and `src/old.txt`, move each into
+// place, then read `git status --porcelain -z -M`. Plain porcelain does not report R records without
+// rename detection, so the capture asked for it with -M; without it git reports a delete and an add.
+// The test must not call git to rebuild these bytes.
+const CAPTURED_RENAME = "R  src/new name.txt\0old\0R  src/renamed.ts\0src/old.txt\0";
+
 test("the pathspec is built from the addable entries only", async () => {
 	const kinds: Record<string, string> = {
 		".pi-dotfile": "character device",
 		"src/a.ts": "file",
 		"docs/link.md": "symlink",
 		"artifacts": "directory",
+		"src/new name.txt": "file",
 		"src/renamed.ts": "file",
 	};
 	const fakeStat = async (path: string) => {
@@ -306,8 +314,9 @@ test("the pathspec is built from the addable entries only", async () => {
 	};
 	// A D entry has no path on disk, so it is kept by its status letter. A rename is two records with
 	// no arrow: the destination first, then the source. The destination is the path that exists.
-	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", " D deleted.txt", "R  src/renamed.ts", "src/old.ts"].join("\0");
-	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["src/a.ts", "docs/link.md", "artifacts", "deleted.txt", "src/renamed.ts"]);
+	// Only the stat kinds are invented here; the rename bytes are the captured ones above.
+	const porcelain = ["?? .pi-dotfile", "?? src/a.ts", "?? docs/link.md", "?? artifacts", " D deleted.txt", CAPTURED_RENAME].join("\0");
+	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["src/a.ts", "docs/link.md", "artifacts", "deleted.txt", "src/new name.txt", "src/renamed.ts"]);
 });
 
 test("a path with a space is kept through the -z parse", async () => {
@@ -321,16 +330,17 @@ test("a path with a space is kept through the -z parse", async () => {
 	assert.deepEqual(await addablePaths(porcelain, "/repo", fakeStat), ["notes with a space.md", "old name.txt"]);
 });
 
-test("a rename is read as two records: the destination, then the source", () => {
+test("a rename is read as two records: the destination, then the source", async () => {
 	// With -z the arrow is gone and the order is reversed, so the source record must not be read as a
-	// record of its own.
-	assert.deepEqual(parsePorcelain(["R  src/renamed.ts", "src/old.ts"].join("\0")), [
+	// record of its own. Both pairs come from the same captured run, including the trailing NUL.
+	assert.deepEqual(parsePorcelain(CAPTURED_RENAME), [
+		{ status: "R ", path: "src/new name.txt" },
 		{ status: "R ", path: "src/renamed.ts" },
 	]);
-	// A short source path is consumed too, so no garbage entry reaches the caller.
-	assert.deepEqual(parsePorcelain(["R  src/renamed.ts", "old"].join("\0")), [
-		{ status: "R ", path: "src/renamed.ts" },
-	]);
+	// The short source path `old` is consumed too, so no garbage entry reaches the caller. After the
+	// move neither source path exists on disk, so both destinations are kept by their status letter.
+	const missingStat = async () => ({ isFile: () => false, isSymbolicLink: () => false, isDirectory: () => false });
+	assert.deepEqual(await addablePaths(CAPTURED_RENAME, "/repo", missingStat), ["src/new name.txt", "src/renamed.ts"]);
 	// A copy has the same shape.
 	assert.deepEqual(parsePorcelain(["C  docs/new.md", "docs/old.md", "?? notes.md"].join("\0")), [
 		{ status: "C ", path: "docs/new.md" },
