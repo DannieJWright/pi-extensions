@@ -105,7 +105,7 @@ git-tools action="test" *args="":
 
     case "${action}" in
         test)
-            node --test "{{ REPO }}/extensions/git-read-tools/git-read-tools.test.ts" "{{ REPO }}/extensions/git-read-tools/runtime.integration.test.ts" ${extra[@]+"${extra[@]}"}
+            node --test "{{ REPO }}/extensions/git-tools/git-tools.test.ts" "{{ REPO }}/extensions/git-tools/runtime.integration.test.ts" ${extra[@]+"${extra[@]}"}
             ;;
         *)
             echo "unknown action: ${action}" >&2

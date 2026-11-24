@@ -9,7 +9,7 @@ import extension from "./index.ts";
 
 function git(cwd: string, ...args: string[]) { return execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" }, encoding: "utf8" }).trim(); }
 async function fixture(fn: (dir: string) => Promise<void>) {
- const dir = await mkdtemp(join(tmpdir(), "git-read-tools-"));
+ const dir = await mkdtemp(join(tmpdir(), "git-tools-"));
  try { git(dir, "init", "-q"); await writeFile(join(dir, "space name"), "first\n"); await writeFile(join(dir, "-dash"), "dash\n"); git(dir, "add", "--", "."); git(dir, "commit", "-qm", "first"); await fn(dir); }
  finally { await rm(dir, { recursive: true, force: true }); }
 }

@@ -13,7 +13,7 @@ const definitions = [
  { kind: "show", description: "Inspect one commit and its changes.", properties: { ref, paths, dir }, required: ["ref"] },
 ] as const;
 
-export default function gitReadTools(pi: ExtensionAPI): void {
+export default function gitTools(pi: ExtensionAPI): void {
  for (const definition of definitions) {
   pi.registerTool({
    name: `git_r_${definition.kind}`, label: `Git ${definition.kind}`, description: `${definition.description} Runs in dir when it is given, otherwise the session working directory, with bounded output and runtime.`,

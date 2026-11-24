@@ -156,7 +156,7 @@ test("deployed sample composes agents, prompt, and mode policies", async () => {
     };
     for (const [name, tools] of Object.entries(builtin)) {
       assert.deepEqual(new Set(overrides[name].tools), new Set([...tools, ...gitTools, ...(name === "worker" ? ledgerTools : [])]));
-      assert.ok(overrides[name].subagentOnlyExtensions.some((p: string) => p.endsWith("/git-read-tools/index.ts")));
+      assert.ok(overrides[name].subagentOnlyExtensions.some((p: string) => p.endsWith("/git-tools/index.ts")));
     }
     assert.deepEqual(overrides.worker.mutationTools, ["ledger_start", "ledger_submit"]);
     assert.ok(overrides.worker.subagentOnlyExtensions.some((p: string) => p.endsWith("/feature-ledger/index.ts")));
@@ -241,7 +241,7 @@ test("foreground child launch without ambient extension does not impose sample m
       const rules = permissions.resolvePermissionRules(undefined, worker.permissions);
       const target = join(home, ".pi/agent/git/github.com/DannieJWright/pi-extensions/extensions");
       await mkdir(target, { recursive: true });
-      await symlink(join(repo, "extensions/git-read-tools"), join(target, "git-read-tools"), "junction");
+      await symlink(join(repo, "extensions/git-tools"), join(target, "git-tools"), "junction");
       await symlink(join(repo, "extensions/feature-ledger"), join(target, "feature-ledger"), "junction");
       const launch = launchApi.buildInProcessChildLaunch({ host: "parent", cwd, childAgentName: "worker", childIndex: 0, sessionEnabled: false, inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, tools: worker.tools, subagentOnlyExtensions: worker.subagentOnlyExtensions, permissionRules: rules });
       assert.equal(launch.session.ambientExtensions, false);
@@ -274,7 +274,7 @@ test("detached subprocess exercises background launch and generated Build permis
     await mkdir(cwd); await mkdir(agentDir); await mkdir(home);
     const paths = await deploy(agentDir);
     const settings = JSON.parse(await readFile(paths.settings, "utf8"));
-    settings.extensions = [join(repo, "extensions/git-read-tools/index.ts"), join(repo, "extensions/feature-ledger/index.ts"), join(permRoot!, "src/index.ts")];
+    settings.extensions = [join(repo, "extensions/git-tools/index.ts"), join(repo, "extensions/feature-ledger/index.ts"), join(permRoot!, "src/index.ts")];
     await writeFile(paths.settings, JSON.stringify(settings));
     await mkdir(join(agentDir, "permission-mode"));
     const modeConfig = JSON.parse(await readFile(paths.out, "utf8"));
@@ -282,7 +282,7 @@ test("detached subprocess exercises background launch and generated Build permis
     await writeFile(join(agentDir, "permission-mode/permission-mode.json"), JSON.stringify(modeConfig));
     const target = join(home, ".pi/agent/git/github.com/DannieJWright/pi-extensions/extensions");
     await mkdir(target, { recursive: true });
-    await symlink(join(repo, "extensions/git-read-tools"), join(target, "git-read-tools"), "junction");
+    await symlink(join(repo, "extensions/git-tools"), join(target, "git-tools"), "junction");
     await symlink(join(repo, "extensions/feature-ledger"), join(target, "feature-ledger"), "junction");
     execFileSync(process.execPath, [join(repo, "extensions/permission-mode-generator/detached-hook-probe.ts"), cwd, agentDir, piRoot!, subRoot!], {
       cwd, detached: process.platform !== "win32", timeout: 30000, stdio: "pipe",
@@ -310,12 +310,12 @@ test("permission-mode loader and direct ledger provider calls use disposable led
     const paths = await deploy(agentDir);
     const settings = JSON.parse(await readFile(paths.settings, "utf8"));
     const worker = settings.subagents.agentOverrides.worker;
-    settings.extensions = [join(repo, "extensions/git-read-tools/index.ts"), join(repo, "extensions/feature-ledger/index.ts")];
+    settings.extensions = [join(repo, "extensions/git-tools/index.ts"), join(repo, "extensions/feature-ledger/index.ts")];
     await writeFile(paths.settings, JSON.stringify(settings));
     Object.assign(process.env, { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@localhost", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@localhost", GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: "1" });
     const target = join(home, ".pi/agent/git/github.com/DannieJWright/pi-extensions/extensions");
     await mkdir(target, { recursive: true });
-    await symlink(join(repo, "extensions/git-read-tools"), join(target, "git-read-tools"), "junction");
+    await symlink(join(repo, "extensions/git-tools"), join(target, "git-tools"), "junction");
     await symlink(join(repo, "extensions/feature-ledger"), join(target, "feature-ledger"), "junction");
     const modeConfig = JSON.parse(await readFile(paths.out, "utf8"));
     for (const mode of Object.values(modeConfig.modes) as any[]) mode.sandbox.enabled = false;

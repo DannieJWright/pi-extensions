@@ -274,15 +274,15 @@
     // Optional native child permissions; omit config to leave config.json unchanged:
     // "config": { "permissions": { "rules": { "edit": "ask" } } },
     "fragments": {
-      "gitReadTools": {
+      "gitTools": {
         "tools+": ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"],
-        "subagentOnlyExtensions+": ["~/.pi/agent/git/github.com/DannieJWright/pi-extensions/extensions/git-read-tools/index.ts"]
+        "subagentOnlyExtensions+": ["~/.pi/agent/git/github.com/DannieJWright/pi-extensions/extensions/git-tools/index.ts"]
       },
       // Operator-supplied worker override: ledger_next, ledger_start, ledger_submit,
       // ledger_check and mutationTools. ledger_list is added for the sample.
       // The provider uses ~ for portability; adjust paths for your installation.
       "ledgerTools": {
-        "extends": ["gitReadTools"],
+        "extends": ["gitTools"],
         "tools+": ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"],
         "subagentOnlyExtensions+": ["~/.pi/agent/git/github.com/DannieJWright/pi-extensions/extensions/feature-ledger/index.ts"],
         "mutationTools+": ["ledger_start", "ledger_submit"]
@@ -290,7 +290,7 @@
     },
     "agents": {
       "reviewer": {
-        "extends": ["gitReadTools"],
+        "extends": ["gitTools"],
         "tools+": ["read", "grep", "find", "ls", "watchdog_diff", "contact_supervisor"],
         // Real-world form: point at your own install, e.g.
         //   { "files": [{ "path": "~/npm/node_modules/pi-subagents/agents/reviewer.md", "stripFrontmatter": true }, { "path": "prompts/reviewer-addendum.md", "stripFrontmatter": true }] }
@@ -304,7 +304,7 @@
         }
       },
       "scout": {
-        "extends": ["gitReadTools"],
+        "extends": ["gitTools"],
         "tools+": ["read", "grep", "find", "ls", "bash", "write", "contact_supervisor"]
       },
       "worker": {

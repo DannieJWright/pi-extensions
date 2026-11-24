@@ -10,7 +10,7 @@
       "extensions/provider-rules/index.ts",
       "extensions/permission-mode-generator/index.ts",
       "extensions/feature-ledger/index.ts",
-      "extensions/git-read-tools/index.ts"
+      "extensions/git-tools/index.ts"
     ]
   },
   "devDependencies": {
