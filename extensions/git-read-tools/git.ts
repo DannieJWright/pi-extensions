@@ -116,6 +116,51 @@ async function scanCandidates(target: string) {
  return { names: names.sort(byteCompare).slice(0, CANDIDATE_REPORT_LIMIT), capped: entries.length > CANDIDATE_SCAN_LIMIT };
 }
 
+// Guidance note for case 2: discovery succeeded and that repository has other registered worktrees. Only linked
+// worktrees count toward the trigger — the main working tree never does, even though porcelain always prints it as
+// the first record with no flag marking it — so the note fires only when a record after the first is not the resolved
+// checkout. Whether that is true cannot be known without asking Git, so this costs one invocation on every successful
+// non-bare discovery. Applicability is decided by parsing, not by guessing from the filesystem.
+const WORKTREE_RECORD_LIMIT = 20;
+// The appended message states its own bound instead of OUTPUT_LIMIT: it lists at most WORKTREE_RECORD_LIMIT records,
+// and the note text itself is built outside the captured output. This cap comes from the same 4096-character path
+// limit validate() applies, so a caller outputLimit smaller than the note still gets the full guidance.
+const WORKTREE_GUIDANCE_LIMIT = WORKTREE_RECORD_LIMIT * 4096;
+
+// What counts as an entry, matching the observed porcelain format on Git 2.53.0: each record begins with a line starting "worktree ",
+// records are separated by a blank line, and later fields (HEAD, branch, detached) do not start one. Porcelain prints
+// paths unquoted, so a path containing a newline is read as its first line only — the one case parsing cannot reconstruct.
+function parseWorktreeRecords(text: string): string[] {
+ const records: string[] = [];
+ let current: string | undefined;
+ const flush = () => { if (current !== undefined) { records.push(current); current = undefined; } };
+ for (const line of text.split("\n")) {
+  if (!line) { flush(); continue; }
+  if (line.startsWith("worktree ")) { flush(); current = line.slice(9).trimEnd(); continue; }
+ }
+ flush();
+ return records.slice(0, WORKTREE_RECORD_LIMIT);
+}
+
+// Anomalies on this optional extra invocation cannot turn a successful inspection into an error, so nothing is appended
+// when Git could not answer completely. The main working tree is shown in the note as the current repository whenever
+// it is the resolved checkout, and the records keep porcelain order rather than being sorted.
+async function worktreeGuidance(top: string, runAt: RunOptions) {
+ const list = await runGit(["worktree", "list", "--porcelain"], { ...runAt, outputLimit: WORKTREE_GUIDANCE_LIMIT });
+ // A truncated answer keeps its wording like the other calls do, so a partial list can still be reported with the caveat stated below.
+ if (list.error || list.cancelled || list.timedOut || (!list.truncated && list.code !== 0)) return null;
+ const records = parseWorktreeRecords(list.text);
+ if (records.length < 2) return null;
+ if (!records.slice(1).some((record) => record !== top)) return null;
+ // Every bound that applies to this message is stated here, including the byte cap the lookup itself used.
+ const bounds = [`${WORKTREE_RECORD_LIMIT} records maximum`, `${WORKTREE_GUIDANCE_LIMIT} bytes of Git output maximum`, "this appended message is not bounded by the tool output limit"];
+ if (list.truncated) bounds.push("the list may be incomplete because Git output was cut off at that cap");
+ // Names come from cleaned output, where control characters are already removed, so unlike the candidate list nothing here needs quoting.
+ const label = (record: string) => record === top ? `${record} (current repository${record === records[0] ? ", main working tree" : ""})` : record;
+ const parts = [`Worktree guidance (${bounds.join(", ")}):`, `Records in git worktree list --porcelain order, which lists the main working tree first: ${records.map(label).join(", ")}.`, `Nothing was auto-selected; pass the "dir" parameter with a path from this list.`];
+ return parts.join(" ");
+}
+
 // Built as a report() note so Git's own wording, content and details stay intact.
 function noRepositoryNote(target: string, candidates: { names: string[]; capped: boolean }) {
  const limits = ["immediate children only", `at most ${CANDIDATE_SCAN_LIMIT} entries scanned${candidates.capped ? `, stopped at that limit` : ""}`, `first ${CANDIDATE_REPORT_LIMIT} reported sorted byte-wise`].join(", ");
@@ -176,7 +221,7 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
   const root = await runGit(["rev-parse", "--show-toplevel"], runAt);
   if (root.truncated) throw new Error(ROOT_OVER_LIMIT);
   // Anomalies on this lookup — timeout, cancellation, spawn failure, any non-zero exit — go under the no-repository label, except the work-tree fatal, which is how a bare repository answers. A bare repository has no top level to resolve or print, but log and show still work there, so that case is confirmed before the label is used.
-  let bare = false, prefix = "";
+  let bare = false, prefix = "", notes: string[] = [];
   if (root.code !== 0 || root.cancelled || root.timedOut || root.error) {
    if (!(WORK_TREE_FATAL.test(root.text) && await confirmBare(runAt))) return report(root, "Could not locate repository root", scope, [noRepositoryNote(dir, await scanCandidates(dir))]);
    bare = true;
@@ -184,11 +229,14 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
    const top = root.stdout.trim();
    if (!ROOT_PATH.test(top)) throw new Error(UNEXPECTED_ROOT_OUTPUT);
    scope.top = top;
+   // This branch cannot be reached from a bare repository, which has no top level to compare records against, so there is no note there.
+   const guidance = await worktreeGuidance(top, runAt);
+   if (guidance) notes.push(guidance);
    // Prefix for the submodule scan. Deriving it compares the run directory against the physical top level, which is wrong when the target was reached through a symlink: measured on Git 2.53.0 --show-toplevel printed the physical path while --show-cdup printed "../" from the same run directory. So derive only for a direct target and ask Git otherwise, which costs one more invocation. Git reports the physical path, so the two derivations are not equivalent in all cases.
    if (linked) {
     const cdup = await runGit(["rev-parse", "--show-cdup"], runAt);
     if (cdup.truncated) throw new Error(ROOT_OVER_LIMIT);
-    if (cdup.code !== 0 || cdup.cancelled || cdup.timedOut || cdup.error) return report(cdup, "Could not locate repository root", scope);
+    if (cdup.code !== 0 || cdup.cancelled || cdup.timedOut || cdup.error) return report(cdup, "Could not locate repository root", scope, notes);
     prefix = cdup.stdout.trim();
    } else {
     prefix = path.relative(dir, top);
@@ -202,7 +250,7 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
    if (filters.truncated) throw new Error("Working-tree inspection refused: filter configuration check exceeded output limit.");
    if (filters.code !== 1 || filters.cancelled || filters.timedOut || filters.error) {
     if (filters.code === 0 && !filters.cancelled && !filters.timedOut && !filters.error) throw new Error("Working-tree inspection refused: repository config contains filter drivers.");
-    return report(filters, "Could not check repository filter configuration", scope);
+    return report(filters, "Could not check repository filter configuration", scope, notes);
    }
    // In a bare repository ls-files --stage returns empty output with exit 0, which cannot be read as success, so this scan is skipped there. The kinds that need a working tree reach Git's own fatal instead.
    if (!bare) {
@@ -210,7 +258,7 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
     // Check the whole superproject index even when called from a subdirectory, using the prefix above.
     const index = await scanSubmodules(prefix, runAt);
     if (index.result.truncated) throw new Error("Working-tree inspection refused: submodule check exceeded output limit.");
-    if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules", scope);
+    if (index.result.code !== 0 || index.result.cancelled || index.result.timedOut || index.result.error) return report(index.result, "Could not check repository submodules", scope, notes);
     if (index.invalid) throw new Error("Working-tree inspection refused: unexpected submodule check output.");
     if (index.hasSubmodule) throw new Error("Working-tree inspection refused: index contains submodules, whose filters cannot be safely checked.");
    }
@@ -218,13 +266,13 @@ export async function inspectGit(kind: Kind, input: Input, options: RunOptions) 
   const hashes: string[] = [];
   for (const ref of refs) {
    const result = await runGit(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], runAt);
-   if (result.code !== 0 || result.truncated || result.cancelled || result.timedOut || result.error) return report(result, `Could not resolve ref ${ref}`, scope);
+   if (result.code !== 0 || result.truncated || result.cancelled || result.timedOut || result.error) return report(result, `Could not resolve ref ${ref}`, scope, notes);
    const hash = result.stdout.trim();
    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(hash)) throw new Error(`Could not resolve ref ${ref}: unexpected Git output`);
    hashes.push(hash);
   }
   const result = await runGit([...args, ...hashes, "--", ...paths], runAt);
-  return report(result, "Git inspection", scope);
+  return report(result, "Git inspection", scope, notes);
  } catch (error) { return { content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }], details: {}, isError: true }; }
 }
 

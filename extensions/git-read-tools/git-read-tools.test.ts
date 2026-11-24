@@ -23,6 +23,14 @@ function listedNames(result: Awaited<ReturnType<typeof inspectGit>>) {
  assert.ok(match, text(result));
  return match[1];
 }
+// The worktree records report() appends when another registered worktree exists. Asserting them as one exact string proves porcelain order rather than membership or sorting.
+function listedWorktrees(result: Awaited<ReturnType<typeof inspectGit>>) {
+ const match = text(result).match(/which lists the main working tree first: (.+?)\. Nothing was auto-selected/);
+ assert.ok(match, text(result));
+ return match[1];
+}
+// Live porcelain order is the expected value here, because Git's own record order cannot be assumed from creation order.
+function porcelainRecords(cwd: string) { return git(cwd, "worktree", "list", "--porcelain").split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice(9)); }
 // Runs one kind and returns the result. `base` is not named `dir` because `dir` is a tool argument.
 // Limitation: the helper derives the git dir by running Git at `base`, so index immutability can only be
 // checked when `base` is itself inside a repository. For a target outside any repository, assert content only
@@ -512,6 +520,128 @@ test("upward discovery wins over the candidate scan", async () => {
   assert.equal(inChild.isError, false, text(inChild));
   assert.match(text(inChild), /own repository/);
  } finally { await rm(ancestor, { recursive: true, force: true }); }
+});
+
+// Case 2: discovery succeeded and the repository has other registered worktrees. The names are chosen so byte-wise
+// order differs from porcelain order, which is what the comparison against live porcelain output proves.
+test("the guidance note lists other registered worktrees in porcelain order, marks the current checkout, and states its own bounds", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "guidance-parent-"));
+ try {
+  const main = join(parent, "zz-main");
+  await mkdir(main); git(main, "init", "-q");
+  await writeFile(join(main, "file"), "first\n"); git(main, "add", "--", "."); git(main, "commit", "-qm", "subject main");
+  const nested = join(main, "nested"); await mkdir(nested);
+  // Separate branches make the checkouts distinguishable by content, so a result naming subject main shows nothing was selected elsewhere.
+  const linked = join(parent, "aa-linked");
+  git(main, "worktree", "add", "-q", "-b", "other", linked, "HEAD");
+  git(linked, "commit", "-qm", "subject linked", "--allow-empty");
+  const result = await unchanged(main, "log", { dir: "zz-main/nested", limit: 1 }, { cwd: parent });
+  assert.equal(result.isError, false, text(result));
+  assert.match(text(result), /subject main/); assert.doesNotMatch(text(result), /subject linked/);
+  assert.equal(headerLine(result), `Git inspection (run directory ${nested}, repository ${main}):`);
+  const records = porcelainRecords(main);
+  assert.deepEqual(records, [main, linked]);
+  // Byte-wise sort would put aa-linked first, so comparing against live porcelain output shows the note keeps Git's order rather than sorting.
+  assert.notDeepEqual(records, [...records].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))));
+  assert.equal(listedWorktrees(result), `${main} (current repository, main working tree), ${linked}`);
+  assert.match(text(result), /Worktree guidance \(20 records maximum, 81920 bytes of Git output maximum, this appended message is not bounded by the tool output limit\): Records in git worktree list --porcelain order, which lists the main working tree first: /);
+  assert.match(text(result), /Nothing was auto-selected; pass the "dir" parameter with a path from this list\.\]/);
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+// The negative case that discriminates the trigger: only linked worktrees count, never the main working tree itself,
+// even though porcelain prints it first with no flag marking it. Nothing is appended when there is no second record.
+test("a single-checkout repository gets no note anywhere, including from a subdirectory of its top level", async () => fixture(async (base) => {
+ assert.deepEqual(porcelainRecords(base), [base]);
+ const statusArgs = ["status", "--porcelain=v1", "--branch", "--untracked-files=all"];
+ assert.equal(text(await unchanged(base, "status")), `Git inspection:\n${(await runGit(statusArgs, { cwd: base })).text}`);
+ await mkdir(join(base, "nested"));
+ const subdirectory = await unchanged(base, "log", { limit: 1 }, { cwd: join(base, "nested") });
+ assert.equal(subdirectory.isError, false, text(subdirectory));
+ // The run directory and the top level differ here, so the header appears; only the note is absent because there is no second record.
+ assert.equal(headerLine(subdirectory), `Git inspection (run directory ${join(base, "nested")}, repository ${base}):`);
+ assert.doesNotMatch(text(subdirectory), /Worktree guidance/);
+}));
+
+test("the current entry is marked as the resolved checkout rather than assumed to be the first record", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "guidance-worktrees-"));
+ try {
+  const main = join(parent, "zz-main");
+  await mkdir(main); git(main, "init", "-q");
+  await writeFile(join(main, "file"), "first\n"); git(main, "add", "--", "."); git(main, "commit", "-qm", "subject main");
+  const first = join(parent, "aa-first"), second = join(parent, "bb-second");
+  git(main, "worktree", "add", "-q", "-b", "first-branch", first, "HEAD"); git(first, "commit", "-qm", "subject first", "--allow-empty");
+  git(main, "worktree", "add", "-q", "-b", "second-branch", second, "HEAD"); git(second, "commit", "-qm", "subject second", "--allow-empty");
+  const result = await unchanged(main, "log", { limit: 1 }, { cwd: first });
+  assert.equal(result.isError, false, text(result));
+  assert.match(text(result), /subject first/); assert.doesNotMatch(text(result), /subject second|subject main/);
+  // In a linked worktree the resolved top level is that worktree itself, so nothing differs from the run directory here and no header appears while the note still marks the actual checkout.
+  assert.equal(headerLine(result), "Git inspection:");
+  const records = porcelainRecords(main);
+  assert.equal(records.length, 3); assert.equal(records[0], main);
+  // The expected string is built from live order, so no assumption about which linked record comes next is made.
+  assert.equal(listedWorktrees(result), records.map((record) => record === first ? `${record} (current repository)` : record).join(", "));
+ } finally { await rm(parent, { recursive: true, force: true }); }
+});
+
+// Every limit that applies to this message is stated in it: the record count, the byte cap the lookup used, and that
+// the tool output limit does not apply. The current entry carries its own marker, so the joined string is compared rather than split on ", ".
+test("the note states both bounds that apply to it and enforces them under a smaller caller output limit", async () => fixture(async (dir) => {
+ const script = join(dir, "fake-git");
+ // Only the guidance call is intercepted here, so discovery falls through to real Git inside the fixture repository and the resolved top level stays the first record.
+ const first = [dir, ...Array.from({ length: 19 }, (_, i) => `/fabricated-${i}`)];
+ const beyond = Array.from({ length: 12 }, () => "/fabricated-" + "y".repeat(8000));
+ const names = [...first, ...beyond];
+ const porcelain = names.map((name) => `worktree ${name}\nHEAD abc\n`).join("\n");
+ await writeFile(join(dir, "porcelain"), porcelain);
+ await writeFile(script, `#!/bin/sh\ncase " $* " in\n *" worktree list --porcelain "*) cat "${join(dir, "porcelain")}" ;;\n *) exec git "$@" ;;\nesac\n`, { mode: 0o755 });
+ assert.ok(names.length > 20 && Buffer.byteLength(porcelain) > 20 * 4096, "the fixture must exceed both stated bounds for enforcement to be observable");
+ // The caller limit passed here governs captured tool output only; the note keeps its own bound, and the cut lands after the 20th record so the listed part is complete.
+ const result = await inspectGit("log", { limit: 1 }, { cwd: dir, executable: script, outputLimit: 300 });
+ assert.equal(result.isError, false, text(result));
+ assert.match(text(result), /Worktree guidance \(20 records maximum, 81920 bytes of Git output maximum, this appended message is not bounded by the tool output limit, the list may be incomplete because Git output was cut off at that cap\): Records in git worktree list --porcelain order, which lists the main working tree first: /);
+ assert.equal(listedWorktrees(result), [`${dir} (current repository, main working tree)`, ...first.slice(1, 20)].join(", "));
+}));
+
+// An optional extra invocation cannot make a successful inspection an error, so an anomalous answer appends nothing while the inspection itself still succeeds.
+test("an anomalous answer on the guidance call appends nothing and leaves the inspection successful", async () => fixture(async (dir) => {
+ const outside = await mkdtemp(join(tmpdir(), "guidance-anomaly-"));
+ try {
+  git(dir, "worktree", "add", "-q", "-b", "other", join(outside, "linked"), "HEAD");
+  assert.ok(porcelainRecords(dir).length > 1, "the trigger must hold for these cases to show the guard rather than the absence of other worktrees");
+  const script = join(dir, "fake-git");
+  const writeScript = (body: string) => writeFile(script, `#!/bin/sh\ncase " $* " in\n *" worktree list --porcelain "*) ${body} ;;\n *) exec git "$@" ;;\nesac\n`, { mode: 0o755 });
+  for (const body of ["echo failed >&2; exit 3", "sleep 2"]) {
+   await writeScript(body);
+   const result = await inspectGit("log", { limit: 1 }, { cwd: dir, executable: script, timeoutMs: 300 });
+   assert.equal(result.isError, false, text(result)); assert.doesNotMatch(text(result), /Worktree guidance|failed|timed out/);
+  }
+  await writeScript("touch guidance-started; sleep 2");
+  const controller = new AbortController();
+  const pending = inspectGit("log", { limit: 1 }, { cwd: dir, executable: script, signal: controller.signal });
+  for (let i = 0; i < 100; i++) {
+   try { await readFile(join(dir, "guidance-started")); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+  }
+  await readFile(join(dir, "guidance-started")); controller.abort();
+  const cancelled = await pending;
+  assert.equal(cancelled.isError, true); assert.match(text(cancelled), /^Git inspection:[\s\S]*Git cancelled; process stopped\.\]/); assert.doesNotMatch(text(cancelled), /Worktree guidance/);
+ } finally { await rm(outside, { recursive: true, force: true }); }
+}));
+
+// The two notes cannot combine: marking an entry as current requires a resolved top level, so when discovery fails only the candidate note appears even though other worktrees are registered.
+test("a multi-worktree repository with no resolvable top level reports candidates without any current marker", async () => {
+ const parent = await mkdtemp(join(tmpdir(), "guidance-no-repository-"));
+ try {
+  const main = join(parent, "zz-main");
+  await mkdir(main); git(main, "init", "-q");
+  await writeFile(join(main, "file"), "first\n"); git(main, "add", "--", "."); git(main, "commit", "-qm", "subject main");
+  git(main, "worktree", "add", "-q", "-b", "other", join(parent, "aa-linked"), "HEAD");
+  // The plain parent is in no repository, so this is the no-repository-found label and nothing can be marked current.
+  const result = await inspectGit("status", {}, { cwd: parent });
+  assert.equal(result.isError, true);
+  assert.match(listedNames(result), /aa-linked, zz-main/);
+  assert.doesNotMatch(text(result), /Worktree guidance|current repository/);
+ } finally { await rm(parent, { recursive: true, force: true }); }
 });
 
 test("bare repositories keep log and show working with no top level in the header", async () => {
