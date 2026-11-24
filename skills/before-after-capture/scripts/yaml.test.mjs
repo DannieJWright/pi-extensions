@@ -89,6 +89,21 @@ acceptance_criteria:
 	]);
 });
 
+test("nested objects, scalar types, escaping, and whitespace round-trip exactly", () => {
+	const doc = { ledger: { enabled: true, disabled: false, count: 0, text: "true", numeric: "123", padded: "  detail  ", findings: [
+		{ details: "A 'quote', a \\ slash,\n\n  indented\n", rationale: "two  spaces\n", checks: ["1", "a, b", "'quoted'", "false"] },
+		{ checks: ["one", "two"], details: "second" },
+	] } };
+	assert.deepEqual(parseYaml(serializeYaml(doc)), doc);
+	assert.deepEqual(parseYaml("values: ['a, b', true, false, 0, '123', null]\n").values, ["a, b", true, false, 0, "123", null]);
+	assert.equal(parseYaml("value: 'It''s a test'\n").value, "It's a test");
+});
+
+test("rejects duplicate keys and unconsumed nested content instead of discarding it", () => {
+	assert.throws(() => parseYaml("review: true\nreview: false\n"), /duplicate key review/);
+	assert.throws(() => parseYaml("review: true\n  ignored: value\n"), /bad line 2/);
+});
+
 test("empty flow arrays and empty flow maps parse and round-trip", () => {
 	const doc = parseYaml(`
 conditions: []

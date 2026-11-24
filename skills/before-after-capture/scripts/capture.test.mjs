@@ -66,12 +66,16 @@ test("parseSpec rejects a missing required field and an unknown verb", () => {
 });
 
 test("runSteps runs the steps in order", async () => {
-	const spec = parseSpec(SPEC);
-	const log = [];
-	const resolved = await runSteps(fakeDriver(log), spec);
-	assert.deepEqual(log.map((entry) => entry[0]), ["scroll_to", "wait_for", "fill", "press", "assert", "screenshot"]);
-	assert.equal(resolved[2].value, "atomically");
-	assert.ok(resolved.every((entry) => entry.ok));
+	const dir = await mkdtemp(join(tmpdir(), "capture-steps-"));
+	try {
+		const spec = parseSpec(SPEC);
+		spec.steps.at(-1).target = join(dir, "after.png");
+		const log = [];
+		const resolved = await runSteps(fakeDriver(log), spec);
+		assert.deepEqual(log.map((entry) => entry[0]), ["scroll_to", "wait_for", "fill", "press", "assert", "screenshot"]);
+		assert.equal(resolved[2].value, "atomically");
+		assert.ok(resolved.every((entry) => entry.ok));
+	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("a failed assert stops the run", async () => {

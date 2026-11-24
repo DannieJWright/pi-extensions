@@ -21,9 +21,7 @@ function parseModel(value: string): ModelRef | undefined {
 }
 
 export async function run(argv: string[]): Promise<number> {
-	const picked = pickConfigPath();
-	let configPath = picked.path;
-	let legacy = picked.legacy;
+	let configPath: string | undefined;
 	let model: ModelRef | undefined;
 
 	for (let i = 0; i < argv.length; i += 1) {
@@ -40,7 +38,6 @@ export async function run(argv: string[]): Promise<number> {
 			}
 			if (arg === "--config") {
 				configPath = resolve(value);
-				legacy = false;
 			} else {
 				model = parseModel(value);
 				if (!model) {
@@ -55,6 +52,8 @@ export async function run(argv: string[]): Promise<number> {
 		return 2;
 	}
 
+	const picked = configPath ? { path: configPath, legacy: false } : pickConfigPath();
+	configPath = picked.path;
 	let text: string;
 	try {
 		text = await readFile(configPath, "utf8");
@@ -69,7 +68,7 @@ export async function run(argv: string[]): Promise<number> {
 	}
 
 	const result = parseConfig(text, configPath);
-	process.stdout.write(`${formatReport({ configPath, result, model, legacy })}\n`);
+	process.stdout.write(`${formatReport({ configPath, result, model, legacy: picked.legacy })}\n`);
 	return result.problems.length > 0 ? 1 : 0;
 }
 

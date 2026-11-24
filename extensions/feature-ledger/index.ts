@@ -2,35 +2,40 @@
 // Pi extension for the feature-ledger workflow. The workflow lives in
 // skills/feature-ledger/SKILL.md; these tools cover the steps an agent cannot
 // do reliably by hand: reading where a feature stands, the status transition, and
-// the validation-gated commit. The read tools (ledger_list, ledger_next) never write.
+// the validation-gated commit. Read operations never write.
 // Core logic is in ledger.ts so it is testable without a Pi session.
 
 import { access, readFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { checkParsed, findItem, listItems, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextItem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startItem, submitItem, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem, type StartResult } from "./ledger.ts";
+import { allowedValues, checkParsed, effectiveReviewConfig, FINDING_SEVERITIES, findItem, orchestrateList, orchestrateNext, releaseClaim, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
 const PATH_DESCRIPTION = "Ledger file. Without it the path is resolved in order: PI_LEDGER_PATH, then the first line of plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted; a relative path resolves against the session root.";
 const PATH_PROPERTY = { type: "string", description: PATH_DESCRIPTION };
 
-const LIST_PARAMS = {
-	type: "object",
-	properties: { path: PATH_PROPERTY },
-	required: [],
-	additionalProperties: false,
+// Action names belong to the tools, not to the model, so they stay here: one list per tool, read by both
+// the schema and the guard at call time, so an action is named once per tool. Vocabularies the model owns,
+// such as finding severity below, are referenced through the exported arrays in ledger.ts rather than copied.
+const ORCHESTRATE_ACTIONS = ["list", "next", "release"] as const;
+const WORK_ACTIONS = ["start", "submit"] as const;
+const REVIEW_ACTIONS = ["start", "submit"] as const;
+const [ORCHESTRATE_LIST, ORCHESTRATE_NEXT, ORCHESTRATE_RELEASE] = ORCHESTRATE_ACTIONS;
+const [WORK_START, WORK_SUBMIT] = WORK_ACTIONS;
+const [REVIEW_START, REVIEW_SUBMIT] = REVIEW_ACTIONS;
+
+const GET_PARAMS = {
+	type: "object", properties: { id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
+	required: ["id"], additionalProperties: false,
 } as unknown as TSchema;
 
-const START_PARAMS = {
-	type: "object",
-	properties: {
-		id: { type: "string", description: "Feature id in the resolved ledger file" },
-		path: PATH_PROPERTY,
-	},
-	required: ["id"],
-	additionalProperties: false,
+const ORCHESTRATE_PARAMS = {
+	anyOf: [
+		...[ORCHESTRATE_LIST, ORCHESTRATE_NEXT].map((action) => ({ type: "object", properties: { action: { const: action }, path: PATH_PROPERTY }, required: ["action"], additionalProperties: false })),
+		{ type: "object", properties: { action: { const: ORCHESTRATE_RELEASE }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, path: PATH_PROPERTY }, required: ["action", "id", "agent_id", "claim_token"], additionalProperties: false },
+	],
 } as unknown as TSchema;
 
 const CHECK_PARAMS = {
@@ -40,17 +45,40 @@ const CHECK_PARAMS = {
 	additionalProperties: false,
 } as unknown as TSchema;
 
-const SUBMIT_PARAMS = {
-	type: "object",
-	properties: {
-		id: { type: "string", description: "Feature id in the resolved ledger file" },
-		commit_message: { type: "string", description: "Commit message for the single commit this item produces" },
-		summary: { type: "string", description: "What was done, in past tense" },
-		limitations: { type: "array", items: { type: "string" }, description: "Known limitations to append to the item" },
-		path: PATH_PROPERTY,
-	},
-	required: ["id", "commit_message", "summary"],
-	additionalProperties: false,
+const WORK_PARAMS = {
+	anyOf: [
+		{
+			type: "object",
+			properties: { action: { const: WORK_START }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
+			required: ["action", "id", "agent_id"], additionalProperties: false,
+		},
+		{
+			type: "object",
+			properties: { action: { const: WORK_SUBMIT }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, summary: { type: "string", minLength: 1 }, limitations: { type: "array", items: { type: "string" } }, empty_commit: { type: "boolean" }, path: PATH_PROPERTY },
+			required: ["action", "id", "agent_id", "claim_token", "commit_message", "summary"], additionalProperties: false,
+		},
+	],
+} as unknown as TSchema;
+
+const REVIEW_PARAMS = {
+	anyOf: [
+		{
+			type: "object",
+			properties: { action: { const: REVIEW_START }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, path: PATH_PROPERTY },
+			required: ["action", "id", "agent_id"], additionalProperties: false,
+		},
+		{
+			type: "object",
+			properties: {
+				action: { const: REVIEW_SUBMIT }, id: { type: "string", minLength: 1 }, agent_id: { type: "string", minLength: 1 }, claim_token: { type: "string", minLength: 1 }, commit_message: { type: "string", minLength: 1 }, path: PATH_PROPERTY,
+				close_findings: { type: "array", items: { type: "string", minLength: 1 } },
+				// The allowed severities are the model's list, so a schema cannot accept a value the shared gate
+				// would reject, and the two lists cannot drift apart.
+				new_findings: { type: "array", items: { type: "object", properties: { details: { type: "string", minLength: 1 }, rationale: { type: "string", minLength: 1 }, severity: { enum: [...FINDING_SEVERITIES] }, required_checks: { type: "array", items: { type: "string", minLength: 1 } } }, required: ["details", "rationale", "severity", "required_checks"], additionalProperties: false } },
+			},
+			required: ["action", "id", "agent_id", "claim_token", "commit_message"], additionalProperties: false,
+		},
+	],
 } as unknown as TSchema;
 
 const POINTER_FILE = join("plan", "ledger.path");
@@ -75,34 +103,41 @@ function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+type GateResult = { path: string; parsed: ParsedLedger; problems: string[] };
+
+// One validation entry point for every action, reads included. Every tool resolves the path, reads
+// once and runs the model check here before doing any work, so no tool accepts a file another would
+// reject. A tool that acts on an item reports the gate as an error; only ledger_check reports it as
+// data. Both use these lines unchanged, so the wording matches for the same file. Filesystem and git
+// checks stay in ledger_check because they need the filesystem, and a read path never writes.
+async function validateLedger(ctx: ExtensionContext, explicit?: string): Promise<GateResult> {
+	const path = await resolvePath(ctx, explicit);
+	const parsed = parseLedger(await readFile(path, "utf8"));
+	return { path, parsed, problems: checkParsed(parsed) };
+}
+
+// A file with no model always contributes at least the "no ledger block" line, so this never hands
+// back an absent model.
+function requireValid(gate: GateResult): Ledger {
+	if (gate.problems.length) throw new Error(`invalid ledger: ${gate.problems.join("; ")}`);
+	return gate.parsed.ledger!;
+}
+
 // Names each required field that is missing, in the order of the required list.
 // The tool wrapper reports it as "id: missing" rather than only the arguments received.
 function missingRequired(params: Record<string, unknown>, required: string[]): string[] {
 	return required.filter((field) => params[field] === undefined || params[field] === "");
 }
 
-function briefText(item: LedgerItem, brief: StartResult["brief"]): string {
-	const lines = [
-		`ledger_start: ${item.id} is in-progress (commit ${item.commits.start})`,
-		"",
-		`Workspace: ${brief.workspace}`,
-		`Goal: ${brief.goal}`,
-		"",
-		"Acceptance criteria:",
-		...brief.acceptance_criteria.map((criterion) => `- ${criterion}`),
-		"",
-		"Constraints:",
-		...brief.constraints.map((constraint) => `- ${constraint}`),
-		"",
-		"Files in:",
-		...brief.files_in.map((file) => `- ${file}`),
-		"",
-		"Tests:",
-		...brief.tests.map((testLine) => `- ${testLine}`),
-		"",
-		`Validation scripts (run by ledger_submit from the item's workspace root): ${brief.validation_scripts.join(", ")}`,
-	];
-	return lines.join("\n");
+function requireArguments(params: Record<string, unknown>, required: string[], allowed: string[]): void {
+	const missing = missingRequired(params, required);
+	if (missing.length) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
+	for (const key of Object.keys(params)) if (!allowed.includes(key)) throw new Error(`${key}: not allowed for this action`);
+	for (const key of [...required, "path"]) {
+		if (params[key] !== undefined && (typeof params[key] !== "string" || (key !== "path" && !(params[key] as string).trim()))) throw new Error(`${key}: must be a non-empty string`);
+	}
+	if (params.empty_commit !== undefined && typeof params.empty_commit !== "boolean") throw new Error("empty_commit: must be a boolean");
+	if (params.limitations !== undefined && (!Array.isArray(params.limitations) || params.limitations.some((value) => typeof value !== "string"))) throw new Error("limitations: must be a list of strings");
 }
 
 export default function featureLedger(pi: ExtensionAPI): void {
@@ -129,41 +164,42 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		return { cwd: ctx.cwd, ledgerPath, ledger, workspace, repoRoot, branch: await readBranch(repoRoot), id: item.id, exec };
 	}
 
-	// Read tools do not touch git: the path comes from the resolution order, not from a branch.
-	async function readLedger(ctx: ExtensionContext, explicit?: string): Promise<{ path: string; ledger: Ledger }> {
-		const path = await resolvePath(ctx, explicit);
-		const text = await readFile(path, "utf8");
-		const { ledger, problems } = parseLedger(text);
-		if (!ledger) throw new Error(`cannot read the ledger: ${problems.join("; ")}`);
-		return { path, ledger };
-	}
-
 	pi.registerTool({
-		name: "ledger_list",
-		label: "Ledger list",
-		description: "Read every ledger item in file order. Returns JSON: branch, and for each item id, status, short_goal, workspace, and commits (start is null for a todo item, end is null for an in-progress item). Errors when an item has no short_goal value. Read-only. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
-		parameters: LIST_PARAMS,
+		name: "ledger_get_feature",
+		label: "Ledger feature",
+		description: `Read the full feature, assignment, findings, commits and effective review configuration. ${PATH_DESCRIPTION}`,
+		parameters: GET_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const result = listItems((await readLedger(ctx, params.path)).ledger);
+				requireArguments(params, ["id"], ["id", "path"]);
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const item = findItem(ledger, params.id, gate.path);
+				const result = { item, config: { ...effectiveReviewConfig(ledger, item), validation_scripts: item.validation_scripts ?? ledger.validation_scripts }, workspace: resolveWorkspace(ctx.cwd, item, ledger.workspace) };
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
-				return { content: [{ type: "text", text: `ledger_list: ${message(error)}` }], details: {}, isError: true };
+				return { content: [{ type: "text", text: `ledger_get_feature: ${message(error)}` }], details: {}, isError: true };
 			}
 		},
 	});
 
 	pi.registerTool({
-		name: "ledger_next",
-		label: "Ledger next",
-		description: "Read the next item to work on: the first in-progress item, else the first todo. Returns JSON { next: { id, status, short_goal, workspace }, status } where status is the ledger state (todo when nothing is started, in-progress when at least one item is in-progress or done, done when all are done and next is null). Errors when the selected item has no short_goal value. Read-only. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
-		parameters: LIST_PARAMS,
+		name: "ledger_orchestrate",
+		label: "Ledger orchestration",
+		description: `List in file order, select the next eligible item, or release a stopped run's matching identity and token. Release does not change status. Claims do not protect against concurrent writers. ${PATH_DESCRIPTION}`,
+		parameters: ORCHESTRATE_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const result = nextItem((await readLedger(ctx, params.path)).ledger);
+				if (!ORCHESTRATE_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(ORCHESTRATE_ACTIONS)}`);
+				const release = params.action === ORCHESTRATE_RELEASE;
+				requireArguments(params, release ? ["id", "agent_id", "claim_token"] : [], release ? ["action", "id", "agent_id", "claim_token", "path"] : ["action", "path"]);
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const result = release ? { item: await releaseClaim(ledger, gate.path, params.id, params.agent_id, params.claim_token) }
+					: params.action === ORCHESTRATE_LIST ? orchestrateList(ledger) : orchestrateNext(ledger);
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
-				return { content: [{ type: "text", text: `ledger_next: ${message(error)}` }], details: {}, isError: true };
+				return { content: [{ type: "text", text: `ledger_orchestrate: ${message(error)}` }], details: {}, isError: true };
 			}
 		},
 	});
@@ -175,17 +211,17 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		parameters: CHECK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const path = await resolvePath(ctx, params.path);
-				const parsed = parseLedger(await readFile(path, "utf8"));
-				const problems = checkParsed(parsed);
+				const gate = await validateLedger(ctx, params.path);
+				// The same core every other tool runs. Here its lines are reported as data, not thrown.
+				const problems = [...gate.problems];
 				// A warning is reported and does not fail the check. Only problems set ok and isError.
 				const warnings: string[] = [];
 				// These need the filesystem and git, so they run here and not in checkLedger. Plan
 				// references resolve against the session root, not the repository.
-				if (parsed.ledger) {
-					for (const [i, item] of parsed.ledger.features.entries()) {
-						const at = problemTarget(parsed.indexes[i], item.id, "workspace");
-						const workspace = resolveWorkspace(ctx.cwd, item, parsed.ledger.workspace);
+				if (gate.parsed.ledger) {
+					for (const [i, item] of gate.parsed.ledger.features.entries()) {
+						const at = problemTarget(gate.parsed.indexes[i], item.id, "workspace");
+						const workspace = resolveWorkspace(ctx.cwd, item, gate.parsed.ledger.workspace);
 						try {
 							await access(workspace);
 						} catch {
@@ -198,7 +234,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 							try {
 								await access(target);
 							} catch {
-								warnings.push(missingInputWarning(problemTarget(parsed.indexes[i], item.id, "files.in"), target));
+								warnings.push(missingInputWarning(problemTarget(gate.parsed.indexes[i], item.id, "files.in"), target));
 							}
 						}
 						const ref = planReference(item.goal);
@@ -206,12 +242,12 @@ export default function featureLedger(pi: ExtensionAPI): void {
 							try {
 								await access(join(ctx.cwd, ref));
 							} catch {
-								problems.push(missingPlanProblem(problemTarget(parsed.indexes[i], item.id, "goal"), ref));
+								problems.push(missingPlanProblem(problemTarget(gate.parsed.indexes[i], item.id, "goal"), ref));
 							}
 						}
 					}
 				}
-				const result = { path, ok: problems.length === 0, problems, warnings };
+				const result = { path: gate.path, ok: problems.length === 0, problems, warnings };
 				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {}, isError: problems.length > 0 };
 			} catch (error) {
 				return { content: [{ type: "text", text: `ledger_check: ${message(error)}` }], details: {}, isError: true };
@@ -220,53 +256,55 @@ export default function featureLedger(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "ledger_start",
-		label: "Ledger start",
-		description: "Read a feature ledger item and mark it in-progress. Returns the item brief: goal, acceptance criteria, constraints, files.in, tests. Refuses when the item is not todo. The item's workspace is resolved (the item value, else the ledger default, else the session root), and a per-item branch is checked against that repository. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
-		parameters: START_PARAMS,
+		name: "ledger_work",
+		label: "Ledger work",
+		description: `Start or submit worker work. Start claims a todo or eligible in-progress item for agent_id and returns a fresh claim token, full item, effective config, pending findings and implementation/ledger diff views; the failed-review limit blocks start only. Submit requires the same agent_id and claim_token, runs validations and commits work, so a held claim still completes at the cap. empty_commit is only for an explained review fix. Claims fence stale sequential runs, not concurrent writers. The four patch previews share one 4 KiB budget per response; each oversized view writes its full patch to an artifact, and once the allowance is used up the result gives files and stat with a note pointing at the artifacts. ${PATH_DESCRIPTION}`,
+		parameters: WORK_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const { path, ledger } = await readLedger(ctx, params.path);
-				const item = findItem(ledger, params.id, path);
-				// The file is parsed once, and the brief reports the item the write path returned.
-				const { item: started, brief } = await startItem(await itemContext(ctx, path, ledger, item));
-				return { content: [{ type: "text", text: briefText(started, brief) }], details: {} };
+				if (!WORK_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(WORK_ACTIONS)}`);
+				const required = params.action === WORK_START ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message", "summary"];
+				requireArguments(params, required, params.action === WORK_START ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "commit_message", "summary", "limitations", "empty_commit", "path"]);
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const item = findItem(ledger, params.id, gate.path);
+				const opts = await itemContext(ctx, gate.path, ledger, item);
+				if (params.action === WORK_START) {
+					const result = await startWork({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined });
+					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
+				}
+				const result = await submitWork({ ...opts, agentId: params.agent_id, claimToken: params.claim_token, commitMessage: params.commit_message, summary: params.summary, limitations: params.limitations ?? [], emptyCommit: params.empty_commit, logDir: process.env.TMPDIR || undefined });
+				if (result.rejected) return { content: [{ type: "text", text: `ledger_work: rejected by ${result.script} (exit ${result.exit}); claim retained\nFull output: ${result.logPath}\nLast output:\n${result.lastOutput}` }], details: {}, isError: true };
+				const warning = result.outOfRepo.length ? `\nwarning: changes outside ${opts.workspace} are not committed:\n${result.outOfRepo.map((file) => `- ${file}`).join("\n")}` : "";
+				return { content: [{ type: "text", text: `ledger_work: ${params.id} is ${item.status} (commit ${result.commit})\nfiles.out:\n${result.filesOut.map((file) => `- ${file}`).join("\n")}${warning}` }], details: {} };
 			} catch (error) {
-				return { content: [{ type: "text", text: `ledger_start: ${message(error)}` }], details: {}, isError: true };
+				return { content: [{ type: "text", text: `ledger_work: ${message(error)}` }], details: {}, isError: true };
 			}
 		},
 	});
 
 	pi.registerTool({
-		name: "ledger_submit",
-		label: "Ledger submit",
-		description: "Validate and commit a ledger item. Pass id first. Checks the item state first: the item must be in-progress, HEAD must still be the recorded start commit, and the working tree must have changes. Then it runs the item's validation scripts (item override, else the base list); any failure rejects the submit and writes the full output to a log file. On success: git add -A, one commit, files.out from the diff, summary and limitations recorded, item marked done. Validation runs from the item's workspace; the commit is made inside that repository, and changes outside it are reported as a warning line, not committed. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted.",
-		parameters: SUBMIT_PARAMS,
+		name: "ledger_review",
+		label: "Ledger review",
+		description: `Start or submit a reviewer claim. Submit requires the same ID, path, agent ID and token plus a non-empty commit_message, which is used verbatim for the ledger commit. Submit closes finding IDs and adds findings; any open finding fails review. A tracked ledger is committed in its own repository in full, including pre-existing ledger edits, without other staged files. Untracked, ignored, or outside-repository ledgers are written without a commit. Claims fence stale sequential runs, not concurrent writers. ${PATH_DESCRIPTION}`,
+		parameters: REVIEW_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const missing = missingRequired(params, SUBMIT_PARAMS.required as string[]);
-				if (missing.length > 0) throw new Error(missing.map((field) => `${field}: missing`).join(", "));
-				const { path, ledger } = await readLedger(ctx, params.path);
-				const item = findItem(ledger, params.id, path);
-				const opts = await itemContext(ctx, path, ledger, item);
-				const result = await submitItem({ ...opts, commitMessage: params.commit_message, summary: params.summary, limitations: params.limitations ?? [], logDir: process.env.TMPDIR || "/tmp" });
-				if (result.rejected) {
-					return {
-						content: [{ type: "text", text: `ledger_submit: rejected by ${result.script} (exit ${result.exit})\nFull output: ${result.logPath}\nLast output:\n${result.lastOutput}` }],
-						details: {},
-						isError: true,
-					};
-				}
-				const warning = result.outOfRepo.length > 0
-					? `\nwarning: changes outside ${opts.workspace} are not committed:\n${result.outOfRepo.map((file) => `- ${file}`).join("\n")}`
-					: "";
-				return {
-					content: [{ type: "text", text: `ledger_submit: ${params.id} is done (commit ${result.commit})\nfiles.out:\n${result.filesOut.map((file) => `- ${file}`).join("\n")}${warning}` }],
-					details: {},
-				};
+				if (!REVIEW_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(REVIEW_ACTIONS)}`);
+				const required = params.action === REVIEW_START ? ["id", "agent_id"] : ["id", "agent_id", "claim_token", "commit_message"];
+				requireArguments(params, required, params.action === REVIEW_START ? ["action", "id", "agent_id", "path"] : ["action", "id", "agent_id", "claim_token", "commit_message", "close_findings", "new_findings", "path"]);
+				const gate = await validateLedger(ctx, params.path);
+				const ledger = requireValid(gate);
+				const item = findItem(ledger, params.id, gate.path);
+				const opts = await itemContext(ctx, gate.path, ledger, item);
+				const result = params.action === REVIEW_START
+					? await startReview({ ...opts, agentId: params.agent_id, artifactDir: process.env.TMPDIR || undefined })
+					: await submitReview({ ...opts, agentId: params.agent_id, claimToken: params.claim_token, commitMessage: params.commit_message, closeFindings: params.close_findings === undefined ? [] : params.close_findings, newFindings: params.new_findings === undefined ? [] : params.new_findings });
+				return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: {} };
 			} catch (error) {
-				return { content: [{ type: "text", text: `ledger_submit: ${message(error)}` }], details: {}, isError: true };
+				return { content: [{ type: "text", text: `ledger_review: ${message(error)}` }], details: {}, isError: true };
 			}
 		},
 	});
+
 }

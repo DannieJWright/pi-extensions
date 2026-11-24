@@ -6,6 +6,8 @@ ledger:
   # chat-ui: the branch at the ledger level and the branch on the item both match.
   workspace: .
   branch: chat-ui
+  # Feature override, then this value, then 5. Zero means unlimited retries.
+  max_failed_reviews: 5
   validation_scripts:
     # The project's own recipe, as the agent working the item would run it.
     - just test all
@@ -13,6 +15,17 @@ ledger:
   features:
     - id: search-result-labels
       status: done
+      review: true
+      failed_reviews: 1
+      findings:
+        - id: search-result-labels-finding-1
+          status: closed
+          details: A source label was missing.
+          rationale: Readers need to identify the source.
+          severity: minor
+          first_found_iteration: 0
+          required_checks:
+            - Verify source labels in the result rows.
       goal: >
         Live search with readable result rows. Option 4.a of
         plan/chat-ui/agent-improvement-ideas-1.md.
@@ -46,16 +59,19 @@ ledger:
       commits:
         start: 6be88a3
         end: 7d02b8e
+        submissions:
+          - 7d02b8e
 
     - id: copy-block-actions
       status: todo
+      # Omitted review means off; an override can set max_failed_reviews to 0 for no limit.
       goal: >
         Show copy actions on result blocks when the row is hovered.
       short_goal: Copy actions on result blocks on hover.
       # The item's workspace wins over the workspace at the ledger level. A path in files.in or
       # tests reads from the session root, so it is written with the workspace prefix.
       workspace: packages/web
-      # branch is a label the author writes. ledger_start compares it with the branch of the
+      # branch is a label the author writes. Role start compares it with the branch of the
       # item's repository and errors on a mismatch.
       branch: chat-ui
       acceptance_criteria:

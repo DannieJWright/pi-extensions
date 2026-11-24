@@ -1,81 +1,47 @@
 # Feature ledger
 
-A ledger for the feature workflow. The workflow rules live in `skills/feature-ledger/SKILL.md` and its two
-flow references (`references/implementation-flow.md`, `references/writing-flow.md`); this extension covers the
-steps an agent cannot do reliably by hand: reading where a feature stands, the status transition, and the
-validation-gated commit. Core logic is in `ledger.ts` so it is testable without a Pi session. The YAML subset
-parser is shared in `../../lib/yaml.ts`.
+A feature-work ledger with optional review loops. Agent workflows live in `skills/feature-ledger/SKILL.md` and its references. The extension implements read/claim/submit transitions and validation-gated commits; `ledger.ts` is testable without a Pi session and `../../lib/yaml.ts` provides the shared YAML subset parser.
 
-## Use
+## Human and CI commands
 
 ```sh
-just feature-ledger check                       # validate a ledger (defaults to the reference example)
-just feature-ledger check path/to/ledger.yaml   # validate a real ledger
-just feature-ledger test                        # run the parser and write-path tests
+just feature-ledger check                       # validate the reference example
+just feature-ledger check path/to/ledger.yaml   # validate a ledger
+just feature-ledger test                        # run feature-ledger tests
 ```
 
-The CLI is the human and CI path. In a session, an agent uses the `ledger_check` tool, which runs the same
-check (`checkLedger` in `ledger.ts`) over the resolved file or a path it is given.
+The CLI runs the same validation gate as the tools, without its filesystem/Git checks. In a Pi session use the tools below. The reference schema example is `skills/feature-ledger/references/ledger.yaml`.
 
-## Ledger path
+## Validation gate
 
-Every tool resolves the file per call, in this order:
+One entry point serves every action: resolve the path, read the file once, run `checkParsed`. Every tool calls it before doing any work, reads included — `get_feature`, `orchestrate list`, `orchestrate next`, `orchestrate release`, role starts and submissions all refuse a file with problems, duplicate IDs among them. The problem lines are identical for the same file across tools and the CLI; only presentation differs (`ledger_check` returns `{ path, ok, problems, warnings }`, every acting tool reports an error). Filesystem and Git checks stay in `ledger_check` because they need the filesystem, and no read path writes the ledger.
 
-1. the `path` argument given to the tool,
-2. `PI_LEDGER_PATH`,
-3. the first line of `plan/ledger.path` in the session root,
-4. `plan/ledger.yaml`.
+Because `release` shares the gate, recovery after an interrupted run needs the file fixed first: release refuses a file with state problems even though it changes nothing but the matching claim. This supersedes the earlier carve-out where release kept only the parse gate.
 
-A relative path resolves against the session root. Any extension is accepted; the name is not checked. The
-pointer file is read at call time, so a change to it takes effect on the next call. `resolveLedgerPath` in
-`ledger.ts` holds the order and takes the pointer content as an argument, so it does no filesystem work.
+## Path and workspace
 
-The reference example is `skills/feature-ledger/references/ledger.yaml`. It carries `short_goal`, the
-required one-sentence overview of an item, which the read tools return.
+Every tool resolves the ledger path in order: explicit `path`, `PI_LEDGER_PATH`, first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. Relative paths are relative to the original session root; any extension is accepted. Workspace is resolved from item, then ledger, then session root. Optional item branch is checked on role starts and submissions, not used to locate the ledger. The orchestrator pins the user-selected path for all calls.
 
 ## Tools
 
-Read-only:
+- `ledger_get_feature`: `id`, optional `path`. Read the full item, assignment (including token), findings, commits, workspace and effective configuration.
+- `ledger_orchestrate`: `action: list | next | release`, optional `path`. List preserves file order and includes assignment and effective config. Next picks the first unassigned review, then eligible in-progress, then todo only when no work is in flight; it reports assigned and capped items. Release requires `id`, `agent_id`, `claim_token`; it clears only the matching claim, not status.
+- `ledger_check`: optional `path`. Read-only result `{ path, ok, problems, warnings }`; only problems set `isError`. It checks model, duplicate IDs, workspace and Git repository, plan references and missing inputs. Missing `files.in` is a warning; plan and input paths resolve from session root.
+- `ledger_work`: `action: start` requires `id`, `agent_id`; `action: submit` also requires the matching `claim_token`, `commit_message`, `summary` and optionally `limitations`, `empty_commit`. Starts claim a todo or eligible in-progress feature, record expected HEAD and return the full item, config, pending findings and diff views. Start enforces the failed-review limit; submit does not, so a claim already held can finish at the cap. Submit validates status, identity, token, branch and expected HEAD, runs project validation scripts and creates a work commit. An initial submission requires real implementation changes. After failed review, `empty_commit: true` allows a verification-only fix with explanation; it preserves unrelated staged files. Success records cumulative files and commit history and moves to `review` if enabled, otherwise `done`. It reports outside-workspace-repository changes but does not commit them.
+- `ledger_review`: `action: start` requires `id`, `agent_id`; `action: submit` also requires the matching `claim_token` and a non-empty `commit_message`, recorded unchanged so project commit conventions apply (recommended form `Review <item-id> round <iteration>` plus a short description), with optional `close_findings` and `new_findings` (objects with `details`, `rationale`, `severity`, `required_checks`). A new finding's `id` is generated as `finding-<uuid>` and skips an `id` already on the item; an `id` written by hand is accepted unchanged. Finding `id`s are checked for duplicates per item within one findings list. Review start returns the same item, config, pending findings and diff views. Review submit persists findings and sets `done` when none remain open, otherwise increments failed reviews and returns to `in-progress`. Every severity blocks a pass. A tracked ledger is committed as a whole in its repository, including pre-existing ledger edits but excluding other staged files; an ignored, untracked or outside-repository ledger is written without a commit. If already identical to HEAD after writing, no commit is needed. The result states what happened.
 
-- `ledger_list` — every item in file order: `id`, `status`, `short_goal`, `workspace`, `commits` (`start` is
-  null for a `todo` item, `end` is null for an `in-progress` item). Returns JSON. `branch` is present only
-  when the file has it; no tool reads a branch from git. Errors when an item has no `short_goal` value, so a
-  reader never sees an empty overview.
-- `ledger_next` — the first in-progress item, else the first todo. Returns JSON
-  `{ "next": { "id", "status", "short_goal", "workspace" }, "status" }` where the root `status` is the ledger
-  state: `todo` when nothing is started, `in-progress` when at least one item is in-progress or done, `done`
-  when all items are done and `next` is null. A script or a delegate calls it and hands the item to the next
-  agent, who calls `ledger_start`. Errors when an item has no `short_goal` value, same as `ledger_list`.
-- `ledger_check` — validate a ledger. Returns JSON `{ "path", "ok", "problems", "warnings" }`. `ok` is true when
-  there are no problems, and `isError` is set only when problems exist: a warning is reported and does not
-  fail the check. Reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, a goal that
-  names a plan file that does not exist, or a `workspace` that does not exist or is not inside a git
-  repository (that part needs git). A `files.in` entry that does not exist yet is a warning, not a problem, so
-  a draft ledger that names a file an earlier step will create still passes. Plan references resolve against the
-  session root. There is no location line. `check.ts` is the same check for humans and CI, without the
-  filesystem and git work, so it has no `files.in` check and prints problems only.
+All tools accept `path`. Role starts assign `<feature-id>-<failed-reviews>-<worker|reviewer>` and issue a fresh token. Both starts include cumulative and latest diffs, separating implementation and ledger metadata; truncated patches have a full-patch artifact path. Validation failure retains a work claim and reports a log. Feature `review` defaults off; `max_failed_reviews` resolves item, ledger, then 5, with 0 unlimited. On reaching a positive cap, open findings remain and worker start is blocked until an authorized resolution or limit change; a submission for a claim already held is not affected.
 
-Writing:
+## Safety and dependency
 
-- `ledger_start` — read a feature item and mark it in-progress. Returns the item brief: workspace, goal,
-  acceptance criteria, constraints, `files.in`, tests. Errors when the item names a branch and the item's
-  repository is on a different branch. Refuses when the item is not `todo`. Records the start commit.
-- `ledger_submit` — validate and commit an item. Checks the item state first: the item must be in-progress, HEAD
-  must still be the recorded start commit, and the working tree must have changes. Then it runs the item's
-  validation scripts (item override, else the base list) from the item's workspace root; any failure rejects the
-  submit and writes the full output to a log file. On success: `git add -A` inside the item's repository, one
-  commit, `files.out` from the diff prefixed with the workspace so entries read from the session root, summary
-  and limitations recorded, item marked `done`. Changes outside the item's repository are printed as a warning and
-  not committed; nothing is claimed about them when the session root is not a git repository. A clean tree with
-  failing scripts reports no changes, because the state checks run before the scripts.
+Claims fence stale sequential submissions; they are not locks or access-control secrets. Ledger writes are last-writer-wins: concurrent writers and concurrent work in a shared workspace are unsupported. Release a claim only after confirming its run stopped, using the current matching identity and token. Git commits and ledger writes are not atomic together; inspect state and report uncertainty rather than retrying blindly.
 
-## Workspace
+Bundled pi-subagents worker/reviewer tool access and reviewer write permission are an external dependency being addressed separately. This extension and skill do not configure overrides; agents must stop and report missing required tools.
 
-An item works in one workspace and produces one commit. `workspace` is optional: an item's value wins over the
-value at the ledger level, and with neither the session root is used. `resolveWorkspace` in `ledger.ts` gives
-the directory; `resolveRepoRoot` gives the repository through `git rev-parse --show-toplevel` and returns
-nothing outside one. The read tools do not run git, so they report the workspace as written.
+## Verification
 
-## Known limitation
+What the tests check is the authored contract, not behaviour: frontmatter and structure, every bundled path referenced from `SKILL.md`, the subagent templates and their return fields, the phrases the description must contain, and the route rules written in the references. They run through the commands under Human and CI commands.
 
-No write lock. Two sessions writing the same ledger are last-write-wins.
+The comparison of the same request with and without the skill has not been run, and nothing here claims it passed. No test can observe it: tool-call count, tokens consumed, failed calls, and user corrections exist only when the request is executed twice in two live Pi sessions with the skill loaded, once with the skill available and once without. Model routing is likewise only observable live — the trigger tests assert that the should-trigger and negative phrases appear in the description, which is not evidence that a model selects the skill for them.
+
+This is reported as a blocker, not a defect: the comparison is out of scope for this work because it cannot be checked from the repository, only by running the live pair. Nothing here should be read as saying the skill was measured against a baseline.

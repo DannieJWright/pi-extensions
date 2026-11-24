@@ -1,80 +1,48 @@
 ---
 name: feature-ledger
-description: >-
-  Track feature work as ordered items in a ledger file. Use at the start of a
-  session to read where a feature stands, to hand one item to another agent or
-  subagent, or to turn a plan into a ledger for agents to implement. Use the
-  orchestrator workflow only on a direct user request to orchestrate ledger work.
-  The ledger is the only shared state between sessions, so the work is resumable
-  and checkable.
+description: "Track, implement, and optionally review features in a ledger. Use when asked to inspect a feature ledger, turn a plan into a ledger, work a ledger item, or orchestrate ledger work. Do not use for ordinary task lists or code review unrelated to a feature ledger. Orchestration requires a direct user request."
 ---
 
 # Feature Ledger
 
-Track feature work as ordered items. The ledger is the only shared state between sessions and between agents, so the work is resumable and checkable.
+Use the ledger tools for shared, resumable feature state. Reading state does not claim work. **Never orchestrate just because the skill is loaded or the user asks to inspect or work an item**: orchestration is direct-request-only.
 
-For the standard flows, use the route that matches the task:
+## Resources (paths relative to this skill root)
 
-- Checking ledger state: use `ledger_next` or `ledger_list` and report the result; do not start an item unless asked to work on it.
-- Writing a ledger from a plan: read `references/writing-flow.md`.
-- Working an item from a ledger: read `references/implementation-flow.md`.
+| Path | Read when |
+|---|---|
+| `references/writing-flow.md` | Turning a plan into a ledger; field and schema rules. |
+| `references/ledger.yaml` | Authoring a ledger example. |
+| `references/implementation-flow.md` | Working an item directly or as a worker; tool and evidence rules. |
+| `references/agents/orchestrator-workflow.md` | The user directly requests orchestration. |
+| `references/agents/worker-workflow.md` | The orchestrator directly assigns worker work and instructs the agent to read it. |
+| `references/agents/reviewer-workflow.md` | The orchestrator directly assigns review and instructs the agent to read it. |
+| `subagents/worker.md` | The orchestrator dispatches a worker. |
+| `subagents/reviewer.md` | The orchestrator dispatches a reviewer. |
 
-The agent workflows are opt-in. Do not read or run them just because you loaded this skill, were asked to use the ledger, or are working an item:
+## Choose a route
 
-- `references/agents/orchestrator-workflow.md` — read only when the user directly requests orchestration of ledger work.
-- `references/agents/implementor-workflow.md` — read only when the orchestrator directly instructs a subagent to use the implementor workflow.
-- `agents/implementor-prompt.md` — the orchestrator reads this prompt template only when dispatching an implementor under the explicitly requested orchestrator workflow.
+- Inspect: use `ledger_get_feature` for an ID, or `ledger_orchestrate` with `action: list` or `next`; report results without claiming work.
+- Author: read `references/writing-flow.md`, then use `ledger_check`.
+- Direct work: read `references/implementation-flow.md`; no delegation is required.
+- Orchestrate: only on a direct user request, read `references/agents/orchestrator-workflow.md` and delegate sequentially. The parent neither implements nor reviews nor runs validation.
 
-This file holds the shared conventions.
+Every tool accepts optional `path`: explicit argument, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. Relative paths resolve against the original session root; any extension is accepted. An orchestrator pins the user-selected path for all calls.
 
-## Ledger file
+Every tool validates the resolved file through one shared gate before doing any work, so a read refuses a ledger `ledger_check` would reject, duplicate IDs included; the problem lines match for the same file. `ledger_check` is the only tool that reports filesystem and Git findings, and read paths never write. Release runs the same gate, so an interrupted run's file must be valid before its claim can be released.
 
-The path is resolved for each call, in this order: a path argument given to the tool, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. A relative path resolves against the session root. Any extension is accepted, and no path is checked for a `.yaml` name. Free-form paths under `plan/` are allowed; there is no enforced iteration naming.
+The patch previews of a start share one 4 KiB allowance for the whole response, not per view. A view larger than what remains writes its full patch to an artifact; when the allowance is used up, later results give files and stat plus a note naming the artifacts written for that response.
 
-Every item lives in one file, in order. The reference example is `references/ledger.yaml` in this skill; it parses with the tools.
+Statuses are tool-owned: `todo` → `in-progress` → `done` without review, or → `review` with review enabled. A review with any open finding returns to `in-progress`; only a review with no open findings reaches `done`. Do not edit live ledger state by hand. Use the read tools, not a direct read of the entire ledger, except when authoring it.
 
-YAML. Multiline text uses `>` blocks. Arrays for every list. Keys are exact, in this order.
+The failed-review limit governs starting work only. An item already claimed before the limit is reached can still be submitted.
 
-Field rules:
+A finding `id` is generated as `finding-<uuid>` and cannot repeat an `id` already on the item. An `id` written by hand is accepted unchanged, so an authored slug in an example stays valid. Duplicate finding `id`s are checked per item within its own findings list.
 
-- `id` — unique string. It is the key for the capture spec, the artifact folder, and the commit.
-- `status` — `todo`, `in-progress`, `done`. Set by the tools, never by hand.
-- `goal` — the work to be completed. Includes the option reference when the item came from a plan. Name the plan file by its path under `plan/`; `ledger_check` reports a goal that names a plan file that does not exist.
-- `short_goal` — one sentence: the overview of the item. Required. This is what a reader or a script sees first; `goal` carries the detail. Write it at authoring time, do not derive it from `goal`. The `ledger_check` tool reports a missing value, and the read tools error on an item without one.
-- `workspace` — the directory the item is worked in, relative to the session root, or absolute. Optional. An item's value wins over the `workspace` at the ledger level; with neither, the session root is used. One workspace per item, one commit per item. Validation scripts run from the workspace root, and the commit is made inside that workspace's repository. `files.out` entries are prefixed with the workspace so they read from the session root. `ledger_check` reports a workspace that does not exist or is not inside a git repository.
-- `branch` — an optional label the author writes. No tool reads a branch from git to find the file. `ledger_list` echoes it only when the file has it. When an item states a branch, `ledger_start` compares it with the branch of the item's repository and errors on a mismatch.
-- `acceptance_criteria` — bullet points. The key is one word with an underscore so a tool can read it without a quoting rule.
-- `constraints` — what must be kept in mind while working.
-- List entries must be plain strings. A bullet that starts with `key: value` reads as a mapping, not as a string, so quote the whole line when you write it: `- "Read-only: the tool never writes the ledger."`. `ledger_check` reports such an entry as a problem line; a quoted bullet is fine.
-- `validation_scripts` — commands that run the full suite, taken from the project the work happens in: its own defined recipes or scripts, or the agent tools available there (for example `just_test`). Do not write a recipe from another project. Validation must not create permanent project files; put temporary output in gitignored locations. Defined once at the ledger level as the base list. An item may override it, and an item may omit it to use the base. The submit tool runs them (through the shell, from the item's workspace root) before it accepts a submission. Each command must exit 0. A script may change directory inside the workspace, for example `cd sub-repo-1 && just test all`.
-- `files.in` — known relevant files, written before the work starts. This is what a fresh agent reads first. Paths are relative to the session root, or absolute. An entry may name a file an earlier step will create, so it does not have to exist yet. `ledger_check` reports such an entry as a warning, not a problem, so a warning needs no fix.
-- `files.out` — files edited during the work. Written by the submit tool from the commit diff.
-- `tests` — tests created or modified.
-- `limitations` — problems, limits, and compromises found during the work. Required for any item that shipped a compromise.
-- `summary` — the agent's notes after completing the work, including the capture result. The capture spec, the images, and the sidecar are files written during the work, so they appear in `files.out` on their own; the `summary` names the artifact paths and the pair-check conclusion.
-- `commits.start` / `commits.end` — set by the tools. `commits.start` is null for a `todo` item, `commits.end` is null for an `in-progress` item.
+A reviewer supplies the commit message for a review submission. It is required, non-empty, and recorded unchanged so the project's commit conventions apply. Recommended form: `Review <item-id> round <iteration>` plus a short description.
 
-## Statuses belong to the tools
+## Safety and unavailable tools
 
-Agents must not change statuses by hand. `todo` → `in-progress` → `done` is set by `ledger_start` and `ledger_submit`. A hand-edited status is not a record of work; it is a claim with no commit and no validation run behind it.
+Claims fence stale sequential submissions; they are not access-control secrets or locks. Ledger writes are last-writer-wins: parallel writers and parallel work in a shared workspace are unsupported. For a stopped run, a parent may release only after establishing that run has stopped, using its current identity and token; otherwise stop and report. Never retry blindly after an uncertain commit or ledger write.
 
-The writing flow may only create items as `todo`.
-
-## Read state through the tools
-
-An agent working an item reads state through `ledger_list`, `ledger_next`, or `ledger_start`. It does not read the ledger file with the read tool. The file carries every item, so a direct read pulls state the agent does not need.
-
-Two exceptions:
-
-- The writing flow authors the file, so it may read what it wrote.
-- `ledger_check` reads the file internally, which is allowed.
-
-## Known limitation: concurrent writers
-
-The tools write one shared file. For now we assume concurrent work: a parent agent, a subagent, or a new session may hold different items in progress at the same time. There is no lock, so the last write wins and a read can be stale. The read tools can report a state that changed after the read.
-
-This is accepted for now and is a point to come back to. When it becomes a problem, the fix is a write lock per item, or one file per item with a shared header. Record this so a later agent does not treat a lost write as a tool bug.
-
-## What the reviewer sees
-
-The reviewer sees the closed items through the merged branch history or the squash, not through the file.
+If a required ledger or delegation tool is unavailable, stop and report which tool and role are missing; do not substitute a repository-specific script. Bundled pi-subagents worker/reviewer tool access and reviewer write permission are an external dependency being addressed on a separate branch; this skill does not configure overrides.

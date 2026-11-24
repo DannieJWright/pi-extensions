@@ -1,70 +1,33 @@
 # Implementation flow
 
-Read this before working an item. Field rules and the shared conventions are in the main skill file.
+Read before working a feature, whether directly or under a parent. The tool names here are the agent interface; stop and report if any required tool is unavailable.
 
-## Tools
+## Tool contract
 
-Four tools. Two read, two write.
+All tools accept optional `path` with the resolution order in `SKILL.md`. Use a pinned path when one is assigned.
 
-Every tool takes an optional `path`. It is resolved in this order: the argument, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. Any extension is accepted.
+- `ledger_get_feature`: `id`, optional `path`. Read the full item, assignment (including claim token), findings, commits, workspace and effective review configuration.
+- `ledger_orchestrate`: `action: list` returns items in file order with assignments, config and cap; `action: next` selects the first unassigned `review`, then eligible `in-progress`, then `todo` only when no work is in flight. Its result includes assigned and capped items. `action: release` requires exact match on `id`, `agent_id` and `claim_token` and clears only that claim, never status.
+- `ledger_check`: validate the model and filesystem-related constraints without writing; warnings are not problems.
+- `ledger_work`: `action: start`, `id`, `agent_id` claims an unassigned `todo` or eligible `in-progress` item, where eligibility means under the failed-review limit, and returns a fresh token. `action: submit` also requires the matching `claim_token`, `commit_message`, and `summary`; optional `limitations` and `empty_commit` are accepted.
+- `ledger_review`: `action: start`, `id`, `agent_id` claims unassigned `review`. `action: submit` also requires the matching `claim_token` and a non-empty `commit_message`, recorded unchanged; optional `close_findings` is a list of existing IDs, and `new_findings` is a list of objects with nonempty `details` and `rationale`, valid `severity`, and `required_checks` (a list of nonempty instructions). Omitted lists are empty. Unknown or duplicate closure IDs and invalid findings are rejected.
 
-`ledger_list()`
+Both starts return the full item, effective config, pending findings, workspace, commits and cumulative/latest diff views. Each view separates implementation from ledger metadata, with file list, stat and patch. The four previews share one 4 KiB allowance for the response, not per view; a view larger than what remains writes its full patch to an artifact, and once the allowance is used up later results give files and stat plus a note naming the artifacts written for that response. Read a `full_patch_path` artifact for any truncated view. The assignment ID is `<feature-id>-<failed-reviews>-<worker|reviewer>`; each new start gets a fresh token. Tokens fence stale claims, not concurrent writers.
 
-- Returns JSON: `branch` (only when the file has it), and for each item in file order `id`, `status`, `short_goal`, `workspace`, `commits` (`start` null for a `todo` item, `end` null for an `in-progress` item).
-- Read-only. Use it to see where a feature stands. Errors when an item has no `short_goal` value, so a reader never gets an empty overview.
+One shared gate serves every action: resolve the path, read once, run the model check (`checkParsed`). Every tool calls it before doing any work, reads included, so problem lines match for the same file across tools and the CLI. Invariant checking lives in the model module only, reached through that gate; no tool or write step checks again at write time, and effective configuration is resolved without re-validating what the gate already accepted. A refusal happens before anything is matched or written, so a live claim survives a refused file.
 
-`ledger_next()`
+## Work order
 
-- Returns JSON `{ "next": { "id", "status", "short_goal", "workspace" }, "status" }`. `next` is the first `in-progress` item, else the first `todo`.
-- The root `status` is the ledger state: `todo` when nothing is started, `in-progress` when at least one item is in-progress or done, `done` when all items are done and `next` is null.
-- Read-only. A script or a delegate calls it and hands the item to the next agent, who calls `ledger_start`. Errors when the selected item has no `short_goal` value.
+1. If assigned an ID, use it; otherwise select with `ledger_orchestrate` action `next` and do not claim a `review` item as a worker. If nothing is selectable, list and report complete, in-flight, capped or blocked state. For direct work choose a nonempty `agent_id` and call `ledger_work` start; keep its token for submission and recovery. Do not select another item once assigned.
+2. Follow the returned goal, acceptance criteria, constraints, input paths and tests in the workspace; inspect pending findings and perform their required checks. For UI work capture a before frame using the before-after-capture skill.
+3. Implement and test, narrow first. Do not make intermediate commits. Keep unrelated changes out of the work submission; it commits implementation changes in the workspace repository. For UI work capture and verify the after pair; otherwise record command output. Include evidence and limitations in the summary.
+4. Submit via `ledger_work` with the same ID, path, agent ID and token. It checks status, claim, branch and expected HEAD, then runs the effective validation scripts from the workspace and creates one work commit. The failed-review limit governs start only, so a claim you already hold completes at the cap. An initial submission requires implementation changes, not ledger metadata alone. A review-fix iteration may request `empty_commit: true` for verification-only work and must explain it in the summary; validations still run. An empty commit preserves unrelated staged work.
+5. A validation rejection retains the claim and reports a log; read it, fix the failure, and submit again. Successful work goes to `done` if review is off, otherwise `review`. Inspect warnings and compare intended changes with `files.out`; report omissions or uncertainty. If a commit or ledger write may have succeeded, stop and inspect HEAD, index and ledger state instead of retrying blindly.
 
-`ledger_start(id)`
+Read live state via the tools, not by opening the entire ledger directly; the authoring flow is the exception. One agent works one item at a time. UI work is done only after the pair is verified; non-UI work needs recorded output as well as passing validation.
 
-- Reads the item and returns the starting information: workspace, goal, acceptance criteria, constraints, `files.in`, and the minimum test expectations. The brief does not report the repository root.
-- Sets `status: in-progress`.
-- Records `commits.start` as the current HEAD.
-- Errors when the item names a branch and the item's repository is on a different branch.
-- Refuses to start an item that is already `in-progress` (one writer per item).
+## Common issues
 
-The agent implements and tests the work in the item's workspace. **No commits during the work.** The commit is made by the submit tool, after the validation scripts pass.
-
-`ledger_submit(id, commit_message, summary, limitations)`
-
-1. Checks the item state before anything runs: the item must be `in-progress`, HEAD must still be `commits.start` (the item must be one commit), and the working tree must have changes. The state checks come first, so a clean tree with failing tests reports `no changes` and no script runs.
-2. Runs every command in `validation_scripts` from the item's workspace root.
-3. If any command fails, the submission is rejected. The tool writes the full output to a file under `/tmp/`, returns the last 20 lines of the failing command, and gives the path to that log. The item stays `in-progress` and nothing is written to the ledger. The agent reads the log, fixes the work, and submits again.
-4. If all pass, the tool commits the working tree inside the item's repository with the given message (artifacts included). Changes outside that repository are printed as a warning and are not committed. Nothing is claimed about them when the session root is not a git repository.
-5. Computes `files.out` from the diff between `commits.start` and the new commit. Entries are prefixed with the workspace so they read from the session root; an item whose workspace is the session root has no prefix.
-6. Writes `summary`, appends `limitations`, records `commits.end`, sets `status: done`.
-
-The state checks in step 1 are the refusals: an item that is not `in-progress`, a moved HEAD, or a tree with no changes.
-
-All tools write and read the same file, so a parent agent, a subagent, and a new session see the same state.
-
-## Reading state
-
-Read state through `ledger_list`, `ledger_next`, or `ledger_start`, never with the read tool on the ledger file. The file carries every item, so a direct read pulls state the agent does not need.
-
-Two exceptions:
-
-- The writing flow authors the file, so it may read what it wrote.
-- `ledger_check` reads the file internally, which is allowed.
-
-## Work order for an item
-
-1. If no item was assigned, use `ledger_next()` to select the item to work. If a parent assigned an item, use that exact ID; do not select another with `ledger_next`. Call `ledger_start(id)` for the selected or assigned item. `ledger_start` refuses an item already in-progress. For a UI item, capture the before frame (before-after-capture skill).
-2. Implement, in the item's workspace.
-3. Tests: narrow run first, then the full suite once.
-4. For a UI item, capture the after frame and run the pair check. A non-UI item has no pair: record the command output that shows the result.
-5. `ledger_submit(...)` — the tool runs the validation scripts, commits, and closes the item.
-
-One item at a time per agent. An agent that is given an item calls `ledger_start` for that item and `ledger_submit` at the end. It does not work on another item.
-
-The capture pair applies only to UI items. Definition of done for a UI item: the validation scripts pass **and** the after artifact was verified to show the change. Definition of done for a non-UI item: the validation scripts pass **and** the recorded command output shows the result. "Code written" is not done.
-
-## Skills this flow uses
-
-- `before-after-capture` — the pair, the conditions, and the pair check, for UI items only. The result goes in the item's `summary` and points to the sidecar.
-
-The feature id is one key: ledger item → capture spec → artifact folder → commit message.
+- **Claim already assigned:** another run owns it. Do not take it over. A parent can recover only after establishing the run stopped, then releasing the matching identity and token.
+- **Review cap reached:** report open findings, failed count and effective limit; only an authorized user may change the configuration or otherwise resolve it. The cap blocks starting another attempt, not a submission for a claim already held.
+- **Missing tool or uncertain Git/write result:** stop and report the exact error and known state. Claims and history may require reconciliation, not a blind retry.

@@ -1,34 +1,19 @@
 # Writing flow
 
-Read this when turning a plan into a ledger. Field rules and the shared conventions are in the main skill file. `references/ledger.yaml` in this skill is the shape to copy.
+Read this when turning a plan into a ledger. `references/ledger.yaml` is a parseable example. Paths to bundled resources are relative to the skill root.
 
-## What to write
+## Schema and authoring
 
-- One item per implementable unit. An item is what one agent can take from `todo` to `done` in one pass. If a plan section needs two passes, it is two items.
-- Item order is the order to work them. The tools read items in file order, so order is part of the plan.
-- `id` is a slug (`copy-block-actions`), and it is the key for the capture spec, the artifact folder, and the commit message. `goal` names the plan option the item came from.
-- `short_goal` is required and is the overview sentence — one sentence, no detail. `goal` carries the detail. Write both at authoring time; do not derive one from the other.
-- `acceptance_criteria` must be checkable by reading the result or running a test. A criterion that cannot be checked is not a criterion.
-- `constraints` records what must be kept, including "no new dependencies" when it applies.
-- Write a list entry as a plain string. A bullet that starts with `key: value` reads as a mapping, so quote the whole line: `- "Read-only: the tool never writes the ledger."`.
-- One workspace per item, one repository per item. Split the plan by workspace before you write items: an item that works in a second repository is its own item, because the commit is made inside one repository only.
-- `workspace` is optional. Write it when the item works in a directory other than the session root, as a path relative to the session root. An item's value wins over the value at the ledger level.
-- `branch` is an optional label you write. Do not use it to say where the file lives; no tool reads a branch from git. When you do write it, `ledger_start` compares it with the branch of the item's repository.
-- `validation_scripts` is written once at the ledger level as the base list, with commands the project being worked on defines. An item writes its own list only when it needs a different set. Scripts run from the item's workspace root, so a script may change directory inside it, for example `cd sub-repo-1 && just test all`.
-- `files.in` is seeded before any work starts. This is what a fresh agent reads first. Paths are relative to the session root, or absolute. An entry may name a file an earlier step will create, so it does not have to exist yet.
-- `tests` names the tests the item is expected to create or change. Paths are relative to the session root, or absolute.
+- Write one implementable unit per item, in work order. Each has a unique slug `id`, a required one-sentence `short_goal`, a detailed `goal` (including its plan path when applicable), checkable `acceptance_criteria`, `constraints`, `files.in` and `tests`. Project paths are relative to the session root or absolute. `files.in` can name a file an earlier item will create.
+- An item that changes documentation only may have no `tests`. A test cannot observe wording, so state plainly that the item is verified by reading. Do not write a test that pins an exact sentence — it fails on any rewording. Keep tests for the behaviour a documentation change describes, where behaviour exists.
+- `workspace` resolves per item, then ledger default, then session root. Use one workspace repository per item. An optional item `branch` must match its repository on role start and submission; it does not locate the ledger.
+- `validation_scripts` is a list of shell commands defined by the project being worked on, not by this skill's repository. Set the base list at ledger level; an item override replaces it. The submit tool runs them from the workspace. Temporary output should not create permanent project files.
+- `review: true` opts an item into review; omitted or false means off. `max_failed_reviews` is a nonnegative integer: item override, then ledger root, then 5. Zero means unlimited. At a positive cap the item stays `in-progress` with findings intact; another worker start is blocked until an authorized resolution or limit change. A submission for a claim already held is not affected.
+- `status` starts as `todo`; tools own all subsequent transitions. Leave `files.out`, `limitations`, `summary` and `commits` empty on a new item. Do not author claims or review history for new items.
+- The tools maintain `failed_reviews` (zero-based failed-review count), `assignment` (`id`, `role`, `agent_id`, `claim_token`), and `findings`. Each finding has a stable `id`, `status` (`open` or `closed`), `details`, `rationale`, severity (`blocker`, `major`, `minor`, `nit`), `first_found_iteration`, and a list of `required_checks` instructions. A tool-generated `id` is `finding-<uuid>` and skips an `id` already on the item; an `id` written by hand is accepted unchanged, so an example slug stays valid. Duplicate `id`s are checked per item within its own findings list. All open severities block a pass. Closed and unmentioned open findings remain in history.
+- The tools record the feature base in `commits.start`, the current claim's expected HEAD in `commits.expected`, the latest work commit in `commits.end`, and all work commits in `commits.submissions`. `files.out` is cumulative. Review metadata commits are distinct from work commits.
+- Use YAML arrays for lists. Quote an entire string bullet beginning with `key: value`, otherwise it parses as a mapping. `references/ledger.yaml` demonstrates folded text and lists.
 
-## What the writing flow does not write
+## Check before handing off
 
-- Statuses. Every item starts as `todo`. The writing flow may not set `in-progress` or `done` — the tools own statuses.
-- `files.out`, `summary`, `limitations`, `commits`. These are filled during the work by `ledger_submit`. Write empty lists and an empty summary.
-
-## Before handing the ledger to an agent
-
-Run the `ledger_check` tool. It reads the file at the resolved path — a `path` argument, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. A draft ledger is named with `path`. This is the only path you have: the check lives in the extension, and an agent working a ledger has no access to the extension's own scripts or recipes.
-
-The check returns `{ path, ok, problems, warnings }`. It reports a missing `id`, a duplicate `id`, a bad status, a missing `short_goal`, a goal that names a plan file that does not exist, a `workspace` that does not exist or is not inside a git repository. Fix those before the first `ledger_start`.
-
-A `files.in` entry that does not exist yet is a warning, not a problem. Naming a file an earlier step will create is normal, so a warning needs no fix and the check still passes.
-
-`validation_scripts` names what the project being worked on defines: its own recipes or scripts, or the agent tools available to an agent there (for example `just_test`). Do not copy a recipe from another project — the agent working the item only has the tools of its own project.
+Call `ledger_check` with the draft path. It returns `{ path, ok, problems, warnings }`; fix problems including duplicate IDs, missing `short_goal`, invalid review settings or state, missing referenced plans and invalid workspaces before work starts. A `files.in` path that does not exist yet is a warning, not a problem. The authoring flow may read the file it wrote. If the tool is unavailable, stop and report it; do not invoke a script from the skill's repository.

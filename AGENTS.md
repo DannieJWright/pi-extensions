@@ -8,8 +8,8 @@ A file under `skills/` is read by an agent working in another project. That agen
 repository's justfile, scripts, or tools. So a skill file must not tell it to run a command from this
 repository.
 
-- Name the extension's tools as the path an agent uses: `ledger_check`, `ledger_list`, `ledger_next`,
-  `ledger_start`, `ledger_submit`.
+- Name the extension's tools as the path an agent uses: `ledger_check`, `ledger_get_feature`,
+  `ledger_orchestrate`, `ledger_work`, `ledger_review`.
 - Do not write `just <recipe>` in a skill file for a recipe defined here. The justfile serves humans and CI.
 - Put a CLI command in `extensions/*/README.md`, the human and CI reference, not in a skill file.
 - Do not add a fallback that names a script or recipe in this repository. If a tool is not available, say
@@ -47,6 +47,20 @@ and points to `NOTICE`; the README links to it without naming sources, and no sk
 README, or doc restates an entry. A license, copyright holder, or version that cannot be established
 from evidence available in this repository is recorded as unknown with the evidence held, never guessed.
 Do not commit a third-party prompt body: reference the source by path instead.
+## Pi extension information
+
+Search for installed Pi extension documentation and examples under `~/.pi/agent/install/releases/`,
+not broadly under `~/.pi/agent/`.
+
+## Test isolation
+
+Tests must never read, change, or depend on a user's real state. Do not access personal configuration,
+ledgers, credentials, accounts, services, or repositories from a test. Use repository fixtures and isolated
+temporary data instead. Control inherited paths and environment variables, including `HOME` and
+`PI_LEDGER_PATH`, so they cannot redirect tests to personal files. Use fake services or mocks where needed.
+
+Add regression coverage for isolation and run it as part of routine validation. A passing test suite must
+not depend on the presence, contents, or absence of a user's personal setup.
 
 ## Checks
 

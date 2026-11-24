@@ -18,7 +18,8 @@ export function parseYaml(text: string): Record<string, Value> {
 		entries.push({ indent: line.length - trimmed.length, text: trimmed, lineNo: i });
 	}
 	if (entries.length === 0) return {};
-	const [value] = parseNode(entries, rawLines, 0, entries[0].indent);
+	const [value, next] = parseNode(entries, rawLines, 0, entries[0].indent);
+	if (next < entries.length) throw new Error(`bad line ${entries[next].lineNo + 1}: ${entries[next].text}`);
 	return value as Record<string, Value>;
 }
 
@@ -33,6 +34,7 @@ function parseMap(entries: Entry[], rawLines: string[], i: number, indent: numbe
 		const match = KEY.exec(entries[i].text);
 		if (!match) throw new Error(`bad line ${entries[i].lineNo + 1}: ${entries[i].text}`);
 		const key = match[1];
+		if (Object.hasOwn(map, key)) throw new Error(`duplicate key ${key} on line ${entries[i].lineNo + 1}`);
 		const rest = match[2];
 		if (rest === ">" || rest === ">-") {
 			const [value, next] = readFoldedBlock(entries, rawLines, i, indent);
@@ -74,16 +76,15 @@ function parseList(entries: Entry[], rawLines: string[], i: number, indent: numb
 		}
 		const match = KEY.exec(content);
 		if (match) {
-			const item: Record<string, Value> = {};
-			if (match[2] !== "") item[match[1]] = unquote(scalar(match[2]));
-			i += 1;
-			const [rest, next] = parseMap(entries, rawLines, i, indent + 2);
-			Object.assign(item, rest);
+			// Parse the first key like the remaining keys, including nested values.
+			const itemEntries = entries.slice();
+			itemEntries[i] = { ...entries[i], indent: indent + 2, text: content };
+			const [item, next] = parseMap(itemEntries, rawLines, i, indent + 2);
 			list.push(item);
 			i = next;
 			continue;
 		}
-		let value = unquote(scalar(content));
+		let value = scalar(content);
 		i += 1;
 		// A wrapped list item continues on deeper-indented lines; join them back.
 		while (i < entries.length && entries[i].indent > indent && !KEY.test(entries[i].text)) {
@@ -126,23 +127,45 @@ function scalar(text: string): Value {
 	if (text.startsWith("[") && text.endsWith("]")) {
 		const inner = text.slice(1, -1).trim();
 		if (inner === "") return [];
-		return inner.split(",").map((part) => scalar(part.trim()));
+		return splitFlow(inner).map((part) => scalar(part.trim()));
 	}
 	if (text.startsWith("{") && text.endsWith("}")) {
 		const inner = text.slice(1, -1).trim();
 		if (inner === "") return {};
 		const map: Record<string, Value> = {};
-		for (const part of inner.split(",")) {
+		for (const part of splitFlow(inner)) {
 			const separator = part.indexOf(":");
 			if (separator < 0) throw new Error(`bad flow map entry: ${part}`);
 			map[part.slice(0, separator).trim()] = scalar(part.slice(separator + 1).trim());
 		}
 		return map;
 	}
-	if ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"'))) return text.slice(1, -1);
+	if (text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1).replace(/''/g, "'");
+	if (text.startsWith('"') && text.endsWith('"')) return JSON.parse(text);
+	if (text === "true") return true;
+	if (text === "false") return false;
+	if (text === "null" || text === "~") return null;
 	// A value with a leading zero is not read as a number: a commit hash such as 0092502 must keep its zeros.
 	if (/^-?0$/.test(text) || /^-?[1-9]\d*$/.test(text)) return Number(text);
 	return text;
+}
+
+// Split flow collections only at top-level commas outside quoted scalars.
+function splitFlow(text: string): string[] {
+	const parts: string[] = [];
+	let start = 0, depth = 0, quote = "";
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+		if (quote === '"' && ch === "\\") { i++; continue; }
+		if (quote === "'" && ch === "'" && text[i + 1] === "'") { i++; continue; }
+		if (quote) { if (ch === quote) quote = ""; continue; }
+		if (ch === "'" || ch === '"') quote = ch;
+		else if (ch === "[" || ch === "{") depth++;
+		else if (ch === "]" || ch === "}") depth--;
+		else if (ch === "," && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+	}
+	parts.push(text.slice(start));
+	return parts;
 }
 
 export function serializeYaml(data: Record<string, Value> | Value[]): string {
@@ -158,7 +181,13 @@ function emitValue(out: string[], value: Value, indent: number): void {
 				const record = item as Record<string, Value>;
 				const keys = Object.keys(record);
 				const first = keys[0];
-				out.push(`${" ".repeat(indent)}- ${first}: ${formatScalar(record[first])}`);
+				const firstValue = record[first];
+				if (firstValue !== null && typeof firstValue === "object" && Object.keys(firstValue).length > 0) {
+					out.push(`${" ".repeat(indent)}- ${first}:`);
+					emitValue(out, firstValue, indent + 4);
+				} else {
+					out.push(`${" ".repeat(indent)}- ${first}: ${formatScalar(firstValue)}`);
+				}
 				const rest: Record<string, Value> = {};
 				for (const key of keys.slice(1)) rest[key] = record[key];
 				emitValue(out, rest, indent + 2);
@@ -171,12 +200,7 @@ function emitValue(out: string[], value: Value, indent: number): void {
 	for (const [key, item] of Object.entries(value as Record<string, Value>)) {
 		if (item === null || item === undefined) continue;
 		if (typeof item === "string") {
-			if (item.includes("\n") || item.length > 70) {
-				out.push(`${" ".repeat(indent)}${key}: >`);
-				for (const line of wrap(item)) out.push(`${" ".repeat(indent + 2)}${line}`);
-			} else {
-				out.push(`${" ".repeat(indent)}${key}: ${formatScalar(item)}`);
-			}
+			out.push(`${" ".repeat(indent)}${key}: ${formatScalar(item)}`);
 		} else if (Array.isArray(item) || typeof item === "object") {
 			if (Array.isArray(item) && item.length === 0) { out.push(`${" ".repeat(indent)}${key}: []`); continue; }
 			if (!Array.isArray(item) && Object.keys(item).length === 0) { out.push(`${" ".repeat(indent)}${key}: {}`); continue; }
@@ -189,31 +213,12 @@ function emitValue(out: string[], value: Value, indent: number): void {
 }
 
 function formatScalar(value: Value): string {
-	if (typeof value === "number") return String(value);
+	if (value === null) return "null";
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	if (Array.isArray(value) && value.length === 0) return "[]";
+	if (typeof value === "object" && value && Object.keys(value).length === 0) return "{}";
 	const text = String(value);
 	if (text === "") return "''";
-	if (/^-?\d+$/.test(text)) return text;
-	if (/^[A-Za-z0-9_./\- ]+$/.test(text) && !text.startsWith("- ") && !text.includes(": ")) return text;
-	return `'${text.replace(/'/g, "''")}'`;
-}
-
-function unquote(text: string): string {
-	return text.replace(/''/g, "'");
-}
-
-function wrap(text: string): string[] {
-	const lines: string[] = [];
-	for (const paragraph of text.split("\n")) {
-		if (paragraph === "") { lines.push(""); continue; }
-		const words = paragraph.split(" ");
-		let current = "";
-		for (const word of words) {
-			if (current === "") current = word;
-			else if (current.length + word.length + 1 <= 70) current += ` ${word}`;
-			else { lines.push(current); current = word; }
-		}
-		lines.push(current);
-	}
-	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-	return lines;
+	if (text.trim() === text && /^[A-Za-z0-9_./\- ]+$/.test(text) && !text.startsWith("- ") && !/^-?\d+$/.test(text) && !["true", "false", "null", "~"].includes(text)) return text;
+	return JSON.stringify(text);
 }
