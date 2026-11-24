@@ -20,7 +20,7 @@ test("installed Pi and subagents child loader: reviewer tools, duplicate provide
  try {
   await mkdir(cwd); await mkdir(agentDir); await mkdir(home);
   process.env.HOME = home;
-  const ext = resolve("extensions/git-read-tools/index.ts");
+  const ext = resolve("extensions/git-tools/index.ts");
   await symlink(ext, join(home, "provider.ts"));
   await writeFile(join(agentDir, "settings.json"), JSON.stringify({ extensions: [ext] }));
   const git = (...args: string[]) => execFileSync("git", args, { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" }, encoding: "utf8" }).trim();
@@ -61,7 +61,7 @@ test("permission-mode denies file read while allowing Git to expose committed co
   const git = (...args: string[]) => execFileSync("git", args, { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "tester@localhost", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "tester@localhost" }, encoding: "utf8" }).trim();
   git("init", "-q"); await writeFile(join(cwd, "secret.txt"), "first\n"); git("add", "."); git("commit", "-qm", "first"); const first = git("rev-parse", "HEAD"); await writeFile(join(cwd, "secret.txt"), "disposable policy canary\n"); git("commit", "-qam", "secret");
   const permissionExt = join(process.env.PI_GIT_TOOLS_PERMISSION_MODES_ROOT!, "src/index.ts");
-  const gitExt = resolve("extensions/git-read-tools/index.ts");
+  const gitExt = resolve("extensions/git-tools/index.ts");
   for (const mode of ["default", "plan"]) {
    process.env.PI_PERMISSION_MODE = mode;
    const settingsManager = pi.SettingsManager.create(cwd, agentDir);

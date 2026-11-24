@@ -32,7 +32,7 @@ The example references two files this repository owns — its own addendum (`con
 
 A relative reference resolves against the source file, so it only works while the source stays where the example puts it. Run the example in place, or name absolute paths for your own files; copying a referenced file somewhere else changes what the reference resolves to.
 
-The sample replaces the whole user `subagents` key. Its worker incorporates the operator-supplied live override (including its ledger extension and mutation tools), adds `ledger_list` and the Git read tools, and uses `~` in the provider path for portability. Preserve and compare your existing settings before using it, and update extension paths to match your installation. The tested loader deduplicates ambient and explicit providers only when both paths resolve to the same file; see [Git tools](../git-read-tools/README.md).
+The sample replaces the whole user `subagents` key. Its worker incorporates the operator-supplied live override (including its ledger extension and mutation tools), adds `ledger_list` and the Git tools, and uses `~` in the provider path for portability. Preserve and compare your existing settings before using it, and update extension paths to match your installation. The tested loader deduplicates ambient and explicit providers only when both paths resolve to the same file; see [Git tools](../git-tools/README.md).
 
 When pi-permission-modes is loaded, the sample allows ledger reads in common modes and ledger mutations in Build, denies mutations in Plan, and asks for mutations in Default. YOLO allows all tools and has no Bash sandbox. Direct ledger operations bypass ordinary file-tool path gating, and `ledger_submit` intentionally runs validation outside the Bash sandbox. These are accepted features, not defects solely on that basis; use trusted ledger paths, workspaces, and validation scripts and consider other security issues. An omitted path can resolve through the environment or `plan/ledger.path`. The Default tool-name prompt does not display arguments or the resolved path; session and forever grants cover later calls as well.
 
@@ -126,7 +126,7 @@ callable; use distinct names for variants. Agent discovery priority is defined i
         "tools+": ["ledger_check", "ledger_list", "ledger_next", "ledger_start", "ledger_submit"],
         "mutationTools+": ["ledger_start", "ledger_submit"]
       },
-      "worker-gitread": {
+      "worker-gittools": {
         "extends": ["workerBase"],
         "tools+": ["git_r_diff", "git_r_status", "git_r_log", "git_r_show"]
       }
