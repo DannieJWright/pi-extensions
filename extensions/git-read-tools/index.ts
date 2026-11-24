@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { inspectGit } from "./git.ts";
 
-const paths = { type: "array", items: { type: "string" }, maxItems: 100, description: "Literal paths relative to the child working directory; no Git pathspec magic." };
+const paths = { type: "array", items: { type: "string" }, maxItems: 100, description: "Literal paths relative to dir when it is given, otherwise to the session working directory; no Git pathspec magic." };
 const ref = { type: "string", description: "Simple commit hash, branch, or tag name (no revision operators)." };
 // Shared optional run directory. It has no path gate, so absolute paths outside the session subtree are accepted; the value is resolved and checked inside inspectGit.
 const dir = { type: "string", maxLength: 4096, description: "Directory to run in. Absolute, or relative to the session working directory. Must exist and be a directory. Defaults to the session working directory." };
