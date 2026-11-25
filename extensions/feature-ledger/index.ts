@@ -9,7 +9,7 @@ import { access, readFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { allowedValues, checkParsed, effectiveReviewConfig, FINDING_SEVERITIES, findItem, orchestrateList, orchestrateNext, releaseClaim, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
+import { allowedValues, badShapeProblem, checkParsed, effectiveReviewConfig, FINDING_SEVERITIES, findItem, orchestrateList, orchestrateNext, releaseClaim, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
@@ -137,7 +137,7 @@ function requireArguments(params: Record<string, unknown>, required: string[], a
 		if (params[key] !== undefined && (typeof params[key] !== "string" || (key !== "path" && !(params[key] as string).trim()))) throw new Error(`${key}: must be a non-empty string`);
 	}
 	if (params.empty_commit !== undefined && typeof params.empty_commit !== "boolean") throw new Error("empty_commit: must be a boolean");
-	if (params.limitations !== undefined && (!Array.isArray(params.limitations) || params.limitations.some((value) => typeof value !== "string"))) throw new Error("limitations: must be a list of strings");
+	if (params.limitations !== undefined && (!Array.isArray(params.limitations) || params.limitations.some((value) => typeof value !== "string"))) throw new Error(badShapeProblem("limitations", "a list of strings", params.limitations));
 }
 
 export default function featureLedger(pi: ExtensionAPI): void {

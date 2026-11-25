@@ -366,3 +366,19 @@ test("ledger_work treats Git pathspec metacharacters in filenames literally", as
 		assert.deepEqual((await readItem(path)).files.out, [":file.ts"]);
 	} finally { await cleanup(); }
 });
+
+test("ledger_work shape errors: hard failures show Pi's line, late failures show the shape line", async () => {
+	const { dir, path, cleanup } = await setup(false);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		const brief = await start(api, dir, path, "a");
+		const args = submitArgs(path, "a", brief.item.assignment.claim_token);
+		const before = await readFile(path, "utf8");
+		await assert.rejects(call(api, dir, { ...args, limitations: [{ a: 1 }] }), (error: Error) => /Validation failed for tool "ledger_work"/.test(error.message) && /limitations\.0/.test(error.message) && /Received arguments:/.test(error.message));
+		const late = await api.tools.ledger_work.execute(null, { ...args, limitations: "no focus ring, slow" }, null, null, createFakeContext(dir));
+		assert.ok(late.isError);
+		assert.match(late.content[0].text, /limitations must be a list of strings, got "no focus ring, slow"/);
+		assert.equal(await readFile(path, "utf8"), before);
+		assert.equal((await readItem(path)).assignment?.claim_token, brief.item.assignment.claim_token);
+	} finally { await cleanup(); }
+});

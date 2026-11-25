@@ -400,3 +400,29 @@ test("review preflight failures leave the claim intact; post-write pre-commit fa
 		} finally { await repo.cleanup(); }
 	}
 });
+
+test("ledger_review shape errors: hard failures show Pi's line, late failures show the shape line", async () => {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		await initialWork(api, dir, path);
+		const brief = await reviewStart(api, dir, path);
+		const args = reviewArgs(path, brief.item.assignment.claim_token);
+		const before = await readFile(path, "utf8");
+		// Hard failure: unparseable text where objects belong stays with Pi's validator, which echoes the arguments.
+		await assert.rejects(call(api, "ledger_review", dir, { ...args, new_findings: ["not json"] }), (error: Error) => /Validation failed for tool "ledger_review"/.test(error.message) && /new_findings\.0/.test(error.message) && /Received arguments:/.test(error.message) && error.message.includes("not json"));
+		// Late failures: the value passes validation, then the runtime check names field, shape and preview.
+		const blank = await call(api, "ledger_review", dir, { ...args, close_findings: ["  "] });
+		assert.ok(blank.isError);
+		assert.match(blank.content[0].text, /close_findings must be a list of non-empty IDs, got \["  "\]/);
+		const long = "x".repeat(200);
+		const checks = await call(api, "ledger_review", dir, { ...args, new_findings: [{ ...finding("nit"), required_checks: [long, " "] }] });
+		assert.ok(checks.isError);
+		assert.match(checks.content[0].text, /new_findings\[0\]\.required_checks must be a list of non-empty strings, got \["x+…/);
+		assert.ok(!checks.content[0].text.includes(long));
+		const notList = await callUnvalidated(api, "ledger_review", dir, { ...args, new_findings: [{ ...finding("nit"), required_checks: "check one, check two" }] });
+		assert.match(notList.content[0].text, /required_checks must be a list of non-empty strings, got "check one, check two"/);
+		assert.equal(await readFile(path, "utf8"), before);
+		assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
+	} finally { await cleanup(); }
+});
