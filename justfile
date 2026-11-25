@@ -61,6 +61,7 @@ test:
     run_group "perm generator test" node --test "${gen_dir}/generate.test.ts" "${gen_dir}/json-roundtrip.test.ts" "${gen_dir}/merge.test.ts" "${gen_dir}/migrate.test.ts" "{{ REPO }}/lib/settings-lock.test.ts"
     run_group "perm sample test" node --test "${gen_dir}/sample-integration.test.ts"
     run_group "subagent config test" node --test "{{ REPO }}/extensions/permission-mode-generator/config.test.ts"
+    run_group "shared args test" node --test "{{ REPO }}/lib/args.test.ts"
     run_group "just-tools test" just -f "${justfile}" just-tools test
     run_group "git-tools test" just -f "${justfile}" git-tools test
     run_group "provider-rules check" node "{{ REPO }}/extensions/provider-rules/check.ts" --config "${fixture_dir}/provider-rules.example.jsonc"
