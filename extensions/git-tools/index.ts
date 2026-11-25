@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
+import { normalizeJsonEncoded } from "../../lib/args.ts";
 import { inspectGit } from "./git.ts";
 
 const paths = { type: "array", items: { type: "string" }, maxItems: 100, description: "Literal paths relative to dir when it is given, otherwise to the session working directory; no Git pathspec magic." };
@@ -15,9 +16,12 @@ const definitions = [
 
 export default function gitTools(pi: ExtensionAPI): void {
  for (const definition of definitions) {
+  const parameters = { type: "object", properties: definition.properties, required: definition.required, additionalProperties: false } as unknown as TSchema;
   pi.registerTool({
    name: `git_r_${definition.kind}`, label: `Git ${definition.kind}`, description: `${definition.description} Runs in dir when it is given, otherwise the session working directory, with bounded output and runtime.`,
-   parameters: { type: "object", properties: definition.properties, required: definition.required, additionalProperties: false } as unknown as TSchema,
+   parameters,
+   // prepareArguments is typed (args: unknown) => Static<TParams>; normalizeJsonEncoded returns unknown, so an explicit `as never` cast is used, not a generic.
+   prepareArguments: (args) => normalizeJsonEncoded(parameters, args) as never,
    async execute(_id, args, signal, _onUpdate, ctx) { return inspectGit(definition.kind, args as Record<string, unknown>, { cwd: ctx.cwd, signal }); },
   });
  }

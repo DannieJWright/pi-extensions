@@ -382,3 +382,15 @@ test("ledger_work shape errors: hard failures show Pi's line, late failures show
 		assert.equal((await readItem(path)).assignment?.claim_token, brief.item.assignment.claim_token);
 	} finally { await cleanup(); }
 });
+
+test("ledger_work limitations as JSON text records two entries", async () => {
+	const { dir, path, cleanup } = await setup(false);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		const brief = await start(api, dir, path, "a");
+		await writeFile(join(dir, "code.txt"), "implementation\n");
+		const result = await call(api, dir, { ...submitArgs(path, "a", brief.item.assignment.claim_token), limitations: JSON.stringify(["no focus ring", "slow"]) });
+		assert.ok(!result.isError, result.content[0].text);
+		assert.deepEqual((await readItem(path)).limitations.slice(-2), ["no focus ring", "slow"]);
+	} finally { await cleanup(); }
+});

@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, writeFile, readFile, rm, symlink } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSubmoduleIndexParser, inspectGit, runGit } from "./git.ts";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import extension from "./index.ts";
 
 function git(cwd: string, ...args: string[]) { return execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" }, encoding: "utf8" }).trim(); }
@@ -737,4 +738,19 @@ test("output cap, timeout, cancellation and spawn failure", async () => fixture(
  await new Promise((resolve) => setTimeout(resolve, 1200));
  if (process.platform !== "win32") await assert.rejects(readFile(join(dir, "child-survived")), { code: "ENOENT" });
  const failed = await inspectGit("status", {}, { cwd: dir, executable: join(dir, "missing") }); assert.equal(failed.isError, true); assert.match(text(failed), /Could not start Git/);
+}));
+
+// Runs a registered git_r_* tool as Pi does: prepareArguments, then validateToolArguments, then execute.
+async function invokeTool(name: string, params: Record<string, unknown>, cwd: string) {
+ const tools: any[] = []; extension({ registerTool(tool: any) { tools.push(tool); } } as any);
+ const tool = tools.find((candidate) => candidate.name === name);
+ const prepared = tool.prepareArguments(params);
+ const validated = validateToolArguments(tool, { type: "toolCall", id: "test", name, arguments: prepared } as any);
+ return tool.execute("id", validated, undefined, undefined, { cwd }) as ReturnType<typeof inspectGit>;
+}
+
+test("git_r_diff paths given as JSON text match both paths", async () => fixture(async (dir) => {
+ await writeFile(join(dir, "space name"), "second\n"); await writeFile(join(dir, "-dash"), "changed\n");
+ const output = text(await invokeTool("git_r_diff", { paths: JSON.stringify(["space name", "-dash"]) }, dir));
+ assert.match(output, /second/); assert.match(output, /changed/);
 }));

@@ -434,3 +434,63 @@ test("ledger_review shape errors: hard failures show Pi's line, late failures sh
 		assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
 	} finally { await cleanup(); }
 });
+
+// A model may send an array argument as JSON text. prepareArguments decodes it before Pi validates it.
+async function reviewedFindings(newFindings: unknown, extra: (ids: string[]) => Record<string, unknown> = () => ({})) {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api); await initialWork(api, dir, path);
+		const brief = await reviewStart(api, dir, path);
+		const result = await call(api, "ledger_review", dir, { ...reviewArgs(path, brief.item.assignment.claim_token), new_findings: newFindings, ...extra([]) });
+		assert.ok(!result.isError, result.content[0].text);
+		const item = await itemAt(path);
+		return { failed: item.failed_reviews, findings: item.findings!.map(({ details, rationale, severity, required_checks, status }) => ({ details, rationale, severity, required_checks, status })) };
+	} finally { await cleanup(); }
+}
+
+test("ledger_review new_findings as JSON text gives the same ledger result as the array", async () => {
+	const findings = [finding("minor"), finding("major")];
+	const expected = await reviewedFindings(findings);
+	assert.equal(expected.findings.length, 2);
+	assert.deepEqual(await reviewedFindings(JSON.stringify(findings)), expected);
+});
+
+test("ledger_review required_checks as JSON text inside a finding object is normalized", async () => {
+	const result = await reviewedFindings([{ ...finding("minor"), required_checks: JSON.stringify(["check one", "check two"]) }]);
+	assert.deepEqual(result.findings[0].required_checks, ["check one", "check two"]);
+	// "[1]" decodes to [1], which Pi's coercion turns into ["1"].
+	const numeric = await reviewedFindings([{ ...finding("minor"), required_checks: "[1]" }]);
+	assert.deepEqual(numeric.findings[0].required_checks, ["1"]);
+});
+
+test("ledger_review close_findings as JSON text closes the correct IDs", async () => {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api); await initialWork(api, dir, path);
+		const first = await reviewStart(api, dir, path);
+		const failed = JSON.parse((await call(api, "ledger_review", dir, { ...reviewArgs(path, first.item.assignment.claim_token), new_findings: [finding("minor"), finding("major")] })).content[0].text);
+		const ids = failed.open_findings.map((f: { id: string }) => f.id);
+		await fix(api, dir, path);
+		const second = await reviewStart(api, dir, path);
+		const result = await call(api, "ledger_review", dir, { ...reviewArgs(path, second.item.assignment.claim_token), close_findings: JSON.stringify([ids[0]]) });
+		assert.ok(!result.isError, result.content[0].text);
+		const statuses = Object.fromEntries((await itemAt(path)).findings!.map(f => [f.id, f.status]));
+		assert.deepEqual(statuses, { [ids[0]]: "closed", [ids[1]]: "open" });
+	} finally { await cleanup(); }
+});
+
+test("ledger_review garbage new_findings text and \"[1]\" fail with Pi's line, keep the ledger and the claim", async () => {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api); await initialWork(api, dir, path);
+		const brief = await reviewStart(api, dir, path);
+		const args = reviewArgs(path, brief.item.assignment.claim_token);
+		for (const bad of ["[not json", "[1]"]) {
+			const before = await readFile(path, "utf8");
+			await assert.rejects(call(api, "ledger_review", dir, { ...args, new_findings: bad }), (error: Error) =>
+				/Validation failed for tool "ledger_review"/.test(error.message) && /new_findings/.test(error.message) && /Received arguments:/.test(error.message) && error.message.includes(JSON.stringify(bad)));
+			assert.equal(await readFile(path, "utf8"), before);
+			assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
+		}
+	} finally { await cleanup(); }
+});
