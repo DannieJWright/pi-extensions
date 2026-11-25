@@ -42,6 +42,14 @@ Do not keep duplicate copies of these extension files under `~/.pi/agent/extensi
 
 An earlier version named the Git tools folder `extensions/git-read-tools/`. It is now `extensions/git-tools/`: re-run `pi install`, and update any `subagentOnlyExtensions` or `extensions` entry that names the old path.
 
+## Argument shapes
+
+A model can send an array or object argument as JSON text, for example the string "[1]" where a tool expects an array. A tool argument is decoded before validation when the property schema is an array or object and the decoded value is accepted by that schema. This rule is implemented once, in `lib/args.ts`. All tools that use it share this one implementation.
+
+The decode follows the schema of the property. Pi validation can coerce a decoded value to the type the schema declares. For example, if `required_checks` is an array of strings and the model sends the text "[1]", the decoded array is recorded as ["1"].
+
+If the schema does not accept the decoded value, the argument is not changed. The call then fails with a clear validation error, the same as before.
+
 ## Tests
 
 ```sh
