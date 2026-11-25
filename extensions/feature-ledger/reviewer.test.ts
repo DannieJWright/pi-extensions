@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { compile } from "@earendil-works/pi-schema";
 import { FINDING_SEVERITIES, parseLedger, PATCH_BUDGET_BYTES, serializeLedger, submitReview, type LedgerItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
-import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
+import { createFakeApi, createFakeContext, invoke, exec, setupRepo } from "./test-harness.ts";
 
 const fixture = `ledger:
   branch: {BRANCH}
@@ -22,7 +22,9 @@ const fixture = `ledger:
         out: []
       commits: {}
 `;
-const call = (api: ReturnType<typeof createFakeApi>, tool: string, dir: string, params: Record<string, unknown>) => api.tools[tool].execute(null, params, null, null, createFakeContext(dir));
+// Skips Pi's argument validation, to prove the tool refuses an argument its own schema also rejects.
+const callUnvalidated = (api: ReturnType<typeof createFakeApi>, tool: string, dir: string, params: Record<string, unknown>) => api.tools[tool].execute(null, params, null, null, createFakeContext(dir));
+const call = (api: ReturnType<typeof createFakeApi>, tool: string, dir: string, params: Record<string, unknown>) => invoke(api.tools[tool], params, createFakeContext(dir));
 const itemAt = async (path: string) => parseLedger(await readFile(path, "utf8")).ledger!.features[0];
 async function change(path: string, update: (item: LedgerItem) => void) {
 	const ledger = parseLedger(await readFile(path, "utf8")).ledger!;
@@ -75,7 +77,7 @@ test("ledger_review schema, claims, validation and finding history through retri
 		assert.match((await call(api, "ledger_review", dir, { action: "start", id: "alpha", agent_id: "r", path })).content[0].text, /already assigned/);
 		for (const invalid of [{ ...args, agent_id: "wrong" }, { ...args, claim_token: "stale" }, { ...args, commit_message: "   " }, { ...args, close_findings: ["unknown"] }, { ...args, close_findings: ["same", "same"] }, { ...args, new_findings: [finding("critical")] }, { ...args, new_findings: [{ ...finding("nit"), required_checks: [""] }] }]) {
 			const before = await readFile(path, "utf8");
-			assert.ok((await call(api, "ledger_review", dir, invalid)).isError);
+			assert.ok((await callUnvalidated(api, "ledger_review", dir, invalid)).isError);
 			assert.equal(await readFile(path, "utf8"), before);
 			// The file is unchanged because the claim itself survived the refusal.
 			const kept = await itemAt(path);
@@ -176,7 +178,7 @@ test("review submit requires a non-empty commit message and records it verbatim"
 		for (const [value, expected] of [[undefined, /commit_message: missing/], ["", /commit_message: missing/], ["   ", /commit_message: must be a non-empty string/]] as const) {
 			gitCalls = 0;
 			const params = value === undefined ? { ...reviewArgs(repo.path, brief.item.assignment.claim_token), commit_message: undefined } : { ...reviewArgs(repo.path, brief.item.assignment.claim_token), commit_message: value };
-			const result = await call(api, "ledger_review", repo.dir, params);
+			const result = await callUnvalidated(api, "ledger_review", repo.dir, params);
 			assert.ok(result.isError, String(value));
 			assert.match(result.content[0].text, expected);
 			assert.equal(gitCalls, 0, `a rejected submission ran ${gitCalls} git commands for ${String(value)}`);
@@ -397,4 +399,98 @@ test("review preflight failures leave the claim intact; post-write pre-commit fa
 			assert.equal((await exec("git", ["rev-parse", "HEAD"], repo.dir)).stdout, head);
 		} finally { await repo.cleanup(); }
 	}
+});
+
+test("ledger_review shape errors: hard failures show Pi's line, late failures show the shape line", async () => {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		await initialWork(api, dir, path);
+		const brief = await reviewStart(api, dir, path);
+		const args = reviewArgs(path, brief.item.assignment.claim_token);
+		const before = await readFile(path, "utf8");
+		// Hard failure: unparseable text where objects belong stays with Pi's validator, which echoes the arguments.
+		await assert.rejects(call(api, "ledger_review", dir, { ...args, new_findings: ["not json"] }), (error: Error) => /Validation failed for tool "ledger_review"/.test(error.message) && /new_findings\.0/.test(error.message) && /Received arguments:/.test(error.message) && error.message.includes("not json"));
+		// Hard failure: Pi's validator rejects an object where IDs belong, so the ID lookup is never reached.
+		await assert.rejects(call(api, "ledger_review", dir, { ...args, close_findings: { id: "not-an-id" } }), (error: Error) => /Validation failed for tool "ledger_review"/.test(error.message) && /close_findings: expected array, got object/.test(error.message) && /Received arguments:/.test(error.message) && error.message.includes("not-an-id") && !error.message.includes("unknown finding ID"));
+		// Pi coerces a bare string into a one-item list, so it passes validation and reaches the ID lookup.
+		const coerced = await call(api, "ledger_review", dir, { ...args, close_findings: "not json" });
+		assert.ok(coerced.isError);
+		assert.match(coerced.content[0].text, /unknown finding ID/);
+		assert.equal(await readFile(path, "utf8"), before);
+		assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
+		// Late failures: the value passes validation, then the runtime check names field, shape and preview.
+		const blank = await call(api, "ledger_review", dir, { ...args, close_findings: ["  "] });
+		assert.ok(blank.isError);
+		assert.match(blank.content[0].text, /close_findings must be a list of non-empty IDs, got \["  "\]/);
+		const long = "x".repeat(200);
+		const checks = await call(api, "ledger_review", dir, { ...args, new_findings: [{ ...finding("nit"), required_checks: [long, " "] }] });
+		assert.ok(checks.isError);
+		assert.match(checks.content[0].text, /new_findings\[0\]\.required_checks must be a list of non-empty strings, got \["x+…/);
+		assert.ok(!checks.content[0].text.includes(long));
+		const notList = await callUnvalidated(api, "ledger_review", dir, { ...args, new_findings: [{ ...finding("nit"), required_checks: "check one, check two" }] });
+		assert.match(notList.content[0].text, /required_checks must be a list of non-empty strings, got "check one, check two"/);
+		assert.equal(await readFile(path, "utf8"), before);
+		assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
+	} finally { await cleanup(); }
+});
+
+// A model may send an array argument as JSON text. prepareArguments decodes it before Pi validates it.
+async function reviewedFindings(newFindings: unknown, extra: (ids: string[]) => Record<string, unknown> = () => ({})) {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api); await initialWork(api, dir, path);
+		const brief = await reviewStart(api, dir, path);
+		const result = await call(api, "ledger_review", dir, { ...reviewArgs(path, brief.item.assignment.claim_token), new_findings: newFindings, ...extra([]) });
+		assert.ok(!result.isError, result.content[0].text);
+		const item = await itemAt(path);
+		return { failed: item.failed_reviews, findings: item.findings!.map(({ details, rationale, severity, required_checks, status }) => ({ details, rationale, severity, required_checks, status })) };
+	} finally { await cleanup(); }
+}
+
+test("ledger_review new_findings as JSON text gives the same ledger result as the array", async () => {
+	const findings = [finding("minor"), finding("major")];
+	const expected = await reviewedFindings(findings);
+	assert.equal(expected.findings.length, 2);
+	assert.deepEqual(await reviewedFindings(JSON.stringify(findings)), expected);
+});
+
+test("ledger_review required_checks as JSON text inside a finding object is normalized", async () => {
+	const result = await reviewedFindings([{ ...finding("minor"), required_checks: JSON.stringify(["check one", "check two"]) }]);
+	assert.deepEqual(result.findings[0].required_checks, ["check one", "check two"]);
+	// "[1]" decodes to [1], which Pi's coercion turns into ["1"].
+	const numeric = await reviewedFindings([{ ...finding("minor"), required_checks: "[1]" }]);
+	assert.deepEqual(numeric.findings[0].required_checks, ["1"]);
+});
+
+test("ledger_review close_findings as JSON text closes the correct IDs", async () => {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api); await initialWork(api, dir, path);
+		const first = await reviewStart(api, dir, path);
+		const failed = JSON.parse((await call(api, "ledger_review", dir, { ...reviewArgs(path, first.item.assignment.claim_token), new_findings: [finding("minor"), finding("major")] })).content[0].text);
+		const ids = failed.open_findings.map((f: { id: string }) => f.id);
+		await fix(api, dir, path);
+		const second = await reviewStart(api, dir, path);
+		const result = await call(api, "ledger_review", dir, { ...reviewArgs(path, second.item.assignment.claim_token), close_findings: JSON.stringify([ids[0]]) });
+		assert.ok(!result.isError, result.content[0].text);
+		const statuses = Object.fromEntries((await itemAt(path)).findings!.map(f => [f.id, f.status]));
+		assert.deepEqual(statuses, { [ids[0]]: "closed", [ids[1]]: "open" });
+	} finally { await cleanup(); }
+});
+
+test("ledger_review garbage new_findings text and \"[1]\" fail with Pi's line, keep the ledger and the claim", async () => {
+	const { dir, path, cleanup } = await setupRepo(fixture);
+	try {
+		const api = createFakeApi(); featureLedger(api); await initialWork(api, dir, path);
+		const brief = await reviewStart(api, dir, path);
+		const args = reviewArgs(path, brief.item.assignment.claim_token);
+		for (const bad of ["[not json", "[1]"]) {
+			const before = await readFile(path, "utf8");
+			await assert.rejects(call(api, "ledger_review", dir, { ...args, new_findings: bad }), (error: Error) =>
+				/Validation failed for tool "ledger_review"/.test(error.message) && /new_findings/.test(error.message) && /Received arguments:/.test(error.message) && error.message.includes(JSON.stringify(bad)));
+			assert.equal(await readFile(path, "utf8"), before);
+			assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
+		}
+	} finally { await cleanup(); }
 });

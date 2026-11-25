@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveRepoRoot } from "./ledger.ts";
-import { exec, setupRepo } from "./test-harness.ts";
+import { createFakeContext, exec, invoke, setupRepo, type ToolDefinition } from "./test-harness.ts";
 
 const fixture = `ledger:
   branch: {BRANCH}
@@ -221,4 +221,47 @@ test("fixture Git ignores inherited hostile repository, config, and hooks", asyn
 		assert.match(result.stdout, /^ok \d+ - fixture Git operations stay within the temporary repository/m);
 		assert.deepEqual(await snapshot(dir), before, "hostile fake state was modified");
 	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+const invokeSchema = { type: "object", properties: { names: { type: "array", items: { type: "string" } } }, required: ["names"] };
+
+test("invoke runs prepareArguments, then validation, then execute with the validated arguments", async () => {
+	const order: string[] = [];
+	const received: unknown[] = [];
+	const tool: ToolDefinition = {
+		name: "demo", description: "demo", parameters: invokeSchema,
+		prepareArguments: (args) => { order.push("prepare"); return { names: (args as { raw: string }).raw }; },
+		execute: async (_id, params) => { order.push("execute"); received.push(params); return { content: [{ type: "text", text: "ok" }], details: {} }; },
+	};
+	const result = await invoke(tool, { raw: "one" }, createFakeContext("/unused"));
+	assert.equal(result.content[0].text, "ok");
+	assert.deepEqual(order, ["prepare", "execute"]);
+	// Coercion wraps a single value for an array property.
+	assert.deepEqual(received, [{ names: ["one"] }]);
+});
+
+test("invoke validates the original arguments when prepareArguments returns its input unchanged", async () => {
+	const received: unknown[] = [];
+	const tool: ToolDefinition = {
+		name: "demo", description: "demo", parameters: invokeSchema,
+		prepareArguments: (args) => args,
+		execute: async (_id, params) => { received.push(params); return { content: [{ type: "text", text: "ok" }], details: {} }; },
+	};
+	await invoke(tool, { names: ["a", "b"] }, createFakeContext("/unused"));
+	assert.deepEqual(received, [{ names: ["a", "b"] }]);
+});
+
+test("invoke rejects with Pi's validation error and never reaches execute", async () => {
+	let executed = false;
+	const tool: ToolDefinition = {
+		name: "demo", description: "demo", parameters: invokeSchema,
+		execute: async () => { executed = true; return { content: [{ type: "text", text: "ok" }], details: {} }; },
+	};
+	await assert.rejects(invoke(tool, { other: 1 }, createFakeContext("/unused")), (error: Error) => {
+		assert.match(error.message, /Validation failed for tool "demo"/);
+		assert.match(error.message, /Received arguments:/);
+		assert.match(error.message, /"other": 1/);
+		return true;
+	});
+	assert.equal(executed, false);
 });

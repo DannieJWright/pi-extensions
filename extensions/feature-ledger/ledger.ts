@@ -7,6 +7,7 @@ import { lstat, type Stats } from "node:fs/promises";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { preview } from "../../lib/args.ts";
 import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
@@ -167,6 +168,12 @@ export function allowedValues(values: readonly string[]): string {
 // [sub-repo-1] reads as a list and not as its joined text.
 export function badValueProblem(at: string, value: unknown): string {
 	return `${at} must be a non-empty string, got ${JSON.stringify(value)}`;
+}
+
+// A value that passed schema validation but fails a runtime check names the field, the expected shape and
+// a short preview of what arrived. Pi's validator keeps its own message for hard failures.
+export function badShapeProblem(field: string, expected: string, value: unknown): string {
+	return `${field} must be ${expected}, got ${preview(JSON.stringify(value) ?? String(value))}`;
 }
 
 export function problemTarget(n: number, id: string, field: string): string {
@@ -827,13 +834,14 @@ export async function submitReview(opts: ItemContext & {
 	// before the first Git call, so a rejected submission does not inspect or write the repository.
 	if (!opts.commitMessage?.trim()) throw new Error("commit_message must be a non-empty string");
 	requireWorkerBranch(opts, item);
-	if (!Array.isArray(opts.closeFindings) || opts.closeFindings.some((id) => typeof id !== "string" || !id.trim())) throw new Error("close_findings must be a list of non-empty IDs");
+	if (!Array.isArray(opts.closeFindings) || opts.closeFindings.some((id) => typeof id !== "string" || !id.trim())) throw new Error(badShapeProblem("close_findings", "a list of non-empty IDs", opts.closeFindings));
 	if (new Set(opts.closeFindings).size !== opts.closeFindings.length) throw new Error("close_findings contains duplicate IDs");
 	const findings = item.findings ?? [];
 	for (const id of opts.closeFindings) if (!findings.some((finding) => finding.id === id)) throw new Error(`unknown finding ID ${id}`);
 	if (!Array.isArray(opts.newFindings)) throw new Error("new_findings must be a list");
 	for (const [index, finding] of opts.newFindings.entries()) {
-		if (!isRecord(finding) || Object.keys(finding).some((key) => !["details", "rationale", "severity", "required_checks"].includes(key)) || typeof finding.details !== "string" || !finding.details.trim() || typeof finding.rationale !== "string" || !finding.rationale.trim() || !FINDING_SEVERITIES.includes(finding.severity as Finding["severity"]) || !Array.isArray(finding.required_checks) || finding.required_checks.some((check: unknown) => typeof check !== "string" || !check.trim())) throw new Error(`new_findings[${index}] requires non-empty details and rationale, valid severity, and a list of non-empty required_checks`);
+		if (!isRecord(finding) || Object.keys(finding).some((key) => !["details", "rationale", "severity", "required_checks"].includes(key)) || typeof finding.details !== "string" || !finding.details.trim() || typeof finding.rationale !== "string" || !finding.rationale.trim() || !FINDING_SEVERITIES.includes(finding.severity as Finding["severity"])) throw new Error(`new_findings[${index}] requires non-empty details, rationale and a valid severity`);
+		if (!Array.isArray(finding.required_checks) || finding.required_checks.some((check: unknown) => typeof check !== "string" || !check.trim())) throw new Error(badShapeProblem(`new_findings[${index}].required_checks`, "a list of non-empty strings", finding.required_checks));
 	}
 	const iteration = item.failed_reviews ?? 0;
 	const ids = new Set(findings.map((finding) => finding.id));

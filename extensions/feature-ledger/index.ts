@@ -9,7 +9,8 @@ import { access, readFile } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { allowedValues, checkParsed, effectiveReviewConfig, FINDING_SEVERITIES, findItem, orchestrateList, orchestrateNext, releaseClaim, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
+import { normalizeJsonEncoded } from "../../lib/args.ts";
+import { allowedValues, badShapeProblem, checkParsed, effectiveReviewConfig, FINDING_SEVERITIES, findItem, orchestrateList, orchestrateNext, releaseClaim, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, outsideRepoProblem, parseLedger, problemTarget, planReference, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, startWork, submitWork, startReview, submitReview, type Exec, type ExecResult, type ItemContext, type Ledger, type LedgerItem } from "./ledger.ts";
 
 // The same path argument on every tool. It is never required: without it the path comes
 // from the resolution order.
@@ -137,7 +138,7 @@ function requireArguments(params: Record<string, unknown>, required: string[], a
 		if (params[key] !== undefined && (typeof params[key] !== "string" || (key !== "path" && !(params[key] as string).trim()))) throw new Error(`${key}: must be a non-empty string`);
 	}
 	if (params.empty_commit !== undefined && typeof params.empty_commit !== "boolean") throw new Error("empty_commit: must be a boolean");
-	if (params.limitations !== undefined && (!Array.isArray(params.limitations) || params.limitations.some((value) => typeof value !== "string"))) throw new Error("limitations: must be a list of strings");
+	if (params.limitations !== undefined && (!Array.isArray(params.limitations) || params.limitations.some((value) => typeof value !== "string"))) throw new Error(badShapeProblem("limitations", "a list of strings", params.limitations));
 }
 
 export default function featureLedger(pi: ExtensionAPI): void {
@@ -164,11 +165,14 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		return { cwd: ctx.cwd, ledgerPath, ledger, workspace, repoRoot, branch: await readBranch(repoRoot), id: item.id, exec };
 	}
 
+	// prepareArguments is typed (args: unknown) => Static<TParams>; normalizeJsonEncoded returns unknown, so each hook uses an
+	// explicit `as never` cast (not a generic). Pi still validates the result against the unchanged strict schema.
 	pi.registerTool({
 		name: "ledger_get_feature",
 		label: "Ledger feature",
 		description: `Read the full feature, assignment, findings, commits and effective review configuration. ${PATH_DESCRIPTION}`,
 		parameters: GET_PARAMS,
+		prepareArguments: (args) => normalizeJsonEncoded(GET_PARAMS, args) as never,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireArguments(params, ["id"], ["id", "path"]);
@@ -188,6 +192,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		label: "Ledger orchestration",
 		description: `List in file order, select the next eligible item, or release a stopped run's matching identity and token. Release does not change status. Claims do not protect against concurrent writers. ${PATH_DESCRIPTION}`,
 		parameters: ORCHESTRATE_PARAMS,
+		prepareArguments: (args) => normalizeJsonEncoded(ORCHESTRATE_PARAMS, args) as never,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				if (!ORCHESTRATE_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(ORCHESTRATE_ACTIONS)}`);
@@ -209,6 +214,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		label: "Ledger check",
 		description: "Validate a ledger file. Reports parse problems plus one line per duplicate id. Read-only: it never writes the ledger. Output is JSON { path, ok, problems, warnings }; ok is true when there are no problems, and isError is set only when problems exist. A warning does not make the check fail. The ledger path is resolved in order: an optional path argument, then PI_LEDGER_PATH, then plan/ledger.path in the session root, then plan/ledger.yaml. Any extension is accepted. It reports a workspace that does not exist or is not inside a git repository, and a goal that names a plan file that does not exist, as problems. A files.in entry that does not exist yet is a warning, not a problem: an author may name a file an earlier step will create. Plan references resolve against the session root.",
 		parameters: CHECK_PARAMS,
+		prepareArguments: (args) => normalizeJsonEncoded(CHECK_PARAMS, args) as never,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				const gate = await validateLedger(ctx, params.path);
@@ -260,6 +266,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		label: "Ledger work",
 		description: `Start or submit worker work. Start claims a todo or eligible in-progress item for agent_id and returns a fresh claim token, full item, effective config, pending findings and implementation/ledger diff views; the failed-review limit blocks start only. Submit requires the same agent_id and claim_token, runs validations and commits work, so a held claim still completes at the cap. empty_commit is only for an explained review fix. Claims fence stale sequential runs, not concurrent writers. The four patch previews share one 4 KiB budget per response; each oversized view writes its full patch to an artifact, and once the allowance is used up the result gives files and stat with a note pointing at the artifacts. ${PATH_DESCRIPTION}`,
 		parameters: WORK_PARAMS,
+		prepareArguments: (args) => normalizeJsonEncoded(WORK_PARAMS, args) as never,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				if (!WORK_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(WORK_ACTIONS)}`);
@@ -288,6 +295,7 @@ export default function featureLedger(pi: ExtensionAPI): void {
 		label: "Ledger review",
 		description: `Start or submit a reviewer claim. Submit requires the same ID, path, agent ID and token plus a non-empty commit_message, which is used verbatim for the ledger commit. Submit closes finding IDs and adds findings; any open finding fails review. A tracked ledger is committed in its own repository in full, including pre-existing ledger edits, without other staged files. Untracked, ignored, or outside-repository ledgers are written without a commit. Claims fence stale sequential runs, not concurrent writers. ${PATH_DESCRIPTION}`,
 		parameters: REVIEW_PARAMS,
+		prepareArguments: (args) => normalizeJsonEncoded(REVIEW_PARAMS, args) as never,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				if (!REVIEW_ACTIONS.includes(params.action)) throw new Error(`action must be ${allowedValues(REVIEW_ACTIONS)}`);

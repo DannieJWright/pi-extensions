@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { addablePaths, badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextFindingId, orchestrateList, orchestrateNext, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startReview, startWork, submitReview, submitWork } from "./ledger.ts";
 import { effectiveReviewConfig, type Finding } from "./ledger.ts";
 import featureLedger from "./index.ts";
-import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
+import { createFakeApi, createFakeContext, invoke, exec, setupRepo } from "./test-harness.ts";
 
 // Never let an inherited ledger path redirect fixture tests into a real ledger.
 delete process.env.PI_LEDGER_PATH;
@@ -202,12 +202,12 @@ test("role writes reject invalid review data and leave the ledger unchanged", as
 		const ctx = createFakeContext(dir);
 		const before = await readFile(path, "utf8");
 		for (const [name, params] of [["ledger_work", { action: "start", id: "alpha", agent_id: "worker" }], ["ledger_review", { action: "start", id: "alpha", agent_id: "reviewer" }]] as const) {
-			const result = await api.tools[name].execute(null, params, null, null, ctx);
+			const result = await invoke(api.tools[name], params, ctx);
 			assert.ok(result.isError, name);
 			assert.match(result.content[0].text, /max_failed_reviews.*nonnegative integer/);
 			assert.equal(await readFile(path, "utf8"), before);
 		}
-		const checked = await api.tools.ledger_check.execute(null, {}, null, null, ctx);
+		const checked = await invoke(api.tools.ledger_check, {}, ctx);
 		assert.ok(checked.isError);
 		assert.match(checked.content[0].text, /max_failed_reviews/);
 	} finally { await cleanup(); }
@@ -588,14 +588,14 @@ test("every action validates through the shared gate before doing work, reads in
 			["ledger_review", { action: "start", id: "alpha", agent_id: "reviewer" }],
 			["ledger_review", { action: "submit", id: "alpha", agent_id: "reviewer", claim_token: "token", commit_message: "test: gate runs first" }],
 		] as const) {
-			const result = await api.tools[name].execute(null, params, null, null, ctx);
+			const result = await invoke(api.tools[name], params, ctx);
 			assert.ok(result.isError, name);
 			assert.equal(result.content[0].text, `${name}: invalid ledger: ${expected.join("; ")}`, name);
 			// A read path never writes, so every call sees the same file.
 			assert.equal(await readFile(path, "utf8"), before, `${name} wrote the ledger`);
 		}
 		// The check reports those same lines for the same file.
-		const checked = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, ctx)).content[0].text);
+		const checked = JSON.parse((await invoke(api.tools.ledger_check, {}, ctx)).content[0].text);
 		assert.deepEqual(checked.problems, expected);
 	} finally { await cleanup(); }
 });
@@ -696,14 +696,14 @@ test("the harness runs a tool against a temporary repository with no Pi session"
 		assert.equal(Object.keys(api.tools).sort().join(","), "ledger_check,ledger_get_feature,ledger_orchestrate,ledger_review,ledger_work");
 
 		const ctx = createFakeContext(dir);
-		const list = await api.tools.ledger_orchestrate.execute(null, { action: "list" }, null, null, ctx);
+		const list = await invoke(api.tools.ledger_orchestrate, { action: "list" }, ctx);
 		assert.ok(!list.isError);
 		const result = JSON.parse(list.content[0].text);
 		assert.equal(result.branch, branch);
 		assert.equal(result.items[0].id, "alpha");
 		assert.equal(result.items[0].assignment, null);
 
-		const next = await api.tools.ledger_orchestrate.execute(null, { action: "next" }, null, null, ctx);
+		const next = await invoke(api.tools.ledger_orchestrate, { action: "next" }, ctx);
 		assert.ok(!next.isError);
 		assert.equal(JSON.parse(next.content[0].text).next.id, "alpha");
 
@@ -718,6 +718,7 @@ test("role submissions name missing action-specific fields", async () => {
 	const { dir, cleanup } = await setupRepo(FIXTURE);
 	try {
 		const api = createFakeApi(); featureLedger(api);
+		// Direct execute: Pi would reject these arguments before the tool runs; this proves the tool names the fields too.
 		const result = await api.tools.ledger_work.execute(null, { action: "submit" }, null, null, createFakeContext(dir));
 		assert.ok(result.isError);
 		assert.match(result.content[0].text, /id: missing, agent_id: missing, claim_token: missing, commit_message: missing, summary: missing/);
@@ -776,11 +777,11 @@ test("the default target is plan/ledger.yaml in the session root", async () => {
 		await writeFile(join(dir, "plan", "ledger.yaml"), "ledger:\n  branch: feature-x\n  features: []\n");
 		const api = createFakeApi();
 		featureLedger(api);
-		const result = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir))).content[0].text);
+		const result = JSON.parse((await invoke(api.tools.ledger_check, {}, createFakeContext(dir))).content[0].text);
 		assert.equal(result.path, join(dir, "plan", "ledger.yaml"));
 		assert.ok(result.ok);
 		// A path outside a git repository is checked as a file: no location line, no git-backed check.
-		const outside = JSON.parse((await api.tools.ledger_check.execute(null, { path: join(dir, "plan", "ledger.yaml") }, null, null, createFakeContext(dir))).content[0].text);
+		const outside = JSON.parse((await invoke(api.tools.ledger_check, { path: join(dir, "plan", "ledger.yaml") }, createFakeContext(dir))).content[0].text);
 		assert.deepEqual(outside.problems, []);
 	} finally { await rm(dir, { recursive: true }); }
 });
@@ -796,7 +797,7 @@ test("a detached HEAD does not change the resolved path", async () => {
 		// Nothing builds a path from a branch anymore, so the default target is the same file.
 		const api = createFakeApi();
 		featureLedger(api);
-		const result = JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir))).content[0].text);
+		const result = JSON.parse((await invoke(api.tools.ledger_check, {}, createFakeContext(dir))).content[0].text);
 		assert.equal(result.path, path);
 		assert.ok(result.ok);
 	} finally { await cleanup(); }
@@ -904,7 +905,7 @@ test("the tool resolves the path from the argument, then the environment, then t
 	const api = createFakeApi();
 	featureLedger(api);
 	const ctx = createFakeContext(dir);
-	const call = async (params: Record<string, unknown>) => JSON.parse((await api.tools.ledger_check.execute(null, params, null, null, ctx)).content[0].text);
+	const call = async (params: Record<string, unknown>) => JSON.parse((await invoke(api.tools.ledger_check, params, ctx)).content[0].text);
 	try {
 		// The check reads files.in entries, so the fixture's entry must exist.
 		await ensureParent(join(dir, "src/a.ts"));
@@ -960,7 +961,7 @@ test("every tool takes an optional path and uses it when given", async () => {
 		await ensureParent(join(dir, "src/a.ts"));
 		await writeFile(join(dir, "src/a.ts"), "x\n");
 		const ctx = createFakeContext(dir);
-		const call = async (name: string, params: Record<string, unknown>) => (await api.tools[name].execute(null, params, null, null, ctx)).content[0].text;
+		const call = async (name: string, params: Record<string, unknown>) => (await invoke(api.tools[name], params, ctx)).content[0].text;
 
 		const checked = JSON.parse(await call("ledger_check", { path: other }));
 		assert.equal(checked.path, other);
@@ -976,7 +977,7 @@ test("every tool takes an optional path and uses it when given", async () => {
 
 		// A submit through the argument writes the item in that file.
 		await writeFile(join(dir, "tracked.txt"), "x\n");
-		const submitted = await api.tools.ledger_work.execute(null, { action: "submit", id: "alpha", agent_id: "worker", claim_token: started.item.assignment.claim_token, commit_message: "test: submit through a path argument", summary: "Recorded the path argument.", path: other }, null, null, ctx);
+		const submitted = await invoke(api.tools.ledger_work, { action: "submit", id: "alpha", agent_id: "worker", claim_token: started.item.assignment.claim_token, commit_message: "test: submit through a path argument", summary: "Recorded the path argument.", path: other }, ctx);
 		assert.ok(!submitted.isError, submitted.content[0].text);
 		assert.match(submitted.content[0].text, /is done \(commit [0-9a-f]{40}\)/);
 		assert.match(await readFile(other, "utf8"), /status: done/);
@@ -1031,7 +1032,7 @@ test("ledger_check reports a goal that names a plan file that does not exist", a
 		await writeFile(join(dir, "src/a.ts"), "x\n");
 		const api = createFakeApi();
 		featureLedger(api);
-		const result = await api.tools.ledger_check.execute(null, {}, null, null, createFakeContext(dir));
+		const result = await invoke(api.tools.ledger_check, {}, createFakeContext(dir));
 		assert.ok(result.isError);
 		assert.deepEqual(JSON.parse(result.content[0].text).problems, [
 			"features[0] (alpha): goal names a plan file that does not exist (plan/2026-11-18_missing-plan.md)",
@@ -1045,7 +1046,7 @@ test("ledger_check reports a workspace that does not exist, and one that is not 
 	const api = createFakeApi();
 	featureLedger(api);
 	const ctx = createFakeContext(root);
-	const call = async () => JSON.parse((await api.tools.ledger_check.execute(null, {}, null, null, ctx)).content[0].text);
+	const call = async () => JSON.parse((await invoke(api.tools.ledger_check, {}, ctx)).content[0].text);
 	const ws = join(root, "sub-repo-1");
 	try {
 		await ensureParent(join(root, "plan", "ledger.yaml"));
@@ -1071,7 +1072,7 @@ test("ledger_check reports a files.in entry that does not exist as a warning, no
 	featureLedger(api);
 	const ctx = createFakeContext(dir);
 	const call = async () => {
-		const result = await api.tools.ledger_check.execute(null, {}, null, null, ctx);
+		const result = await invoke(api.tools.ledger_check, {}, ctx);
 		return { ...JSON.parse(result.content[0].text), isError: result.isError };
 	};
 	const line = (target: string) => `features[0] (alpha): files.in names a path that does not exist yet (${target})`;
@@ -1122,7 +1123,7 @@ test("a plan reference resolves against the session root, not the repository roo
 		const api = createFakeApi();
 		featureLedger(api);
 		// The same file, read from two roots: the plan reference follows the session root.
-		const call = async (cwd: string) => JSON.parse((await api.tools.ledger_check.execute(null, { path }, null, null, createFakeContext(cwd))).content[0].text);
+		const call = async (cwd: string) => JSON.parse((await invoke(api.tools.ledger_check, { path }, createFakeContext(cwd))).content[0].text);
 		assert.deepEqual((await call(session)).problems, []);
 		// The same file is not found from the repository root, so a session root without it is reported.
 		assert.deepEqual((await call(dir)).problems, ["features[0] (alpha): goal names a plan file that does not exist (plan/named-plan.md)"]);
@@ -1272,7 +1273,7 @@ test("a per-item branch that does not match the repository is an error at ledger
 	try {
 		const api = createFakeApi();
 		featureLedger(api);
-		const result = await api.tools.ledger_work.execute(null, { action: "start", id: "alpha", agent_id: "worker" }, null, null, createFakeContext(dir));
+		const result = await invoke(api.tools.ledger_work, { action: "start", id: "alpha", agent_id: "worker" }, createFakeContext(dir));
 		assert.ok(result.isError);
 		assert.match(result.content[0].text, new RegExp(`item alpha says branch other-branch, but .* is on ${branch}`));
 	} finally { await cleanup(); }
@@ -1292,14 +1293,14 @@ test("an item works in its own workspace: files.out reads from the session root 
 		await exec("git", ["add", "-A"], ws);
 		await commitIn(ws, "seed");
 
-		const brief = await api.tools.ledger_work.execute(null, { action: "start", id: "alpha", agent_id: "worker" }, null, null, ctx);
+		const brief = await invoke(api.tools.ledger_work, { action: "start", id: "alpha", agent_id: "worker" }, ctx);
 		assert.ok(!brief.isError, brief.content[0].text);
 		const started = JSON.parse(brief.content[0].text);
 		assert.equal(started.workspace, ws);
 
 		await writeFile(join(ws, "notes.md"), "note\n");
 		await writeFile(join(dir, "outside.txt"), "not committed\n");
-		const result = await api.tools.ledger_work.execute(null, { action: "submit", id: "alpha", agent_id: "worker", claim_token: started.item.assignment.claim_token, commit_message: "test: work in the item workspace", summary: "Recorded the workspace." }, null, null, ctx);
+		const result = await invoke(api.tools.ledger_work, { action: "submit", id: "alpha", agent_id: "worker", claim_token: started.item.assignment.claim_token, commit_message: "test: work in the item workspace", summary: "Recorded the workspace." }, ctx);
 		assert.ok(!result.isError, result.content[0].text);
 		// The validation script only passes from the workspace, so its success shows where it ran.
 		assert.match(result.content[0].text, /files\.out:\n- sub-repo-1\/notes\.md/);
@@ -1326,11 +1327,11 @@ test("nothing is claimed about out-of-repo changes when the session root is not 
 		const ctx = createFakeContext(root);
 		await ensureParent(join(root, "plan", "ledger.yaml"));
 		await writeFile(join(root, "plan", "ledger.yaml"), itemLedger(["      workspace: sub-repo-1"]));
-		const started = await api.tools.ledger_work.execute(null, { action: "start", id: "alpha", agent_id: "worker" }, null, null, ctx);
+		const started = await invoke(api.tools.ledger_work, { action: "start", id: "alpha", agent_id: "worker" }, ctx);
 		assert.ok(!started.isError, started.content[0].text);
 		await writeFile(join(root, "outside.txt"), "x\n");
 		await writeFile(join(ws, "notes.md"), "note\n");
-		const result = await api.tools.ledger_work.execute(null, { action: "submit", id: "alpha", agent_id: "worker", claim_token: JSON.parse(started.content[0].text).item.assignment.claim_token, commit_message: "test: no claim outside a repository", summary: "Recorded nothing." }, null, null, ctx);
+		const result = await invoke(api.tools.ledger_work, { action: "submit", id: "alpha", agent_id: "worker", claim_token: JSON.parse(started.content[0].text).item.assignment.claim_token, commit_message: "test: no claim outside a repository", summary: "Recorded nothing." }, ctx);
 		assert.ok(!result.isError, result.content[0].text);
 		assert.ok(!result.content[0].text.includes("warning"), result.content[0].text);
 		assert.match(result.content[0].text, /files\.out:\n- sub-repo-1\/notes\.md/);
@@ -1345,7 +1346,7 @@ test("the tool names the workspace when it is not inside a git repository", asyn
 		await writeFile(join(root, "plan", "ledger.yaml"), itemLedger(["      workspace: sub-repo-1"]));
 		const api = createFakeApi();
 		featureLedger(api);
-		const result = await api.tools.ledger_work.execute(null, { action: "start", id: "alpha", agent_id: "worker" }, null, null, createFakeContext(root));
+		const result = await invoke(api.tools.ledger_work, { action: "start", id: "alpha", agent_id: "worker" }, createFakeContext(root));
 		assert.ok(result.isError);
 		assert.match(result.content[0].text, new RegExp(`no git repository at .*sub-repo-1`));
 	} finally { await rm(root, { recursive: true }); }
@@ -1356,7 +1357,7 @@ test("the start brief names the commit the write path recorded", async () => {
 	try {
 		const api = createFakeApi();
 		featureLedger(api);
-		const result = await api.tools.ledger_work.execute(null, { action: "start", id: "alpha", agent_id: "worker" }, null, null, createFakeContext(dir));
+		const result = await invoke(api.tools.ledger_work, { action: "start", id: "alpha", agent_id: "worker" }, createFakeContext(dir));
 		assert.ok(!result.isError, result.content[0].text);
 		const recorded = parseLedger(await readFile(path, "utf8")).ledger!.features[0].commits.start;
 		assert.ok(recorded, "the write path recorded no commit");
@@ -1382,11 +1383,11 @@ test("files.out reads from the session root when the workspace is a subdirectory
 		featureLedger(api);
 		const ctx = createFakeContext(dir);
 		await mkdir(join(dir, "sub"));
-		const started = await api.tools.ledger_work.execute(null, { action: "start", id: "alpha", agent_id: "worker" }, null, null, ctx);
+		const started = await invoke(api.tools.ledger_work, { action: "start", id: "alpha", agent_id: "worker" }, ctx);
 		assert.ok(!started.isError, started.content[0].text);
 		await writeFile(join(dir, "sub", "notes.md"), "note\n");
 		await writeFile(join(dir, "root.txt"), "root\n");
-		const result = await api.tools.ledger_work.execute(null, { action: "submit", id: "alpha", agent_id: "worker", claim_token: JSON.parse(started.content[0].text).item.assignment.claim_token, commit_message: "test: paths read from the session root", summary: "Recorded the workspace." }, null, null, ctx);
+		const result = await invoke(api.tools.ledger_work, { action: "submit", id: "alpha", agent_id: "worker", claim_token: JSON.parse(started.content[0].text).item.assignment.claim_token, commit_message: "test: paths read from the session root", summary: "Recorded the workspace." }, ctx);
 		assert.ok(!result.isError, result.content[0].text);
 		// The workspace entry is prefixed once, and a file at the repository root is not attributed to
 		// the workspace.
@@ -1415,11 +1416,11 @@ test("the out-of-repo warning reads from the session root, not from the reposito
 		const api = createFakeApi();
 		featureLedger(api);
 		const ctx = createFakeContext(session);
-		const started = await api.tools.ledger_work.execute(null, { action: "start", id: "alpha", agent_id: "worker", path }, null, null, ctx);
+		const started = await invoke(api.tools.ledger_work, { action: "start", id: "alpha", agent_id: "worker", path }, ctx);
 		assert.ok(!started.isError, started.content[0].text);
 		await writeFile(join(ws, "notes.md"), "note\n");
 		await writeFile(join(dir, "root.txt"), "root\n");
-		const result = await api.tools.ledger_work.execute(null, { action: "submit", id: "alpha", agent_id: "worker", claim_token: JSON.parse(started.content[0].text).item.assignment.claim_token, path, commit_message: "test: the warning reads from the session root", summary: "Recorded the workspace." }, null, null, ctx);
+		const result = await invoke(api.tools.ledger_work, { action: "submit", id: "alpha", agent_id: "worker", claim_token: JSON.parse(started.content[0].text).item.assignment.claim_token, path, commit_message: "test: the warning reads from the session root", summary: "Recorded the workspace." }, ctx);
 		assert.ok(!result.isError, result.content[0].text);
 		assert.match(result.content[0].text, /are not committed:\n- \.\./);
 	} finally { await rm(dir, { recursive: true }); }

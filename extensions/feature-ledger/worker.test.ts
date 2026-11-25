@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { compile } from "@earendil-works/pi-schema";
 import { parseLedger, PATCH_BUDGET_BYTES, serializeLedger, type LedgerItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
-import { createFakeApi, createFakeContext, exec, setupRepo as setupBaseRepo } from "./test-harness.ts";
+import { createFakeApi, createFakeContext, invoke, exec, setupRepo as setupBaseRepo } from "./test-harness.ts";
 
 delete process.env.PI_LEDGER_PATH;
 const fixture = (review: boolean) => `ledger:
@@ -31,7 +31,7 @@ async function setup(review: boolean) {
 	return repo;
 }
 const call = (api: ReturnType<typeof createFakeApi>, dir: string, params: Record<string, unknown>) =>
-	api.tools.ledger_work.execute(null, params, null, null, createFakeContext(dir));
+	invoke(api.tools.ledger_work, params, createFakeContext(dir));
 const readItem = async (path: string) => parseLedger(await readFile(path, "utf8")).ledger!.features[0];
 async function changeItem(path: string, change: (item: LedgerItem) => void) {
 	const ledger = parseLedger(await readFile(path, "utf8")).ledger!;
@@ -364,5 +364,33 @@ test("ledger_work treats Git pathspec metacharacters in filenames literally", as
 		const result = await call(api, dir, submitArgs(path, "a", brief.item.assignment.claim_token));
 		assert.ok(!result.isError, result.content[0].text);
 		assert.deepEqual((await readItem(path)).files.out, [":file.ts"]);
+	} finally { await cleanup(); }
+});
+
+test("ledger_work shape errors: hard failures show Pi's line, late failures show the shape line", async () => {
+	const { dir, path, cleanup } = await setup(false);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		const brief = await start(api, dir, path, "a");
+		const args = submitArgs(path, "a", brief.item.assignment.claim_token);
+		const before = await readFile(path, "utf8");
+		await assert.rejects(call(api, dir, { ...args, limitations: [{ a: 1 }] }), (error: Error) => /Validation failed for tool "ledger_work"/.test(error.message) && /limitations\.0/.test(error.message) && /Received arguments:/.test(error.message));
+		const late = await api.tools.ledger_work.execute(null, { ...args, limitations: "no focus ring, slow" }, null, null, createFakeContext(dir));
+		assert.ok(late.isError);
+		assert.match(late.content[0].text, /limitations must be a list of strings, got "no focus ring, slow"/);
+		assert.equal(await readFile(path, "utf8"), before);
+		assert.equal((await readItem(path)).assignment?.claim_token, brief.item.assignment.claim_token);
+	} finally { await cleanup(); }
+});
+
+test("ledger_work limitations as JSON text records two entries", async () => {
+	const { dir, path, cleanup } = await setup(false);
+	try {
+		const api = createFakeApi(); featureLedger(api);
+		const brief = await start(api, dir, path, "a");
+		await writeFile(join(dir, "code.txt"), "implementation\n");
+		const result = await call(api, dir, { ...submitArgs(path, "a", brief.item.assignment.claim_token), limitations: JSON.stringify(["no focus ring", "slow"]) });
+		assert.ok(!result.isError, result.content[0].text);
+		assert.deepEqual((await readItem(path)).limitations.slice(-2), ["no focus ring", "slow"]);
 	} finally { await cleanup(); }
 });

@@ -1,19 +1,20 @@
 // Test harness for the feature-ledger extension. It provides a fake ExtensionAPI
 // and a fake ExtensionContext so a test can call a tool's execute without a Pi
 // session, and a temporary git repository with a ledger. Test-only: the extension
-// code must not import this file at runtime. Node built-ins only.
+// code must not import this file at runtime. Depends on Node built-ins and, for invoke,
+// validateToolArguments from @earendil-works/pi-ai (a devDependency).
 
 import { execFile } from "node:child_process";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { ensureParent, resolveLedgerPath } from "./ledger.ts";
 
 const run = promisify(execFile);
 
-// The same shape the extension uses. Defined here, not imported from the Pi
-// package, so the harness runs without that package installed.
+// The same shape the extension uses, defined here rather than imported from the Pi package.
 export type ExecResult = { code: number; stdout: string; stderr: string };
 // Pi calls pi.exec(command, args, { cwd }); the core Exec type takes cwd as a string.
 // Accept both so the harness serves the extension wrapper and a test call directly.
@@ -26,8 +27,18 @@ export type ToolDefinition = {
 	label?: string;
 	description: string;
 	parameters: unknown;
+	prepareArguments?: (args: unknown) => unknown;
 	execute: (toolCallId: string | null, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: FakeContext) => Promise<ToolResult>;
 };
+
+// Runs a tool the way Pi does: prepareArguments (when present), then validateToolArguments
+// (coercion on, Pi's exact error text), then execute with the validated arguments. A
+// validation failure rejects with Pi's Error unchanged and execute is never called.
+export async function invoke(tool: ToolDefinition, params: Record<string, unknown>, ctx: FakeContext): Promise<ToolResult> {
+	const prepared = tool.prepareArguments ? tool.prepareArguments(params) : params;
+	const validated = validateToolArguments(tool as any, { type: "toolCall", id: "test", name: tool.name, arguments: prepared as Record<string, any> } as any) as Record<string, unknown>;
+	return tool.execute(null, validated, null, null, ctx);
+}
 
 export interface FakeApi {
 	registerTool(tool: ToolDefinition): void;

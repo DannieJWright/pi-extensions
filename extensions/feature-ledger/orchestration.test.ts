@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { compile } from "@earendil-works/pi-schema";
 import featureLedger from "./index.ts";
 import { allowedValues, ASSIGNMENT_ROLES, checkLedger, FINDING_SEVERITIES, FINDING_STATUSES, parseLedger, serializeLedger, STATUSES } from "./ledger.ts";
-import { createFakeApi, createFakeContext, setupRepo } from "./test-harness.ts";
+import { createFakeApi, createFakeContext, invoke, setupRepo } from "./test-harness.ts";
 
 const fixture = `ledger:
   branch: {BRANCH}
@@ -35,8 +35,11 @@ const fixture = `ledger:
         submissions: [123abc]
 `;
 
-const call = (api: ReturnType<typeof createFakeApi>, dir: string, name: string, params: Record<string, unknown>) =>
+// Skips Pi's argument validation, to prove the tool refuses an argument its own schema also rejects.
+const callUnvalidated = (api: ReturnType<typeof createFakeApi>, dir: string, name: string, params: Record<string, unknown>) =>
   api.tools[name].execute(null, params, null, null, createFakeContext(dir));
+const call = (api: ReturnType<typeof createFakeApi>, dir: string, name: string, params: Record<string, unknown>) =>
+  invoke(api.tools[name], params, createFakeContext(dir));
 const json = (result: { content: [{ text: string }]; isError?: boolean }) => {
   assert.ok(!result.isError, result.content[0].text);
   return JSON.parse(result.content[0].text);
@@ -255,7 +258,7 @@ test("action schemas and tool calls reject missing, wrong-action, and malformed 
       ["ledger_work", { action: "start", id: "x", agent_id: "  " }],
       ["ledger_work", { action: "start", id: "x", agent_id: "a", claim_token: "not-allowed" }],
       ["ledger_review", { action: "submit", id: "x", agent_id: "a" }],
-    ] as const) assert.ok((await call(api, dir, name, { ...params, path })).isError, name);
+    ] as const) assert.ok((await callUnvalidated(api, dir, name, { ...params, path })).isError, name);
   } finally { await cleanup(); }
 });
 
