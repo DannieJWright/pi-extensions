@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { compile } from "@earendil-works/pi-schema";
 import { FINDING_SEVERITIES, parseLedger, PATCH_BUDGET_BYTES, serializeLedger, submitReview, type LedgerItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
-import { createFakeApi, createFakeContext, exec, setupRepo } from "./test-harness.ts";
+import { createFakeApi, createFakeContext, invoke, exec, setupRepo } from "./test-harness.ts";
 
 const fixture = `ledger:
   branch: {BRANCH}
@@ -22,7 +22,9 @@ const fixture = `ledger:
         out: []
       commits: {}
 `;
-const call = (api: ReturnType<typeof createFakeApi>, tool: string, dir: string, params: Record<string, unknown>) => api.tools[tool].execute(null, params, null, null, createFakeContext(dir));
+// Skips Pi's argument validation, to prove the tool refuses an argument its own schema also rejects.
+const callUnvalidated = (api: ReturnType<typeof createFakeApi>, tool: string, dir: string, params: Record<string, unknown>) => api.tools[tool].execute(null, params, null, null, createFakeContext(dir));
+const call = (api: ReturnType<typeof createFakeApi>, tool: string, dir: string, params: Record<string, unknown>) => invoke(api.tools[tool], params, createFakeContext(dir));
 const itemAt = async (path: string) => parseLedger(await readFile(path, "utf8")).ledger!.features[0];
 async function change(path: string, update: (item: LedgerItem) => void) {
 	const ledger = parseLedger(await readFile(path, "utf8")).ledger!;
@@ -75,7 +77,7 @@ test("ledger_review schema, claims, validation and finding history through retri
 		assert.match((await call(api, "ledger_review", dir, { action: "start", id: "alpha", agent_id: "r", path })).content[0].text, /already assigned/);
 		for (const invalid of [{ ...args, agent_id: "wrong" }, { ...args, claim_token: "stale" }, { ...args, commit_message: "   " }, { ...args, close_findings: ["unknown"] }, { ...args, close_findings: ["same", "same"] }, { ...args, new_findings: [finding("critical")] }, { ...args, new_findings: [{ ...finding("nit"), required_checks: [""] }] }]) {
 			const before = await readFile(path, "utf8");
-			assert.ok((await call(api, "ledger_review", dir, invalid)).isError);
+			assert.ok((await callUnvalidated(api, "ledger_review", dir, invalid)).isError);
 			assert.equal(await readFile(path, "utf8"), before);
 			// The file is unchanged because the claim itself survived the refusal.
 			const kept = await itemAt(path);
@@ -176,7 +178,7 @@ test("review submit requires a non-empty commit message and records it verbatim"
 		for (const [value, expected] of [[undefined, /commit_message: missing/], ["", /commit_message: missing/], ["   ", /commit_message: must be a non-empty string/]] as const) {
 			gitCalls = 0;
 			const params = value === undefined ? { ...reviewArgs(repo.path, brief.item.assignment.claim_token), commit_message: undefined } : { ...reviewArgs(repo.path, brief.item.assignment.claim_token), commit_message: value };
-			const result = await call(api, "ledger_review", repo.dir, params);
+			const result = await callUnvalidated(api, "ledger_review", repo.dir, params);
 			assert.ok(result.isError, String(value));
 			assert.match(result.content[0].text, expected);
 			assert.equal(gitCalls, 0, `a rejected submission ran ${gitCalls} git commands for ${String(value)}`);

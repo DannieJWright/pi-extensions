@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { compile } from "@earendil-works/pi-schema";
 import { parseLedger, PATCH_BUDGET_BYTES, serializeLedger, type LedgerItem } from "./ledger.ts";
 import featureLedger from "./index.ts";
-import { createFakeApi, createFakeContext, exec, setupRepo as setupBaseRepo } from "./test-harness.ts";
+import { createFakeApi, createFakeContext, invoke, exec, setupRepo as setupBaseRepo } from "./test-harness.ts";
 
 delete process.env.PI_LEDGER_PATH;
 const fixture = (review: boolean) => `ledger:
@@ -31,7 +31,7 @@ async function setup(review: boolean) {
 	return repo;
 }
 const call = (api: ReturnType<typeof createFakeApi>, dir: string, params: Record<string, unknown>) =>
-	api.tools.ledger_work.execute(null, params, null, null, createFakeContext(dir));
+	invoke(api.tools.ledger_work, params, createFakeContext(dir));
 const readItem = async (path: string) => parseLedger(await readFile(path, "utf8")).ledger!.features[0];
 async function changeItem(path: string, change: (item: LedgerItem) => void) {
 	const ledger = parseLedger(await readFile(path, "utf8")).ledger!;
