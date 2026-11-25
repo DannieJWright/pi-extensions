@@ -411,6 +411,14 @@ test("ledger_review shape errors: hard failures show Pi's line, late failures sh
 		const before = await readFile(path, "utf8");
 		// Hard failure: unparseable text where objects belong stays with Pi's validator, which echoes the arguments.
 		await assert.rejects(call(api, "ledger_review", dir, { ...args, new_findings: ["not json"] }), (error: Error) => /Validation failed for tool "ledger_review"/.test(error.message) && /new_findings\.0/.test(error.message) && /Received arguments:/.test(error.message) && error.message.includes("not json"));
+		// Hard failure: Pi's validator rejects an object where IDs belong, so the ID lookup is never reached.
+		await assert.rejects(call(api, "ledger_review", dir, { ...args, close_findings: { id: "not-an-id" } }), (error: Error) => /Validation failed for tool "ledger_review"/.test(error.message) && /close_findings: expected array, got object/.test(error.message) && /Received arguments:/.test(error.message) && error.message.includes("not-an-id") && !error.message.includes("unknown finding ID"));
+		// Pi coerces a bare string into a one-item list, so it passes validation and reaches the ID lookup.
+		const coerced = await call(api, "ledger_review", dir, { ...args, close_findings: "not json" });
+		assert.ok(coerced.isError);
+		assert.match(coerced.content[0].text, /unknown finding ID/);
+		assert.equal(await readFile(path, "utf8"), before);
+		assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
 		// Late failures: the value passes validation, then the runtime check names field, shape and preview.
 		const blank = await call(api, "ledger_review", dir, { ...args, close_findings: ["  "] });
 		assert.ok(blank.isError);
