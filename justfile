@@ -126,7 +126,7 @@ git-tools action="test" *args="":
             ;;
     esac
 
-# Test the cwd-guard extension. Actions: test, or probe. Probe runs the manual integration probe against an installed package. PI_CWD_GUARD_PERMISSION_MODES_ROOT is optional for the guard but required for probe; see extensions/cwd-guard/README.md for the resolution order. Pass Node options after `--` (for example `just cwd-guard test -- --test-name-pattern=resolveMode`).
+# Test the cwd-guard extension. Actions: test, or probe. Probe runs the manual integration probe against a package root. PI_CWD_GUARD_PERMISSION_MODES_ROOT is optional for the guard but required for probe; see extensions/cwd-guard/README.md for the resolution order and for what a runnable root needs. Pass Node options after `--` (for example `just cwd-guard test -- --test-name-pattern=resolveMode`).
 [arg('action', pattern='test|probe', help='test, or probe')]
 [group('test')]
 cwd-guard action="test" *args="":

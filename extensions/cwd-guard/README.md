@@ -70,6 +70,13 @@ PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe   # manua
 
 The probe, `probe.integration.test.ts`, runs the real package composition against named expected outcomes. Only package code is read from the root; the session root, agent dir, `HOME` and mode config are temporary fixtures. The variable is required for the probe, though optional for the guard; without it every probe test is skipped. Run it by hand before merging and after a package upgrade, and record the result and the observed package version.
 
+Running it needs a package tree plain Node can import. Two conditions block an installed root:
+
+- Node does not strip types for files under `node_modules`, and the package ships `.ts` sources only, so a root inside `node_modules` fails at the first import.
+- A copy outside `node_modules` resolves its dependencies only when they sit beside it. A user-scope install keeps them in the parent tree, so a copied package cannot resolve them.
+
+Run it against a package source checkout with its own dependencies installed, or through a runner that handles TypeScript under `node_modules`. Observed on Node v24.22.2 against a user-scope install: both paths fail, so the recorded result there is "not runnable", not a pass.
+
 ## Files
 
 - `index.ts` — the adapter: `export default function cwdGuard(pi)`, the lazy package loader with fail-open degradation, `makeToolCallHandler` and `makeBeforeAgentStartHandler`.
