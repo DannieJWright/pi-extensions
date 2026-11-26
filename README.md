@@ -58,7 +58,7 @@ just test                    # each group reported separately: perm generator te
 just perm test               # the same generator, merge, migration and lock tests plus the sample comparison, run together with no group split
 just provider-rules test     # provider rules tests
 just cwd-guard test          # cwd-guard unit layer (also a group of `just test`)
-PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe   # manual probe only (the guard itself does not need the variable; see extensions/cwd-guard/README.md#package-root); not part of `just test`
+PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe-jiti   # manual probe only, through Pi's loader (the guard itself does not need the variable; see extensions/cwd-guard/README.md#package-root); not part of `just test`
 ```
 
 The `PI_CWD_GUARD_PERMISSION_MODES_ROOT` line is for the probe only; see [cwd guard, Package root](extensions/cwd-guard/README.md#package-root).

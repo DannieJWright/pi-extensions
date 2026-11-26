@@ -126,8 +126,8 @@ git-tools action="test" *args="":
             ;;
     esac
 
-# Test the cwd-guard extension. Actions: test, or probe. Probe runs the manual integration probe against a package root. PI_CWD_GUARD_PERMISSION_MODES_ROOT is optional for the guard but required for probe; see extensions/cwd-guard/README.md for the resolution order and for what a runnable root needs. Pass Node options after `--` (for example `just cwd-guard test -- --test-name-pattern=resolveMode`).
-[arg('action', pattern='test|probe', help='test, or probe')]
+# Test the cwd-guard extension. Actions: test, probe, or probe-jiti. All probe actions run the manual integration probe against a package root. PI_CWD_GUARD_PERMISSION_MODES_ROOT is optional for the guard but required for probe. Use probe-jiti, which loads through Pi's own loader (jiti's ESM register hook); plain probe needs a source checkout with its dependencies installed. See extensions/cwd-guard/README.md for the resolution order and the loader requirement. Pass Node options after `--` (for example `just cwd-guard test -- --test-name-pattern=resolveMode`).
+[arg('action', pattern='test|probe|probe-jiti', help='test, probe, or probe-jiti')]
 [group('test')]
 cwd-guard action="test" *args="":
     #!/usr/bin/env bash
@@ -149,6 +149,20 @@ cwd-guard action="test" *args="":
             ;;
         probe)
             node --test "${ext_dir}/probe.integration.test.ts" ${extra[@]+"${extra[@]}"}
+            ;;
+        probe-jiti)
+            # Same contract as runtime: Pi loads extensions through jiti, so the probe must use its loader.
+            hook="$(node -e 'process.stdout.write(require.resolve("jiti/lib/jiti-register.mjs"))' 2>/dev/null || true)"
+            if [ -z "${hook}" ]; then
+                for candidate in "${HOME}/.pi/agent/install/releases/"*/node_modules/jiti/lib/jiti-register.mjs; do
+                    if [ -f "${candidate}" ]; then hook="${candidate}"; break; fi
+                done
+            fi
+            if [ -z "${hook}" ]; then
+                echo "cannot resolve jiti's ESM register hook from this project or Pi's installed copy" >&2
+                exit 2
+            fi
+            node --import "file://${hook}" --test "${ext_dir}/probe.integration.test.ts" ${extra[@]+"${extra[@]}"}
             ;;
         *)
             echo "unknown action: ${action}" >&2

@@ -122,6 +122,22 @@ test("the cwd-guard group exists and its test arm lists explicit unit files, nev
 	assert.ok(cwdGuardUnitFiles(arm).includes("rules.test.ts"));
 });
 
+test("the probe-jiti arm loads through Pi's loader, jiti's ESM register hook", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const body = json.recipes["cwd-guard"].body.map(lineText);
+	const start = body.findIndex(line => line.trim() === "probe-jiti)");
+	assert.ok(start >= 0, "no probe-jiti) arm");
+	const arm: string[] = [];
+	for (const line of body.slice(start + 1)) {
+		if (line.trim() === ";;") break;
+		arm.push(line);
+	}
+	const text = arm.join("\n");
+	assert.ok(text.includes("jiti/lib/jiti-register.mjs"), "the probe-jiti arm must use jiti's ESM register hook, as runtime does");
+	assert.ok(text.includes("--import"), "the probe-jiti arm must load the hook with --import");
+	assert.ok(text.includes("probe.integration.test.ts"), "the probe-jiti arm must run the probe file");
+});
+
 test("the aggregate test recipe runs the cwd-guard unit group", async () => {
 	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
 	const lines: string[] = json.recipes["test"].body.map(lineText);

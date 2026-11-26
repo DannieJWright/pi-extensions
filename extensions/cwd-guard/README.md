@@ -65,23 +65,16 @@ Recorded, not blocking:
 ```sh
 just cwd-guard test                                 # unit layer: rules.test.ts and index.test.ts, part of `just test`
 just cwd-guard test -- --test-name-pattern=resolveMode   # Node options go after `--`
-PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe   # manual probe (variable required here), never part of `just test`
+PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe-jiti   # manual probe through Pi's loader (variable required here), never part of `just test`
 ```
 
 The probe, `probe.integration.test.ts`, runs the real package composition against named expected outcomes. Only package code is read from the root; the session root, agent dir, `HOME` and mode config are temporary fixtures. The variable is required for the probe, though optional for the guard; without it every probe test is skipped. Run it by hand before merging and after a package upgrade, and record the result and the observed package version.
 
-Running it needs a package tree plain Node can import. Two conditions block an installed root:
+`probe-jiti` is the documented way to run it, because it uses the same loader Pi uses: extensions are loaded through [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation. Running the probe through plain Node would be a second contract, and it breaks on an installed root — Node does not strip types for files under `node_modules`, and the package ships `.ts` sources only, so the first import fails there.
 
-- Node does not strip types for files under `node_modules`, and the package ships `.ts` sources only, so a root inside `node_modules` fails at the first import.
-- A copy outside `node_modules` resolves its dependencies only when they sit beside it. A user-scope install keeps them in the parent tree, so a copied package cannot resolve them.
+Requirement for `probe-jiti`: jiti must be resolvable, either from this project's dependency tree or from Pi's installed copy at `$HOME/.pi/agent/install/releases/*/node_modules/jiti/lib/jiti-register.mjs`. The action tries Node resolution first, then that path, and stops with a message when neither answers. No package source checkout is needed.
 
-Run it through a runner that handles TypeScript under `node_modules`, as Pi itself does — jiti's ESM register hook:
-
-```sh
-PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> node --import <pi release>/node_modules/jiti/lib/jiti-register.mjs --test extensions/cwd-guard/probe.integration.test.ts
-```
-
-Recorded result, Node v24.22.2 against the user-scope install of package 2.7.2: 16 pass, 0 fail. The same file through plain `node --test` fails at the first import for the type-stripping reason above. A copy of the package placed outside `node_modules` runs under plain Node once its three runtime dependencies resolve from a sibling `node_modules`; that path also gave 16 pass. So the blocker is the runner, not the probe.
+Recorded result, Node v24.22.2 against the user-scope install of package 2.7.2: 16 pass, 0 fail through the register hook; the same file through plain `node --test` failed at the first import. `just cwd-guard probe` stays as the fallback for a source checkout whose dependencies resolve from a sibling `node_modules`.
 
 ## Files
 
