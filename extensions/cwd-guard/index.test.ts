@@ -110,10 +110,28 @@ test("defaultPackageRoot joins the agent directory with npm/node_modules/pi-perm
 
 const fileFor = (root: string, file: string) => pathToFileURL(join(root, "src", file)).href;
 
+/** Every name the loader checks for. A fake module must supply these as functions. */
+const NAMED_EXPORTS = [
+	"getTreeSitterParser", "expandShellCommands", "unwrapCommand",
+	"loadModeConfig", "normalizeBashToken", "tokenTarget",
+	"isOutside", "sandboxAllowedRoots", "insideRoots",
+	"resolveSurfaceDetailed", "mostRestrictive",
+];
+
+/**
+ * A fake module with exactly the given function exports. Do not use a Proxy here: its get trap answers
+ * `then` too, so `await` on the fake is treated as a thenable and never settles.
+ */
+function fakeModule(names: readonly string[]) {
+	const module: Record<string, unknown> = {};
+	for (const name of names) module[name] = () => undefined;
+	return module;
+}
+
 function recordingImporter(urls: string[]) {
 	return async (fileUrl: string) => {
 		urls.push(fileUrl);
-		return {};
+		return fakeModule(NAMED_EXPORTS);
 	};
 }
 
@@ -176,6 +194,19 @@ test("runtime loader: a throwing importer fails open with one warning naming the
 	assert.equal(await load(), undefined);
 	assert.equal(warnings.length, 1);
 	assert.match(warnings[0], /derived default/);
+});
+
+test("runtime loader: a module missing a function export fails open with one warning naming the export and root", async () => {
+	const warnings: string[] = [];
+	const agent = join(tmpdir(), "fake-agent");
+	const importer = async (fileUrl: string) => (fileUrl.endsWith("paths.ts") ? fakeModule(["isOutside"]) : fakeModule(NAMED_EXPORTS));
+	const load = makeRuntimeLoader(() => ({}), () => agent, (m) => warnings.push(m), importer);
+	assert.equal(await load(), undefined);
+	assert.equal(await load(), undefined);
+	assert.equal(warnings.length, 1);
+	assert.match(warnings[0], /paths\.ts:sandboxAllowedRoots/);
+	assert.match(warnings[0], /paths\.ts:insideRoots/);
+	assert.ok(warnings[0].includes(defaultPackageRoot(agent)));
 });
 
 test("runtime loader warns once naming the derived root when it does not exist", async () => {

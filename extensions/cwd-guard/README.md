@@ -48,6 +48,7 @@ Option B, for later: read the `perm-mode` custom session entries through `ctx.se
 
 - Only `bash` is gated, and only directory-changing commands. A command that reaches outside by a path argument alone (for example `cat /etc/hosts`) is not inspected here; the package's own rules and sandbox apply.
 - An unresolved variable such as `cd ${DIR}` is not guessed. Wrapper descent and boundary semantics belong to the package.
+- The no-parser fallback split does not judge: a quote opened by a backslash-escaped quote character, an apostrophe inside a comment, heads formed by grouping tokens such as `(cd x)` or `{ cd x; }`, and segments that start with a reserved word such as `then` or `do`. These are documented limits, not parsing behavior this extension adds.
 - Version drift: the guard depends on the package's internal modules, which have no `exports` map and may move. Re-run the probe after any package upgrade.
 - Unit tests prove this repository's glue with stubbed package functions. They do not prove the package's boundary semantics; only the manual probe does.
 

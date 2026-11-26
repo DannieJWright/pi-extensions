@@ -190,7 +190,10 @@ test("the cwd-guard unit tests make no guarded fs access under a fake home (cann
 		const env = { ...guardEnv(home, log, guardSource), TMPDIR: dir, USERPROFILE: home, PI_LEDGER_PATH: join(dir, "ledger.yaml") };
 		delete env.PI_CODING_AGENT_DIR;
 		const ext = join(repo, "extensions", "cwd-guard");
-		await exec(process.execPath, ["--test", join(ext, "index.test.ts"), join(ext, "rules.test.ts")], { env });
+		const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+		const unitFiles = cwdGuardUnitFiles(cwdGuardTestArm(json.recipes["cwd-guard"].body.map(lineText)));
+		assert.ok(unitFiles.length > 0);
+		await exec(process.execPath, ["--test", ...unitFiles.map((file) => join(ext, file))], { env });
 		await assertNoGuardViolations(log);
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -212,6 +215,7 @@ test("cwd-guard sources and the docs name no literal personal home path", async 
 	assert.doesNotMatch("/home/<name>", personalHome);
 	assert.doesNotMatch("/Users/<name>", personalHome);
 	assert.match(["/ho", "me/", "x"].join(""), personalHome);
+	// Scope: only the enumerated files below are scanned, not the whole repository.
 	const files = [
 		...await filesUnder(join(repo, "extensions", "cwd-guard")),
 		join(repo, "README.md"), join(repo, "justfile"), join(repo, "AGENTS.md"),

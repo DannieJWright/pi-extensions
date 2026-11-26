@@ -114,7 +114,7 @@ SOFTWARE.
 - License: MIT
 - Copyright holder: Copyright (c) 2026 Nico Merz
 - Version observed: 2.7.2, read from package.json of the package installed at
-  `~/.pi/agent/npm/node_modules/pi-permission-modes` on 2026-11-25 (also 2.7.2 on 2026-11-22). The
+  `~/.pi/agent/npm/node_modules/pi-permission-modes` on 2026-11-26 (re-read that day, still 2.7.2; also 2.7.2 on 2026-11-25 and 2026-11-22). The
   version is observed, not pinned: nothing here fixes it, and the extension calls whatever is installed
   at run time. Version-drift risk: a different version may rename, remove or change the behavior of
   the imported functions, so re-read the installed version and re-check the names below when it
@@ -136,9 +136,10 @@ SOFTWARE.
   `extensions/permission-mode-generator/sample.expected.json:2`.
 - What was changed: nothing; no code or text from this source is copied or modified, and the schema URL
   is emitted as written. Any helper logic later vendored instead of called needs its own entry here.
-- Originality: all cwd-guard prompt-section text and reason text is original work authored here.
-  Statement 4 of the prompt section was rewritten in original words while porting, because the POC
-  wording derives from `awareness.ts:270`.
+- Originality: statements 1-3 of the cwd-guard prompt section come from the operator's earlier
+  proof-of-concept at `~/.pi/agent/extensions/cwd-guard-poc/index.ts`. They are recorded here by
+  reference to that path; no prompt body is copied into this record. Statement 4 and the reason text
+  are original words written here, because the POC wording derives from `awareness.ts:270`.
 - Permission notice:
 
 ```

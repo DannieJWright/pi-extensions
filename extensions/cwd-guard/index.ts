@@ -54,6 +54,7 @@ export function makeToolCallHandler(deps: CwdGuardDeps) {
 		try {
 			const runtime = await deps.loadRuntime();
 			if (!runtime) return undefined;
+			// Called per call on purpose: live mode lookup must see the current config. Do not cache it.
 			const config = runtime.loadModeConfig(ctx.cwd, await deps.agentDir());
 			const mode = resolveMode(deps.env(), config);
 			if (!mode) return undefined;
@@ -111,6 +112,18 @@ export function makeRuntimeLoader(
 					load("paths.ts"),
 					load("resolve.ts"),
 				]);
+				const missing = [
+					["bash-parse.ts", parse, ["getTreeSitterParser", "expandShellCommands", "unwrapCommand"]],
+					["config-load.ts", config, ["loadModeConfig"]],
+					["heuristics.ts", heuristics, ["normalizeBashToken", "tokenTarget"]],
+					["paths.ts", paths, ["isOutside", "sandboxAllowedRoots", "insideRoots"]],
+					["resolve.ts", resolve, ["resolveSurfaceDetailed", "mostRestrictive"]],
+				].flatMap(([file, module, names]) =>
+					(names as string[]).filter((name) => typeof (module as Record<string, unknown>)[name] !== "function").map((name) => `${file}:${name}`));
+				if (missing.length > 0) {
+					warn(`cwd-guard: cannot load pi-permission-modes from ${source} ${root}; the guard is off: missing function export ${missing.join(", ")}`);
+					return undefined;
+				}
 				return {
 					loadModeConfig: config.loadModeConfig,
 					functions: {

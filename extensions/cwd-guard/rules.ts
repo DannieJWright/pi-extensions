@@ -17,7 +17,7 @@ export interface PermissionSet {
 }
 
 export interface ModeDef {
-	sandbox?: unknown;
+	sandbox: unknown;
 	permission: PermissionSet;
 	/** Project tighten-only overlay, folded with the base policy. */
 	projectOverlay?: PermissionSet;
@@ -38,7 +38,7 @@ export interface BashCommand {
 
 /** A tree-sitter parser as far as this module uses it. */
 export interface BashParser {
-	parse(script: string): unknown;
+	parse(script: string): BashCommand[];
 }
 
 /** The package functions this module needs, injected by the caller. */
@@ -47,7 +47,7 @@ export interface PackageFunctions {
 	getTreeSitterParser(): Promise<BashParser | undefined> | BashParser | undefined;
 	expandShellCommands(parse: (script: string) => unknown, tree: unknown): BashCommand[];
 	unwrapCommand(command: BashCommand): BashCommand;
-	normalizeBashToken(token: string): string | undefined;
+	normalizeBashToken(token: string): string;
 	tokenTarget(token: string, root: string, bare: boolean): string | undefined;
 	isOutside(root: string, target: string, alsoInside: readonly string[]): boolean;
 	sandboxAllowedRoots(root: string, sandbox: unknown): string[];
