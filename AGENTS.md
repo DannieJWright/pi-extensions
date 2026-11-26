@@ -62,6 +62,9 @@ temporary data instead. Control inherited paths and environment variables, inclu
 Add regression coverage for isolation and run it as part of routine validation. A passing test suite must
 not depend on the presence, contents, or absence of a user's personal setup.
 
+Do not write a literal personal path, a home directory of a real user such as `/home/<name>`, in source, tests,
+docs, or fixtures. Derive paths from a temporary directory or use a placeholder in angle brackets.
+
 ## Checks
 
 Run `just feature-ledger check` and `just test` through the just tools exposed to you. These are your own

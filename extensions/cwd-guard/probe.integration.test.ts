@@ -2,7 +2,7 @@
 // the unit layer lists its files explicitly, and this file is run only by `just cwd-guard probe`.
 // Only package code is read from PI_CWD_GUARD_PERMISSION_MODES_ROOT; the session root, agent dir, HOME and the
 // mode config are temporary fixtures. The ported commands keep their text but run against the temporary root,
-// so a path such as /home/nhbody/git is only text that names a directory outside that root.
+// so the crossing path is only text that names a directory outside that root: a per-fixture sibling of it.
 // Expected outcomes are facts about the package's boundary semantics, not agreement with stubs.
 
 import { test } from "node:test";
@@ -35,6 +35,8 @@ function modeConfig(): unknown {
 
 interface Fixture {
 	root: string;
+	/** A directory beside the session root that need not exist; no prefix collision with `root`. */
+	outside: string;
 	agentDir: string;
 	runtime: PackageRuntime;
 	functions: PackageFunctions;
@@ -52,6 +54,7 @@ async function withFixture(mode: string | undefined, body: (fixture: Fixture) =>
 		const root = join(base, "session");
 		const agentDir = join(base, "agent");
 		const home = join(base, "home");
+		const outside = join(base, "outside");
 		await mkdir(root);
 		await mkdir(join(agentDir, "permission-mode"), { recursive: true });
 		await mkdir(home);
@@ -65,7 +68,7 @@ async function withFixture(mode: string | undefined, body: (fixture: Fixture) =>
 		assert.ok(runtime, `the package loads from ${PERMISSION_MODES_ROOT_ENV}: ${warnings.join("; ")}`);
 		const config = runtime.loadModeConfig(root, agentDir);
 		assert.deepEqual(warnings, []);
-		await body({ root, agentDir, runtime, functions: runtime.functions, guarded: config.modes[GUARDED], warnings });
+		await body({ root, outside, agentDir, runtime, functions: runtime.functions, guarded: config.modes[GUARDED], warnings });
 	} finally {
 		for (const [name, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[name];
@@ -92,11 +95,11 @@ test("probe fixture: the package loads from the configured root and tree-sitter 
 	});
 });
 
-test("ported: `cd /home/nhbody/git && pwd` is a crossing the guarded mode denies, and blocks", { skip: !enabled }, async () => {
+test("ported: `cd <outside> && pwd` is a crossing the guarded mode denies, and blocks", { skip: !enabled }, async () => {
 	await withFixture(GUARDED, async (fixture) => {
-		const { findings, reason } = await judge(fixture, "cd /home/nhbody/git && pwd");
-		assert.deepEqual(findings, [{ name: "cd", argument: "/home/nhbody/git", target: "/home/nhbody/git", crossing: true, action: "deny" }]);
-		assert.equal(reason, boundaryReason(fixture.root, "/home/nhbody/git"));
+		const { findings, reason } = await judge(fixture, `cd ${fixture.outside} && pwd`);
+		assert.deepEqual(findings, [{ name: "cd", argument: fixture.outside, target: fixture.outside, crossing: true, action: "deny" }]);
+		assert.equal(reason, boundaryReason(fixture.root, fixture.outside));
 	});
 });
 
@@ -127,17 +130,17 @@ test("ported: `git worktree list` and `git rev-parse --show-toplevel` are never 
 	});
 });
 
-test('ported: the unterminated quote `cd "/home/nhbody/git` through the parser yields only cd findings and a block only for that path', { skip: !enabled }, async () => {
+test('ported: the unterminated quote `cd "<outside>` through the parser yields only cd findings and a block only for that path', { skip: !enabled }, async () => {
 	await withFixture(GUARDED, async (fixture) => {
-		const command = 'cd "/home/nhbody/git';
+		const command = `cd "${fixture.outside}`;
 		const { findings, reason } = await judge(fixture, command);
 		// The package's tree-sitter recovery for a broken quote is not specified here: record what the parser path does.
 		console.log(`unterminated quote, parser path: findings=${JSON.stringify(findings)} blocked=${reason !== undefined}`);
 		for (const finding of findings) {
 			assert.equal(finding.name, "cd");
-			if (finding.target !== undefined) assert.equal(finding.target, "/home/nhbody/git");
+			if (finding.target !== undefined) assert.equal(finding.target, fixture.outside);
 		}
-		if (reason !== undefined) assert.equal(reason, boundaryReason(fixture.root, "/home/nhbody/git"));
+		if (reason !== undefined) assert.equal(reason, boundaryReason(fixture.root, fixture.outside));
 		assert.ok((await parseCommands(command, fixture.functions)).every((c) => typeof c.name === "string"));
 	});
 });
@@ -158,18 +161,18 @@ test("ported: `cd ${UNKNOWN_DIR} && pwd` names no judgeable path, so it does not
 	});
 });
 
-test('ported: the fallback split judges the unterminated quote `cd "/home/nhbody/git` as a denied crossing', { skip: !enabled }, async () => {
+test('ported: the fallback split judges the unterminated quote `cd "<outside>` as a denied crossing', { skip: !enabled }, async () => {
 	await withFixture(GUARDED, async (fixture) => {
-		const { findings, reason } = await judge(fixture, 'cd "/home/nhbody/git', withoutTreeSitter(fixture.functions));
-		assert.deepEqual(findings, [{ name: "cd", argument: "/home/nhbody/git", target: "/home/nhbody/git", crossing: true, action: "deny" }]);
-		assert.equal(reason, boundaryReason(fixture.root, "/home/nhbody/git"));
+		const { findings, reason } = await judge(fixture, `cd "${fixture.outside}`, withoutTreeSitter(fixture.functions));
+		assert.deepEqual(findings, [{ name: "cd", argument: fixture.outside, target: fixture.outside, crossing: true, action: "deny" }]);
+		assert.equal(reason, boundaryReason(fixture.root, fixture.outside));
 	});
 });
 
-test("new: with tree-sitter unavailable `cd /home/nhbody/git && pwd` still blocks, and `bash -c 'cd /tmp && ls'` is not descended into", { skip: !enabled }, async () => {
+test("new: with tree-sitter unavailable `cd <outside> && pwd` still blocks, and `bash -c 'cd /tmp && ls'` is not descended into", { skip: !enabled }, async () => {
 	await withFixture(GUARDED, async (fixture) => {
 		const noParser = withoutTreeSitter(fixture.functions);
-		assert.equal((await judge(fixture, "cd /home/nhbody/git && pwd", noParser)).reason, boundaryReason(fixture.root, "/home/nhbody/git"));
+		assert.equal((await judge(fixture, `cd ${fixture.outside} && pwd`, noParser)).reason, boundaryReason(fixture.root, fixture.outside));
 		// The fallback split keeps a quoted script as one word, so the inner cd is invisible to the gate; the
 		// package's own permission flow still sees it.
 		assert.deepEqual(await judge(fixture, "bash -c 'cd /tmp && ls'", noParser), { findings: [], reason: undefined });
@@ -182,32 +185,32 @@ function liveHandler(fixture: Fixture) {
 	return makeToolCallHandler(deps);
 }
 
-const crossing = { toolName: "bash", input: { command: "cd /home/nhbody/git && pwd" } };
+const crossingCall = (fixture: Fixture) => ({ toolName: "bash", input: { command: `cd ${fixture.outside} && pwd` } });
 
 test("new: live mode lookup — PI_PERMISSION_MODE naming the guarded mode wins over the open defaultMode and blocks", { skip: !enabled }, async () => {
 	await withFixture(GUARDED, async (fixture) => {
-		const result = await liveHandler(fixture)(crossing, { cwd: fixture.root });
-		assert.deepEqual(result, { block: true, reason: boundaryReason(fixture.root, "/home/nhbody/git") });
+		const result = await liveHandler(fixture)(crossingCall(fixture), { cwd: fixture.root });
+		assert.deepEqual(result, { block: true, reason: boundaryReason(fixture.root, fixture.outside) });
 		assert.deepEqual(fixture.warnings, []);
 	});
 });
 
 test("new: live mode lookup — PI_PERMISSION_MODE naming the open mode lets the same command through", { skip: !enabled }, async () => {
 	await withFixture(OPEN, async (fixture) => {
-		assert.equal(await liveHandler(fixture)(crossing, { cwd: fixture.root }), undefined);
+		assert.equal(await liveHandler(fixture)(crossingCall(fixture), { cwd: fixture.root }), undefined);
 	});
 });
 
 test("new: live mode lookup — an unset PI_PERMISSION_MODE falls back to defaultMode (open) and lets it through", { skip: !enabled }, async () => {
 	await withFixture(undefined, async (fixture) => {
 		assert.equal(process.env.PI_PERMISSION_MODE, undefined);
-		assert.equal(await liveHandler(fixture)(crossing, { cwd: fixture.root }), undefined);
+		assert.equal(await liveHandler(fixture)(crossingCall(fixture), { cwd: fixture.root }), undefined);
 	});
 });
 
 test("new: live mode lookup — an unknown PI_PERMISSION_MODE falls back to defaultMode (open) and lets it through", { skip: !enabled }, async () => {
 	await withFixture("probe-no-such-mode", async (fixture) => {
-		assert.equal(await liveHandler(fixture)(crossing, { cwd: fixture.root }), undefined);
+		assert.equal(await liveHandler(fixture)(crossingCall(fixture), { cwd: fixture.root }), undefined);
 	});
 });
 
