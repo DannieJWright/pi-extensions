@@ -75,7 +75,13 @@ Running it needs a package tree plain Node can import. Two conditions block an i
 - Node does not strip types for files under `node_modules`, and the package ships `.ts` sources only, so a root inside `node_modules` fails at the first import.
 - A copy outside `node_modules` resolves its dependencies only when they sit beside it. A user-scope install keeps them in the parent tree, so a copied package cannot resolve them.
 
-Run it against a package source checkout with its own dependencies installed, or through a runner that handles TypeScript under `node_modules`. Observed on Node v24.22.2 against a user-scope install: both paths fail, so the recorded result there is "not runnable", not a pass.
+Run it through a runner that handles TypeScript under `node_modules`, as Pi itself does — jiti's ESM register hook:
+
+```sh
+PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> node --import <pi release>/node_modules/jiti/lib/jiti-register.mjs --test extensions/cwd-guard/probe.integration.test.ts
+```
+
+Recorded result, Node v24.22.2 against the user-scope install of package 2.7.2: 16 pass, 0 fail. The same file through plain `node --test` fails at the first import for the type-stripping reason above. A copy of the package placed outside `node_modules` runs under plain Node once its three runtime dependencies resolve from a sibling `node_modules`; that path also gave 16 pass. So the blocker is the runner, not the probe.
 
 ## Files
 
