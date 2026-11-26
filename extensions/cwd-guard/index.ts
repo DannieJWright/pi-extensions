@@ -119,7 +119,7 @@ export function makeRuntimeLoader(
 					["paths.ts", paths, ["isOutside", "sandboxAllowedRoots", "insideRoots"]],
 					["resolve.ts", resolve, ["resolveSurfaceDetailed", "mostRestrictive"]],
 				].flatMap(([file, module, names]) =>
-					(names as string[]).filter((name) => typeof (module as Record<string, unknown>)[name] !== "function").map((name) => `${file}:${name}`));
+					(names as string[]).filter((name) => typeof (module as Record<string, unknown> | undefined)?.[name] !== "function").map((name) => `${file}:${name}`));
 				if (missing.length > 0) {
 					warn(`cwd-guard: cannot load pi-permission-modes from ${source} ${root}; the guard is off: missing function export ${missing.join(", ")}`);
 					return undefined;

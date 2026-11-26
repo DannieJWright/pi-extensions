@@ -209,6 +209,16 @@ test("runtime loader: a module missing a function export fails open with one war
 	assert.ok(warnings[0].includes(defaultPackageRoot(agent)));
 });
 
+test("runtime loader: a module that resolves to a non-object names its exports as missing", async () => {
+	const warnings: string[] = [];
+	const agent = join(tmpdir(), "fake-agent");
+	const importer = async (fileUrl: string) => (fileUrl.endsWith("paths.ts") ? null : fakeModule(NAMED_EXPORTS));
+	const load = makeRuntimeLoader(() => ({}), () => agent, (m) => warnings.push(m), importer);
+	assert.equal(await load(), undefined);
+	// A non-object module must still name the exports, not fall through to the generic load failure.
+	assert.match(warnings[0], /paths\.ts:isOutside, paths\.ts:sandboxAllowedRoots, paths\.ts:insideRoots/);
+});
+
 test("runtime loader warns once naming the derived root when it does not exist", async () => {
 	const warnings: string[] = [];
 	const agent = join(tmpdir(), "nonexistent-agent-dir");
