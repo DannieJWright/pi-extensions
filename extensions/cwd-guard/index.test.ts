@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import cwdGuard, {
 	PERMISSION_MODES_ROOT_ENV,
+	defaultPackageRoot,
 	makeBeforeAgentStartHandler,
 	makeRuntimeLoader,
 	makeToolCallHandler,
@@ -99,21 +103,102 @@ test("before_agent_start skips the section when the package is unavailable", asy
 	assert.equal(event.systemPromptOptions.sections, undefined);
 });
 
-test("runtime loader logs once when the root is unset", async () => {
-	const warnings: string[] = [];
-	const load = makeRuntimeLoader(() => ({}), (m) => warnings.push(m));
-	assert.equal(await load(), undefined);
-	assert.equal(await load(), undefined);
-	assert.equal(warnings.length, 1);
-	assert.match(warnings[0], new RegExp(PERMISSION_MODES_ROOT_ENV));
+test("defaultPackageRoot joins the agent directory with npm/node_modules/pi-permission-modes", () => {
+	const agent = join(tmpdir(), "fake-agent");
+	assert.equal(defaultPackageRoot(agent), join(agent, "npm", "node_modules", "pi-permission-modes"));
 });
 
-test("runtime loader logs once and does not throw when the root is moved", async () => {
+const fileFor = (root: string, file: string) => pathToFileURL(join(root, "src", file)).href;
+
+function recordingImporter(urls: string[]) {
+	return async (fileUrl: string) => {
+		urls.push(fileUrl);
+		return {};
+	};
+}
+
+test("runtime loader: a non-empty explicit root beats the default and never calls agentDir", async () => {
+	const urls: string[] = [];
 	const warnings: string[] = [];
-	const load = makeRuntimeLoader(() => ({ [PERMISSION_MODES_ROOT_ENV]: "/nonexistent/pi-permission-modes" }), (m) => warnings.push(m));
+	const explicit = join(tmpdir(), "explicit-root");
+	let called = false;
+	const agentDir = () => ((called = true), join(tmpdir(), "unused-agent"));
+	const load = makeRuntimeLoader(() => ({ [PERMISSION_MODES_ROOT_ENV]: explicit }), agentDir, (m) => warnings.push(m), recordingImporter(urls));
+	assert.ok(await load());
+	assert.equal(called, false);
+	assert.deepEqual(warnings, []);
+	assert.ok(urls.includes(fileFor(explicit, "bash-parse.ts")));
+	assert.ok(urls.every((u) => u.startsWith(pathToFileURL(join(explicit, "src")).href)));
+});
+
+for (const [label, make] of [
+	["sync", (dir: string) => dir],
+	["promise", (dir: string) => Promise.resolve(dir)],
+] as const) {
+	test(`runtime loader: derived default with a ${label} agentDir`, async () => {
+		const urls: string[] = [];
+		const warnings: string[] = [];
+		const agent = join(tmpdir(), "fake-agent");
+		const root = defaultPackageRoot(agent);
+		const load = makeRuntimeLoader(() => ({}), () => make(agent), (m) => warnings.push(m), recordingImporter(urls));
+		assert.ok(await load());
+		assert.deepEqual(warnings, []);
+		assert.deepEqual([...urls].sort(), ["bash-parse.ts", "config-load.ts", "heuristics.ts", "paths.ts", "resolve.ts"].map((f) => fileFor(root, f)).sort());
+	});
+}
+
+test("runtime loader: an empty explicit root falls back to the derived default", async () => {
+	const urls: string[] = [];
+	const agent = join(tmpdir(), "fake-agent");
+	const load = makeRuntimeLoader(() => ({ [PERMISSION_MODES_ROOT_ENV]: "" }), () => agent, () => {}, recordingImporter(urls));
+	assert.ok(await load());
+	assert.ok(urls.includes(fileFor(defaultPackageRoot(agent), "paths.ts")));
+});
+
+for (const [label, agentDir] of [
+	["throwing", () => { throw new Error("no agent dir"); }],
+	["rejecting", () => Promise.reject(new Error("no agent dir"))],
+] as const) {
+	test(`runtime loader: a ${label} agentDir fails open with one warning`, async () => {
+		const warnings: string[] = [];
+		const load = makeRuntimeLoader(() => ({}), agentDir, (m) => warnings.push(m), recordingImporter([]));
+		assert.equal(await load(), undefined);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /derived default/);
+		assert.equal(await load(), undefined);
+		assert.equal(warnings.length, 1);
+	});
+}
+
+test("runtime loader: a throwing importer fails open with one warning naming the derived default", async () => {
+	const warnings: string[] = [];
+	const load = makeRuntimeLoader(() => ({}), () => join(tmpdir(), "fake-agent"), (m) => warnings.push(m), async () => { throw new Error("boom"); });
+	assert.equal(await load(), undefined);
+	assert.equal(warnings.length, 1);
+	assert.match(warnings[0], /derived default/);
+});
+
+test("runtime loader warns once naming the derived root when it does not exist", async () => {
+	const warnings: string[] = [];
+	const agent = join(tmpdir(), "nonexistent-agent-dir");
+	const load = makeRuntimeLoader(() => ({}), () => agent, (m) => warnings.push(m));
+	assert.equal(await load(), undefined);
+	assert.equal(warnings.length, 1);
+	assert.match(warnings[0], /derived default/);
+	assert.ok(warnings[0].includes(defaultPackageRoot(agent)));
+	assert.equal(await load(), undefined);
+	assert.equal(warnings.length, 1);
+});
+
+test("runtime loader warns once naming an explicit root that does not exist", async () => {
+	const warnings: string[] = [];
+	const explicit = join(tmpdir(), "nonexistent-explicit-root");
+	const load = makeRuntimeLoader(() => ({ [PERMISSION_MODES_ROOT_ENV]: explicit }), () => join(tmpdir(), "unused-agent"), (m) => warnings.push(m));
 	assert.equal(await load(), undefined);
 	assert.equal(await load(), undefined);
 	assert.equal(warnings.length, 1);
+	assert.match(warnings[0], /explicit/);
+	assert.ok(warnings[0].includes(explicit));
 });
 
 test("the default export registers both handlers without reading the package", () => {

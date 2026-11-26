@@ -1,5 +1,5 @@
 // Thin adapter: wires rules.ts into Pi. It loads the pi-permission-modes modules lazily from the root named by
-// PI_CWD_GUARD_PERMISSION_MODES_ROOT and hands them to rules.ts. Detection, judgment, composition and all
+// PI_CWD_GUARD_PERMISSION_MODES_ROOT, else from the default install under Pi's agent directory, and hands them to rules.ts. Detection, judgment, composition and all
 // prompt-section and reason text stay in rules.ts. When the package cannot be loaded the extension logs once,
 // passes every command through and skips the prompt section.
 
@@ -79,19 +79,31 @@ export function makeBeforeAgentStartHandler(deps: CwdGuardDeps) {
 	};
 }
 
-/** Loads the package modules from the configured root, once. Logs and resolves undefined when the root is
- * unset, absent or moved. */
-export function makeRuntimeLoader(env: () => Record<string, string | undefined>, warn: (message: string) => void): () => Promise<PackageRuntime | undefined> {
+/** The package root under Pi's agent directory where pi-permission-modes is installed. */
+export function defaultPackageRoot(agentDir: string): string {
+	return path.join(agentDir, "npm", "node_modules", "pi-permission-modes");
+}
+
+const importFromUrl = (fileUrl: string): Promise<unknown> => import(fileUrl);
+
+/** Loads the package modules once. The root is PI_CWD_GUARD_PERMISSION_MODES_ROOT when set and non-empty, else
+ * defaultPackageRoot(await agentDir()). Warns once, naming the source and root, only when nothing loads. */
+export function makeRuntimeLoader(
+	env: () => Record<string, string | undefined>,
+	agentDir: CwdGuardDeps["agentDir"],
+	warn: (message: string) => void,
+	importer: (fileUrl: string) => Promise<unknown> = importFromUrl,
+): () => Promise<PackageRuntime | undefined> {
 	let loading: Promise<PackageRuntime | undefined> | undefined;
 	return () => {
 		loading ??= (async () => {
-			const root = env()[PERMISSION_MODES_ROOT_ENV];
-			if (!root) {
-				warn(`cwd-guard: ${PERMISSION_MODES_ROOT_ENV} is not set; the guard is off.`);
-				return undefined;
-			}
+			const explicit = env()[PERMISSION_MODES_ROOT_ENV];
+			const source = explicit ? `explicit ${PERMISSION_MODES_ROOT_ENV}` : "derived default";
+			let root = explicit || "(unresolved)";
 			try {
-				const load = (file: string) => import(pathToFileURL(path.join(root, "src", file)).href);
+				if (!explicit) root = defaultPackageRoot(await agentDir());
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const load = (file: string) => importer(pathToFileURL(path.join(root, "src", file)).href) as Promise<any>;
 				const [parse, config, heuristics, paths, resolve] = await Promise.all([
 					load("bash-parse.ts"),
 					load("config-load.ts"),
@@ -115,7 +127,7 @@ export function makeRuntimeLoader(env: () => Record<string, string | undefined>,
 					},
 				};
 			} catch (error) {
-				warn(`cwd-guard: cannot load pi-permission-modes from ${root}; the guard is off: ${describe(error)}`);
+				warn(`cwd-guard: cannot load pi-permission-modes from ${source} ${root}; the guard is off: ${describe(error)}`);
 				return undefined;
 			}
 		})();
@@ -126,10 +138,11 @@ export function makeRuntimeLoader(env: () => Record<string, string | undefined>,
 export default function cwdGuard(pi: ExtensionAPI): void {
 	const env = () => process.env;
 	const warn = (message: string) => console.warn(message);
+	// Imported lazily: the pi package resolves only inside Pi.
+	const agentDir = async () => (await import("@earendil-works/pi-coding-agent")).getAgentDir();
 	const deps: CwdGuardDeps = {
-		loadRuntime: makeRuntimeLoader(env, warn),
-		// Imported lazily: the pi package resolves only inside Pi.
-		agentDir: async () => (await import("@earendil-works/pi-coding-agent")).getAgentDir(),
+		loadRuntime: makeRuntimeLoader(env, agentDir, warn),
+		agentDir,
 		env,
 		warn,
 	};

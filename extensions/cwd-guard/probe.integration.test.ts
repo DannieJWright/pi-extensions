@@ -61,7 +61,7 @@ async function withFixture(mode: string | undefined, body: (fixture: Fixture) =>
 		if (mode === undefined) delete process.env.PI_PERMISSION_MODE;
 		else process.env.PI_PERMISSION_MODE = mode;
 		const warnings: string[] = [];
-		const runtime = await makeRuntimeLoader(() => process.env, (message) => warnings.push(message))();
+		const runtime = await makeRuntimeLoader(() => process.env, () => agentDir, (message) => warnings.push(message))();
 		assert.ok(runtime, `the package loads from ${PERMISSION_MODES_ROOT_ENV}: ${warnings.join("; ")}`);
 		const config = runtime.loadModeConfig(root, agentDir);
 		assert.deepEqual(warnings, []);
