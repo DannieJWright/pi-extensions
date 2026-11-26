@@ -136,10 +136,8 @@ SOFTWARE.
   `extensions/permission-mode-generator/sample.expected.json:2`.
 - What was changed: nothing; no code or text from this source is copied or modified, and the schema URL
   is emitted as written. Any helper logic later vendored instead of called needs its own entry here.
-- Originality: statements 1-3 of the cwd-guard prompt section come from the operator's earlier
-  proof-of-concept at `~/.pi/agent/extensions/cwd-guard-poc/index.ts`. They are recorded here by
-  reference to that path; no prompt body is copied into this record. Statement 4 and the reason text
-  are original words written here, because the POC wording derives from `awareness.ts:270`.
+- Originality: all cwd-guard prompt-section text and reason text is original work authored here.
+  Statement 4 carries the meaning of `awareness.ts:270` in this source, in original words.
 - Permission notice:
 
 ```
