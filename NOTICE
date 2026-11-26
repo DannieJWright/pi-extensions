@@ -16,15 +16,23 @@ with the evidence available; do not guess a license.
 - Source repository: https://github.com/nicobailon/pi-subagents
 - License: MIT
 - Copyright holder: Copyright (c) 2026 Nico Bailon
-- Version observed: 0.89.2, read from package.json of the package installed at
-  `~/.pi/agent/npm/node_modules/pi-subagents` on 2026-11-22. Nothing here pins that version;
-  generation output depends on what is installed on the machine running it.
+- Version observed: 0.90.0, read from package.json of the package installed at
+  `~/.pi/agent/npm/node_modules/pi-subagents` on 2026-11-25 (0.89.2 on 2026-11-22). Nothing here
+  pins that version; generation output depends on what is installed on the machine running it.
 - Where the content is used: reference only — no prompt body from this source is committed.
   The install-path form appears as a comment line in `configs/permissions.example.src.jsonc:296`, as
   example paths in `README.md:39` and in `extensions/permission-mode-generator/README.md:31` and :80,
   where docs describe resolving a reference against an installed package. When a user points a
   reference at their own install, that file's content enters generated output at generation time under
   this license.
+- Connection facts (no content taken): the permission-mode generator writes the `subagents` key of
+  `~/.pi/agent/settings.json` and selected keys of `~/.pi/agent/extensions/subagent/config.json`,
+  which the installed package reads (settings during agent discovery, refreshed on `session_start`;
+  config through `loadConfig()` and its extension factory). Agent discovery and its priority are
+  defined by the installed package. `lib/settings-lock.ts` takes a lock compatible with the
+  package's physical-target `settings.json.write-lock` lease, alongside Pi's own settings lock;
+  the package's config.json update code takes no lock. Nothing is copied: the lock protocol is
+  implemented here from its observed behavior. Behavior can change with the installed version.
 - What was changed: nothing from this source. Our contribution next to it is original:
   `configs/prompts/reviewer-addendum.md`, which states precedence over conflicting statements
   above it.
@@ -100,20 +108,37 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## pi-permission-modes (schema reference)
+## pi-permission-modes (schema reference and runtime imports)
 
 - Source repository: https://github.com/wynainfo/pi-permission-modes
 - License: MIT
 - Copyright holder: Copyright (c) 2026 Nico Merz
 - Version observed: 2.7.2, read from package.json of the package installed at
-  `~/.pi/agent/npm/node_modules/pi-permission-modes` on 2026-11-22. The referenced schema URL points
-  at that repository's default branch (`main`) and is not pinned to this version.
-- Where the content is used: reference only — no text taken. `configs/permissions.example.src.jsonc:10`
-  sets `$schema` to
+  `~/.pi/agent/npm/node_modules/pi-permission-modes` on 2026-11-25 (also 2.7.2 on 2026-11-22). The
+  version is observed, not pinned: nothing here fixes it, and the extension calls whatever is installed
+  at run time. Version-drift risk: a different version may rename, remove or change the behavior of
+  the imported functions, so re-read the installed version and re-check the names below when it
+  changes. The referenced schema URL points at that repository's default branch (`main`) and is not
+  pinned to this version.
+- Where the content is used: runtime imports, not copies. `extensions/cwd-guard/index.ts` loads these
+  files from the installed package, and `extensions/cwd-guard/rules.ts` receives the functions as
+  arguments:
+  - `src/bash-parse.ts`: `expandShellCommands`, `getTreeSitterParser`, `unwrapCommand`
+  - `src/config-load.ts`: `loadModeConfig`
+  - `src/heuristics.ts`: `normalizeBashToken`, `tokenTarget`
+  - `src/paths.ts`: `insideRoots`, `isOutside`, `sandboxAllowedRoots`
+  - `src/resolve.ts`: `mostRestrictive`, `resolveSurfaceDetailed`
+
+  `src/schema.ts` is not imported: `rules.ts` declares the types it needs locally. Separately,
+  `configs/permissions.example.src.jsonc:10` sets `$schema` to
   `https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json`,
   and that value passes through unchanged into generated output, including
   `extensions/permission-mode-generator/sample.expected.json:2`.
-- What was changed: nothing; the URL is emitted as written.
+- What was changed: nothing; no code or text from this source is copied or modified, and the schema URL
+  is emitted as written. Any helper logic later vendored instead of called needs its own entry here.
+- Originality: all cwd-guard prompt-section text and reason text is original work authored here.
+  Statement 4 of the prompt section was rewritten in original words while porting, because the POC
+  wording derives from `awareness.ts:270`.
 - Permission notice:
 
 ```
