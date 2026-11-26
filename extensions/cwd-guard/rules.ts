@@ -1,6 +1,6 @@
 // Detection, judgment and composition for the cwd guard. The package functions arrive as injected arguments
 // (`PackageFunctions`); this module imports no package path, so unit tests never touch an installed package.
-// Ported from the cwd-guard POC; resolveMode is new code.
+// Developed from an earlier in-house prototype by the same author; resolveMode is new code.
 
 import path from "node:path";
 
@@ -245,7 +245,8 @@ export async function boundaryFindings(command: string, root: string, mode: Mode
 }
 
 /** The boundary statement. The text depends on nothing but the root, so it stays stable for the whole
- * session. Statements 1-3 are the POC text; statement 4 is original wording written for this extension. */
+ * session. Statements 1-3 were written for the author's earlier prototype and are original here;
+ * statement 4 is new wording. */
 export function promptSectionText(root: string): string {
 	return [
 		"The session working directory is " + root + ". When the session started in .worktrees/<branch>, that worktree is the session working directory.",
