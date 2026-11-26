@@ -145,7 +145,7 @@ cwd-guard action="test" *args="":
 
     case "${action}" in
         test)
-            node --test "${ext_dir}/rules.test.ts" ${extra[@]+"${extra[@]}"}
+            node --test "${ext_dir}/rules.test.ts" "${ext_dir}/index.test.ts" ${extra[@]+"${extra[@]}"}
             ;;
         probe)
             echo "probe is not implemented yet" >&2
