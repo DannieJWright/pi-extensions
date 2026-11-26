@@ -54,10 +54,14 @@ If the schema does not accept the decoded value, the argument is not changed. Th
 
 ```sh
 just test                    # each group reported separately: perm generator test, perm sample test, subagent config test,
-                             # just-tools, git-tools, provider-rules check, feature-ledger check and test, skills test
+                             # just-tools, git-tools, cwd-guard, provider-rules check, feature-ledger check and test, skills test
 just perm test               # the same generator, merge, migration and lock tests plus the sample comparison, run together with no group split
 just provider-rules test     # provider rules tests
+just cwd-guard test          # cwd-guard unit layer (also a group of `just test`)
+PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe-jiti   # manual probe only, through Pi's loader (the guard itself does not need the variable; see extensions/cwd-guard/README.md#package-root); not part of `just test`
 ```
+
+The `PI_CWD_GUARD_PERMISSION_MODES_ROOT` line is for the probe only; see [cwd guard, Package root](extensions/cwd-guard/README.md#package-root).
 
 No test reads an installed package. Unit tests author their own fixtures in temporary directories; the sample group (`perm sample test`) compares against this repository's committed golden fixture and its own agent fixture files under `extensions/permission-mode-generator/test-fixtures/agents/`, so results do not change with what happens to be installed. Checking a real install is a manual step, gated on the version recorded in `NOTICE`, and is not part of `just test`. Third-party sources are named once in `NOTICE`; docs link to it instead of restating them.
 

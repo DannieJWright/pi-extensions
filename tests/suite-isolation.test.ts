@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -108,4 +108,119 @@ test("the test recipe installs the isolation guard for every group without runni
 	for (const group of groups) {
 		assert.doesNotMatch(group.replace(/^run_group "[^"]*" /, ""), /^just(?: -f "[^"]*")* test(?=\s|$)/, group);
 	}
+});
+
+test("the cwd-guard group exists and its test arm lists explicit unit files, never the probe", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const recipe = json.recipes["cwd-guard"];
+	assert.ok(recipe, "the cwd-guard recipe is missing");
+	assert.equal(recipe.attributes.some((attribute: any) => attribute.group === "test"), true);
+	const arm = cwdGuardTestArm(recipe.body.map(lineText));
+	assert.ok(arm.length > 0, "the test) arm is empty");
+	assert.ok(!arm.join("\n").includes("probe.integration.test.ts"));
+	assert.ok(!arm.join("\n").includes("*.test.ts"), "the test) arm must list files explicitly");
+	assert.ok(cwdGuardUnitFiles(arm).includes("rules.test.ts"));
+});
+
+test("the probe-jiti arm loads through Pi's loader, jiti's ESM register hook", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const body = json.recipes["cwd-guard"].body.map(lineText);
+	const start = body.findIndex(line => line.trim() === "probe-jiti)");
+	assert.ok(start >= 0, "no probe-jiti) arm");
+	const arm: string[] = [];
+	for (const line of body.slice(start + 1)) {
+		if (line.trim() === ";;") break;
+		arm.push(line);
+	}
+	const text = arm.join("\n");
+	assert.ok(text.includes("jiti/lib/jiti-register.mjs"), "the probe-jiti arm must use jiti's ESM register hook, as runtime does");
+	assert.ok(text.includes("--import"), "the probe-jiti arm must load the hook with --import");
+	assert.ok(text.includes("probe.integration.test.ts"), "the probe-jiti arm must run the probe file");
+});
+
+test("the aggregate test recipe runs the cwd-guard unit group", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const lines: string[] = json.recipes["test"].body.map(lineText);
+	assert.ok(lines.includes('run_group "cwd-guard test" just -f "${justfile}" cwd-guard test'));
+});
+
+// The lines between `test)` and the next `;;` of the cwd-guard recipe.
+function cwdGuardTestArm(lines: string[]): string[] {
+	const start = lines.findIndex(line => line.trim() === "test)");
+	assert.ok(start >= 0, "no test) arm");
+	const arm: string[] = [];
+	for (const line of lines.slice(start + 1)) {
+		if (line.trim() === ";;") break;
+		arm.push(line);
+	}
+	return arm;
+}
+
+function cwdGuardUnitFiles(arm: string[]): string[] {
+	return [...arm.join("\n").matchAll(/\$\{ext_dir\}\/([A-Za-z0-9._-]+\.ts)/g)].map(match => match[1]);
+}
+
+test("no cwd-guard unit test or unit under test imports a pi-permission-modes or ~/.pi path", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const tests = cwdGuardUnitFiles(cwdGuardTestArm(json.recipes["cwd-guard"].body.map(lineText)));
+	assert.ok(tests.length > 0);
+	const files = new Set<string>();
+	for (const name of tests) {
+		files.add(name);
+		files.add(name.replace(/\.test\.ts$/, ".ts"));
+	}
+	const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(["'`])([^"'`]+)\1/g;
+	for (const name of files) {
+		const source = await readFile(join(repo, "extensions/cwd-guard", name), "utf8");
+		for (const match of source.matchAll(specifier)) {
+			assert.doesNotMatch(match[2], /pi-permission-modes|(^|\/)\.pi(\/|$)|^~/, `${name} imports ${match[2]}`);
+		}
+	}
+});
+
+// Limits of this case: the fs wrappers in tests/suite-isolation-guard.mjs do not see ESM import, and injected
+// seams never reach the guarded .pi directory, so it only catches direct fs access made by the unit tests.
+test("the cwd-guard unit tests make no guarded fs access under a fake home (cannot catch ESM import or injected seams)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "cwd-guard isolation "));
+	try {
+		const home = join(dir, "home");
+		const log = join(dir, "violations.log");
+		await mkdir(join(home, ".pi"), { recursive: true });
+		await writeFile(log, "");
+		const env = { ...guardEnv(home, log, guardSource), TMPDIR: dir, USERPROFILE: home, PI_LEDGER_PATH: join(dir, "ledger.yaml") };
+		delete env.PI_CODING_AGENT_DIR;
+		const ext = join(repo, "extensions", "cwd-guard");
+		const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+		const unitFiles = cwdGuardUnitFiles(cwdGuardTestArm(json.recipes["cwd-guard"].body.map(lineText)));
+		assert.ok(unitFiles.length > 0);
+		await exec(process.execPath, ["--test", ...unitFiles.map((file) => join(ext, file))], { env });
+		await assertNoGuardViolations(log);
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+async function filesUnder(dir: string): Promise<string[]> {
+	const found: string[] = [];
+	for (const entry of await readdir(dir, { withFileTypes: true })) {
+		if (entry.name === "node_modules") continue;
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) found.push(...await filesUnder(path));
+		else found.push(path);
+	}
+	return found;
+}
+
+test("cwd-guard sources and the docs name no literal personal home path", async () => {
+	// Built from fragments so this file does not match its own pattern.
+	const personalHome = new RegExp(`(?:${["/ho", "me/"].join("")}|${["/Us", "ers/"].join("")})[A-Za-z]`);
+	assert.doesNotMatch("/home/<name>", personalHome);
+	assert.doesNotMatch("/Users/<name>", personalHome);
+	assert.match(["/ho", "me/", "x"].join(""), personalHome);
+	// Scope: only the enumerated files below are scanned, not the whole repository.
+	const files = [
+		...await filesUnder(join(repo, "extensions", "cwd-guard")),
+		join(repo, "README.md"), join(repo, "justfile"), join(repo, "AGENTS.md"),
+		fileURLToPath(import.meta.url),
+	];
+	assert.ok(files.length > 5);
+	for (const file of files) assert.doesNotMatch(await readFile(file, "utf8"), personalHome, file);
 });
