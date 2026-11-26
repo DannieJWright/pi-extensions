@@ -13,14 +13,24 @@ The `cwd_boundary` key was checked against the keys in the package's `src/prompt
 
 ## Turning it off
 
-- Unset `PI_CWD_GUARD_PERMISSION_MODES_ROOT`. The extension then logs once, passes every command through and skips the prompt section.
-- Or remove `extensions/cwd-guard/index.ts` from `pi.extensions` in the root `package.json`.
+Remove `extensions/cwd-guard/index.ts` from `pi.extensions` in the root `package.json`, or do not install the extension. There is no other switch; unsetting the variable does not disable the guard, because the package root is then derived (see [Package root](#package-root)).
+
+## Package root
+
+The guard loads the package's modules from one root, resolved in this order:
+
+1. The explicit override: `export PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root>`.
+2. Otherwise the derived default: `<agent dir>/npm/node_modules/pi-permission-modes`, with `<agent dir>` taken from Pi's agent directory.
+
+The variable is optional. Pi sets nothing for it and there is no settings entry for it. When nothing loads from the resolved root, the guard warns once, naming the source (`explicit ...` or `derived default`) and the resolved root, then fails open.
+
+Limitation: the default covers only the user-scope install under the agent directory. Project-scope installs (`.pi/npm/node_modules`), legacy global or pnpm installs, a custom `npmCommand` and Nix setups still need the explicit variable.
 
 ## Imports used
 
-The extension imports no package path. `index.ts` loads these modules lazily from the root named by `PI_CWD_GUARD_PERMISSION_MODES_ROOT`, and `rules.ts` receives the functions as arguments: `src/bash-parse.ts`, `src/config-load.ts`, `src/heuristics.ts`, `src/paths.ts` and `src/resolve.ts`. The exact functions, the usage record, and the source's version and license terms are in [NOTICE](../../NOTICE); this README does not restate them. Documentation for the package ships with it; the session prompt names its docs directory, so read it there instead of copying it here.
+The extension imports no package path. `index.ts` loads these modules lazily from the root described in [Package root](#package-root), and `rules.ts` receives the functions as arguments: `src/bash-parse.ts`, `src/config-load.ts`, `src/heuristics.ts`, `src/paths.ts` and `src/resolve.ts`. The exact functions, the usage record, and the source's version and license terms are in [NOTICE](../../NOTICE); this README does not restate them. Documentation for the package ships with it; the session prompt names its docs directory, so read it there instead of copying it here.
 
-When the package is absent or the root moved, the extension fails open: it logs once and passes commands through. A failure in parsing or config loading likewise passes the command through with one warning line.
+When the package is absent or the root moved, the extension fails open: it warns once and passes commands through. A failure in parsing or config loading likewise passes the command through with one warning line.
 
 ## Live mode resolution
 
@@ -55,10 +65,10 @@ Recorded, not blocking:
 ```sh
 just cwd-guard test                                 # unit layer: rules.test.ts and index.test.ts, part of `just test`
 just cwd-guard test -- --test-name-pattern=resolveMode   # Node options go after `--`
-PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe   # manual probe, never part of `just test`
+PI_CWD_GUARD_PERMISSION_MODES_ROOT=<package root> just cwd-guard probe   # manual probe (variable required here), never part of `just test`
 ```
 
-The probe, `probe.integration.test.ts`, runs the real package composition against named expected outcomes. Only package code is read from the root; the session root, agent dir, `HOME` and mode config are temporary fixtures. Without the variable every probe test is skipped. Run it by hand before merging and after a package upgrade, and record the result and the observed package version.
+The probe, `probe.integration.test.ts`, runs the real package composition against named expected outcomes. Only package code is read from the root; the session root, agent dir, `HOME` and mode config are temporary fixtures. The variable is required for the probe, though optional for the guard; without it every probe test is skipped. Run it by hand before merging and after a package upgrade, and record the result and the observed package version.
 
 ## Files
 
