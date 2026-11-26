@@ -109,3 +109,55 @@ test("the test recipe installs the isolation guard for every group without runni
 		assert.doesNotMatch(group.replace(/^run_group "[^"]*" /, ""), /^just(?: -f "[^"]*")* test(?=\s|$)/, group);
 	}
 });
+
+test("the cwd-guard group exists and its test arm lists explicit unit files, never the probe", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const recipe = json.recipes["cwd-guard"];
+	assert.ok(recipe, "the cwd-guard recipe is missing");
+	assert.equal(recipe.attributes.some((attribute: any) => attribute.group === "test"), true);
+	const arm = cwdGuardTestArm(recipe.body.map(lineText));
+	assert.ok(arm.length > 0, "the test) arm is empty");
+	assert.ok(!arm.join("\n").includes("probe.integration.test.ts"));
+	assert.ok(!arm.join("\n").includes("*.test.ts"), "the test) arm must list files explicitly");
+	assert.ok(cwdGuardUnitFiles(arm).includes("rules.test.ts"));
+});
+
+test("the aggregate test recipe runs the cwd-guard unit group", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const lines: string[] = json.recipes["test"].body.map(lineText);
+	assert.ok(lines.includes('run_group "cwd-guard test" just -f "${justfile}" cwd-guard test'));
+});
+
+// The lines between `test)` and the next `;;` of the cwd-guard recipe.
+function cwdGuardTestArm(lines: string[]): string[] {
+	const start = lines.findIndex(line => line.trim() === "test)");
+	assert.ok(start >= 0, "no test) arm");
+	const arm: string[] = [];
+	for (const line of lines.slice(start + 1)) {
+		if (line.trim() === ";;") break;
+		arm.push(line);
+	}
+	return arm;
+}
+
+function cwdGuardUnitFiles(arm: string[]): string[] {
+	return [...arm.join("\n").matchAll(/\$\{ext_dir\}\/([A-Za-z0-9._-]+\.ts)/g)].map(match => match[1]);
+}
+
+test("no cwd-guard unit test or unit under test imports a pi-permission-modes or ~/.pi path", async () => {
+	const json = JSON.parse((await exec("just", ["--justfile", join(repo, "justfile"), "--json"])).stdout);
+	const tests = cwdGuardUnitFiles(cwdGuardTestArm(json.recipes["cwd-guard"].body.map(lineText)));
+	assert.ok(tests.length > 0);
+	const files = new Set<string>();
+	for (const name of tests) {
+		files.add(name);
+		files.add(name.replace(/\.test\.ts$/, ".ts"));
+	}
+	const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(["'`])([^"'`]+)\1/g;
+	for (const name of files) {
+		const source = await readFile(join(repo, "extensions/cwd-guard", name), "utf8");
+		for (const match of source.matchAll(specifier)) {
+			assert.doesNotMatch(match[2], /pi-permission-modes|(^|\/)\.pi(\/|$)|^~/, `${name} imports ${match[2]}`);
+		}
+	}
+});

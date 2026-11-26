@@ -64,6 +64,7 @@ test:
     run_group "shared args test" node --test "{{ REPO }}/lib/args.test.ts"
     run_group "just-tools test" just -f "${justfile}" just-tools test
     run_group "git-tools test" just -f "${justfile}" git-tools test
+    run_group "cwd-guard test" just -f "${justfile}" cwd-guard test
     run_group "provider-rules check" node "{{ REPO }}/extensions/provider-rules/check.ts" --config "${fixture_dir}/provider-rules.example.jsonc"
     run_group "provider-rules test" just -f "${justfile}" provider-rules test
     run_group "feature-ledger check" just -f "${justfile}" feature-ledger check
@@ -118,6 +119,37 @@ git-tools action="test" *args="":
     case "${action}" in
         test)
             node --test "{{ REPO }}/extensions/git-tools/git-tools.test.ts" "{{ REPO }}/extensions/git-tools/runtime.integration.test.ts" ${extra[@]+"${extra[@]}"}
+            ;;
+        *)
+            echo "unknown action: ${action}" >&2
+            exit 2
+            ;;
+    esac
+
+# Test the cwd-guard extension. Actions: test, or probe. Probe runs the manual integration probe against an installed package and needs PI_CWD_GUARD_PERMISSION_MODES_ROOT. Pass Node options after `--` (for example `just cwd-guard test -- --test-name-pattern=resolveMode`).
+[arg('action', pattern='test|probe', help='test, or probe')]
+[group('test')]
+cwd-guard action="test" *args="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ext_dir="{{ REPO }}/extensions/cwd-guard"
+    action="$1"
+    shift; # Shift for `action`
+
+    # `just` passes an empty default for *args, so drop empty entries before forwarding them.
+    extra=()
+    for arg in "$@"; do
+        if [ -n "${arg}" ]; then extra+=("${arg}"); fi
+    done
+
+    case "${action}" in
+        test)
+            node --test "${ext_dir}/rules.test.ts" ${extra[@]+"${extra[@]}"}
+            ;;
+        probe)
+            echo "probe is not implemented yet" >&2
+            exit 1
             ;;
         *)
             echo "unknown action: ${action}" >&2
