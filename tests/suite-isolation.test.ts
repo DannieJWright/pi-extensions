@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -160,4 +160,47 @@ test("no cwd-guard unit test or unit under test imports a pi-permission-modes or
 			assert.doesNotMatch(match[2], /pi-permission-modes|(^|\/)\.pi(\/|$)|^~/, `${name} imports ${match[2]}`);
 		}
 	}
+});
+
+// Limits of this case: the fs wrappers in tests/suite-isolation-guard.mjs do not see ESM import, and injected
+// seams never reach the guarded .pi directory, so it only catches direct fs access made by the unit tests.
+test("the cwd-guard unit tests make no guarded fs access under a fake home (cannot catch ESM import or injected seams)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "cwd-guard isolation "));
+	try {
+		const home = join(dir, "home");
+		const log = join(dir, "violations.log");
+		await mkdir(join(home, ".pi"), { recursive: true });
+		await writeFile(log, "");
+		const env = { ...guardEnv(home, log, guardSource), TMPDIR: dir, USERPROFILE: home, PI_LEDGER_PATH: join(dir, "ledger.yaml") };
+		delete env.PI_CODING_AGENT_DIR;
+		const ext = join(repo, "extensions", "cwd-guard");
+		await exec(process.execPath, ["--test", join(ext, "index.test.ts"), join(ext, "rules.test.ts")], { env });
+		await assertNoGuardViolations(log);
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+async function filesUnder(dir: string): Promise<string[]> {
+	const found: string[] = [];
+	for (const entry of await readdir(dir, { withFileTypes: true })) {
+		if (entry.name === "node_modules") continue;
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) found.push(...await filesUnder(path));
+		else found.push(path);
+	}
+	return found;
+}
+
+test("cwd-guard sources and the docs name no literal personal home path", async () => {
+	// Built from fragments so this file does not match its own pattern.
+	const personalHome = new RegExp(`(?:${["/ho", "me/"].join("")}|${["/Us", "ers/"].join("")})[A-Za-z]`);
+	assert.doesNotMatch("/home/<name>", personalHome);
+	assert.doesNotMatch("/Users/<name>", personalHome);
+	assert.match(["/ho", "me/", "x"].join(""), personalHome);
+	const files = [
+		...await filesUnder(join(repo, "extensions", "cwd-guard")),
+		join(repo, "README.md"), join(repo, "justfile"), join(repo, "AGENTS.md"),
+		fileURLToPath(import.meta.url),
+	];
+	assert.ok(files.length > 5);
+	for (const file of files) assert.doesNotMatch(await readFile(file, "utf8"), personalHome, file);
 });
