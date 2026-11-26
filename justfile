@@ -148,8 +148,7 @@ cwd-guard action="test" *args="":
             node --test "${ext_dir}/rules.test.ts" "${ext_dir}/index.test.ts" ${extra[@]+"${extra[@]}"}
             ;;
         probe)
-            echo "probe is not implemented yet" >&2
-            exit 1
+            node --test "${ext_dir}/probe.integration.test.ts" ${extra[@]+"${extra[@]}"}
             ;;
         *)
             echo "unknown action: ${action}" >&2
