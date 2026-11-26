@@ -74,6 +74,24 @@ test("the reference example parses with folded blocks and arrays", async () => {
 	assert.equal(item.validation_scripts, undefined);
 });
 
+test("ledger flow lists retain apostrophes in plain scalars and strip comments", () => {
+	const text = `ledger:
+  features:
+    - id: selection
+      status: todo
+      short_goal: Keep the user's selection # explanatory comment
+      acceptance_criteria: [Preserve the user's selection, Keep "quoted" text, 'it''s safe']
+      constraints: [Don't change state, "quoted, value"]
+`;
+	const { ledger, problems } = parseLedger(text);
+	assert.deepEqual(problems, []);
+	const item = ledger!.features[0];
+	assert.equal(item.short_goal, "Keep the user's selection");
+	assert.deepEqual(item.acceptance_criteria, ["Preserve the user's selection", 'Keep "quoted" text', "it's safe"]);
+	assert.deepEqual(item.constraints, ["Don't change state", "quoted, value"]);
+	assert.deepEqual(parseLedger(serializeLedger(ledger!)).ledger, ledger);
+});
+
 test("serialize then parse round-trips", async () => {
 	const path = fileURLToPath(new URL("../../skills/feature-ledger/references/ledger.yaml", import.meta.url));
 	const first = parseLedger(await readFile(path, "utf8")).ledger!;
@@ -688,6 +706,23 @@ test("orchestrateNext permits a todo item only when nothing is in flight, and re
 	assert.equal(orchestrateNext(empty).status, "todo");
 });
 
+test("orchestrateNext exposes a copy of acceptance criteria and leaves the ledger unchanged", () => {
+	const { ledger } = parseLedger(FIXTURE.replace("{BRANCH}", "alpha"));
+	const next = orchestrateNext(ledger!).next!;
+	assert.deepEqual(next.acceptance_criteria, ["The thing is done."]);
+	next.acceptance_criteria.push("Changed by caller.");
+	assert.deepEqual(ledger!.features[0].acceptance_criteria, ["The thing is done."]);
+	assert.equal(ledger!.features[0].status, "todo");
+	assert.equal("acceptance_criteria" in orchestrateList(ledger!).items[0], false);
+});
+
+test("orchestrateNext returns no acceptance_criteria when nothing is selected", () => {
+	const complete = parseLedger("ledger:\n  branch: alpha\n  features:\n    - id: first\n      status: done\n      short_goal: First item.\n").ledger!;
+	const result = orchestrateNext(complete);
+	assert.equal(result.next, null);
+	assert.equal("acceptance_criteria" in result, false);
+});
+
 test("the harness runs a tool against a temporary repository with no Pi session", async () => {
 	const { dir, branch, path, cleanup } = await setupRepo(FIXTURE);
 	try {
@@ -706,6 +741,7 @@ test("the harness runs a tool against a temporary repository with no Pi session"
 		const next = await invoke(api.tools.ledger_orchestrate, { action: "next" }, ctx);
 		assert.ok(!next.isError);
 		assert.equal(JSON.parse(next.content[0].text).next.id, "alpha");
+		assert.deepEqual(JSON.parse(next.content[0].text).next.acceptance_criteria, ["The thing is done."]);
 
 		// exec wraps child_process.execFile and returns { code, stdout, stderr }.
 		const failed = await api.exec("git", ["symbolic-ref", "refs/not-a-ref"], dir);

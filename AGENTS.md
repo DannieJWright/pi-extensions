@@ -55,12 +55,20 @@ not broadly under `~/.pi/agent/`.
 ## Test isolation
 
 Tests must never read, change, or depend on a user's real state. Do not access personal configuration,
-ledgers, credentials, accounts, services, or repositories from a test. Use repository fixtures and isolated
-temporary data instead. Control inherited paths and environment variables, including `HOME` and
-`PI_LEDGER_PATH`, so they cannot redirect tests to personal files. Use fake services or mocks where needed.
+settings, agents, skills, sessions, ledgers, credentials, accounts, services, or repositories from a test. Use
+repository fixtures and isolated temporary data instead. Control inherited paths and environment variables,
+including `HOME` and `PI_LEDGER_PATH`, so they cannot redirect tests to personal files. Use fake services or
+mocks where needed.
+
+A test can import installed package code from the local Pi install, for example a module under
+`~/.pi/agent/npm/node_modules/pi-subagents`. Package code in a `node_modules` directory is a dependency, not
+user state. All other files in the Pi install, such as settings, configs, agents, skills and sessions, are user
+state. The imported code must not read that state while the test runs. When the package is not installed, the
+test must skip, not fail.
 
 Add regression coverage for isolation and run it as part of routine validation. A passing test suite must
-not depend on the presence, contents, or absence of a user's personal setup.
+not depend on the presence, contents, or absence of a user's personal setup. A test that skips because an
+installed package is absent does not break this rule.
 
 Do not write a literal personal path, a home directory of a real user such as `/home/<name>`, in source, tests,
 docs, or fixtures. Derive paths from a temporary directory or use a placeholder in angle brackets.
@@ -70,7 +78,8 @@ docs, or fixtures. Derive paths from a temporary directory or use a placeholder 
 Run `just feature-ledger check` and `just test` through the just tools exposed to you. These are your own
 commands in this repository; the rule above is about what a skill file tells another agent to run.
 
-`plan/` is gitignored in this repository and `ledger_check` does not check it. Cleaning plan files before the
+`plan/` is gitignored in this repository, except ledger files that the negation in `.gitignore` re-includes. `ledger_check` does not check
+the other files in it. Cleaning plan files before the
 PR is opened is the working project's review, not the tool's. Do not ask for confirmation about an untracked or
 gitignored file under `plan/`, here or in a project that tracks it: those files are removed before the PR is
 opened.

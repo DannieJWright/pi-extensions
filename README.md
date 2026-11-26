@@ -1,12 +1,14 @@
 # pi-extensions
 
-Pi extensions as one package:
+Pi extensions, skills, and an agent as one package:
 
 - `extensions/just-tools/` — exposes the justfile recipes as tools. See its README.
 - `extensions/provider-rules/` — injects per-provider/model prompt rules, and recovers when a local model's response is truncated by thinking. See its README.
 - `extensions/permission-mode-generator/` — generates permission modes and optional subagent settings from `~/.pi/agent/permissions.src.jsonc` (example source in `configs/`). See its README, including [Merge rules](extensions/permission-mode-generator/README.md#merge-rules) and [Shared agent base](extensions/permission-mode-generator/README.md#shared-agent-base), and its migration guide.
 - `extensions/feature-ledger/` — provides feature ledger tools.
 - `extensions/git-tools/` — provides the Git tools. Its tools today are read-only inspection. See its README.
+- `extensions/ui-capture/` — captures and checks before/after UI evidence. See its README.
+- `agents/ui-worker.md` — implements UI work with capture and ledger tools. Requires pi-subagents.
 
 ## Setup on a new machine
 

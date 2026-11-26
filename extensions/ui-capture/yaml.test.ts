@@ -1,6 +1,39 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseYaml, serializeYaml } from "../../../lib/yaml.ts";
+import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
+
+test("YAML retains booleans, numeric strings, floats, quotes and nested flow collections", () => {
+	const input = `"a,b": { selector: 'button[data-label="a,b"]', nested: [[1, 2], { "x:y": [true, false] }], text: 'it''s good' }\nfloat: 1.5\nstring: '1.5'\n`;
+	const parsed = parseYaml(input);
+	assert.deepEqual(parsed, { "a,b": { selector: 'button[data-label="a,b"]', nested: [[1, 2], { "x:y": [true, false] }], text: "it's good" }, float: 1.5, string: "1.5" });
+	assert.deepEqual(parseYaml(serializeYaml(parsed)), parsed);
+});
+test("plain scalar quotes do not hide comments or flow delimiters", () => {
+	const doc = parseYaml(`
+plain: Preserve the user's selection # comment
+embedded: Say "hello" to the user's choice # another comment
+comma: Keep, 'the user's selection # comment
+bracket: Keep [the user's choice # comment
+hash: user's#fragment # comment
+list: [Preserve the user's selection, don't stop, 'it''s quoted, # yes', "escaped \\\"quote\\\", # yes", {note: user's choice, nested: ['a,b', "c:d"]}]
+compact: {"key":["quoted, value", {"inner":"quoted: value"}]}
+`);
+	assert.deepEqual(doc, {
+		plain: "Preserve the user's selection",
+		embedded: 'Say "hello" to the user\'s choice',
+		comma: "Keep, 'the user's selection",
+		bracket: "Keep [the user's choice",
+		hash: "user's#fragment",
+		list: ["Preserve the user's selection", "don't stop", "it's quoted, # yes", 'escaped "quote", # yes', { note: "user's choice", nested: ["a,b", "c:d"] }],
+		compact: { key: ["quoted, value", { inner: "quoted: value" }] },
+	});
+	assert.deepEqual(parseYaml(serializeYaml(doc)), doc);
+});
+
+test("quoted flow scalars still detect unterminated quotes", () => {
+	assert.throws(() => parseYaml("value: ['unterminated, next]\n"), /bad flow collection/);
+	assert.throws(() => parseYaml("value: [one], two]\n"), /bad flow collection/);
+});
 
 test("parses mappings, folded blocks, flow arrays, and integers", () => {
 	const doc = parseYaml(`
@@ -114,4 +147,9 @@ permissions: [clipboard-write]
 	assert.deepEqual(doc.commits, {});
 	assert.deepEqual(doc.permissions, ["clipboard-write"]);
 	assert.deepEqual(parseYaml(serializeYaml(doc)), doc);
+});
+test("YAML rejects __proto__ keys in block and flow maps", () => {
+	assert.throws(() => parseYaml("__proto__: 1\n"), /__proto__/);
+	assert.throws(() => parseYaml("a: { __proto__: 1 }\n"), /__proto__/);
+	assert.equal(({} as Record<string, unknown>).polluted, undefined);
 });

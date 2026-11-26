@@ -5,13 +5,15 @@
   "keywords": ["pi-package"],
   "pi": {
     "skills": ["skills"],
+    "subagents": { "agents": ["./agents"] },
     "extensions": [
       "extensions/just-tools/index.ts",
       "extensions/provider-rules/index.ts",
       "extensions/permission-mode-generator/index.ts",
       "extensions/feature-ledger/index.ts",
       "extensions/git-tools/index.ts",
-      "extensions/cwd-guard/index.ts"
+      "extensions/cwd-guard/index.ts",
+      "extensions/ui-capture/index.ts"
     ]
   },
   "devDependencies": {

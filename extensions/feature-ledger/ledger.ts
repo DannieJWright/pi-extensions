@@ -460,11 +460,11 @@ export function orchestrateNext(ledger: Ledger) {
 	const inFlight = items.some((item) => item.status === "review" || item.status === "in-progress" || item.assignment !== null);
 	const next = items.find((item) => item.status === "review" && !item.assignment)
 		?? items.find((item) => item.status === "in-progress" && !item.assignment && !item.capped)
-		?? (!inFlight ? items.find((item) => item.status === "todo" && !item.assignment) : undefined)
-		?? null;
+		?? (!inFlight ? items.find((item) => item.status === "todo" && !item.assignment) : undefined);
+	const selected = next ? { ...next, acceptance_criteria: [...findItem(ledger, next.id, "").acceptance_criteria] } : null;
 	const status: LedgerState = items.length === 0 || items.every((item) => item.status === "todo") ? "todo"
 		: items.every((item) => item.status === "done") ? "done" : "in-progress";
-	return { next, status, assigned, capped };
+	return { next: selected, status, assigned, capped };
 }
 
 // The caller has already run the shared gate on the file, so an invalid model never reaches here.
