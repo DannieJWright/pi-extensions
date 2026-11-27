@@ -56,6 +56,36 @@ export function parseSpec(text: string): CaptureSpec {
 	return { ...doc, feature: doc.feature, subphase: doc.subphase as string | number, description: doc.description, server, conditions: doc.conditions, steps, hash: createHash("sha256").update(canonicalJson(doc)).digest("hex") } as CaptureSpec;
 }
 
+export function parseViewport(value: unknown): { width: number; height: number } | undefined {
+	if (value === undefined) return undefined;
+	const match = typeof value === "string" ? /^(\d+)x(\d+)$/.exec(value) : null;
+	if (!match || !Number(match[1]) || !Number(match[2])) throw new Error("conditions.viewport must be WIDTHxHEIGHT");
+	return { width: Number(match[1]), height: Number(match[2]) };
+}
+
+// Checks condition values without normalizing them; unknown keys are ignored.
+export function validateConditions(conditions: Record<string, unknown>): void {
+	parseViewport(conditions.viewport);
+	if (conditions.theme !== undefined && conditions.theme !== "light" && conditions.theme !== "dark") throw new Error("conditions.theme must be light or dark");
+	if (conditions.locale !== undefined && typeof conditions.locale !== "string") throw new Error("conditions.locale must be a string");
+	if (conditions.permissions !== undefined && (!Array.isArray(conditions.permissions) || !conditions.permissions.every(p => typeof p === "string"))) throw new Error("conditions.permissions must be an array of strings");
+	if (conditions.storage !== undefined) {
+		if (!record(conditions.storage)) throw new Error("conditions.storage must be a mapping");
+		if (!Object.values(conditions.storage).every(v => typeof v === "string")) throw new Error("conditions.storage values must be strings");
+	}
+	if (conditions.theme_storage !== undefined) {
+		if (!record(conditions.theme_storage)) throw new Error("conditions.theme_storage must be a mapping");
+		const name = conditions.theme_storage["key"];
+		if (name !== undefined && (typeof name !== "string" || !name || !conditions.theme)) throw new Error("theme_storage.key requires a theme and a non-empty key");
+	}
+	const clock = conditions.clock;
+	if (clock !== undefined) {
+		const usable = typeof clock === "string" ? clock !== "" : typeof clock === "number" && Number.isFinite(clock);
+		if (!usable || Number.isNaN(new Date(clock as string | number).valueOf())) throw new Error("conditions.clock must be a valid date");
+	}
+	if (conditions.entry !== undefined && conditions.entry !== null && typeof conditions.entry !== "string") throw new Error("conditions.entry must be a string");
+}
+
 // Port expansion returns a new server block; the canonical input remains unchanged.
 export function substitutePort(server: Record<string, unknown>, port: number): Record<string, unknown> {
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid port");

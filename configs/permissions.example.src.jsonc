@@ -307,6 +307,7 @@
         "extends": ["gitTools"],
         "tools+": ["read", "grep", "find", "ls", "bash", "write", "contact_supervisor"]
       },
+      // A project that routes UI items needs a "ui-worker" agent entry here with the capture_* tools allowed.
       "worker": {
         "extends": ["ledgerTools"],
         "tools+": ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"]

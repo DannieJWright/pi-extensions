@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { redactUrl } from "./redact.ts";
 import { inspectDom } from "./dom.ts";
 import { publishArtifact, type ArtifactLocation } from "./artifacts.ts";
-import { safeComponent, type CaptureSpec, type Step, type StepVerb } from "./spec.ts";
+import { parseViewport, safeComponent, type CaptureSpec, type Step, type StepVerb } from "./spec.ts";
 import type { Box, CaptureDriver, ElementSnapshot } from "./steps.ts";
 import type { ShotEvidence } from "./diff.ts";
 
@@ -32,12 +32,6 @@ export async function resolvePlaywright(root: string, server: Record<string, unk
 	throw new Error(`Playwright not found from ${anchor}; install the playwright or @playwright/test dev dependency`);
 }
 
-function viewport(value: unknown): { width: number; height: number } | undefined {
-	if (value === undefined) return undefined;
-	const match = typeof value === "string" ? /^(\d+)x(\d+)$/.exec(value) : null;
-	if (!match || !Number(match[1]) || !Number(match[2])) throw new Error("conditions.viewport must be WIDTHxHEIGHT");
-	return { width: Number(match[1]), height: Number(match[2]) };
-}
 function object(value: unknown, name: string): Record<string, unknown> {
 	if (value === undefined) return {};
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be a mapping`);
@@ -47,6 +41,11 @@ function navigationError(error: unknown): boolean { return /execution context wa
 const errorText = (error: unknown) => redactUrl(error instanceof Error ? error.message : String(error));
 export function combineCleanupErrors(error: unknown, cleanupError: unknown): Error {
 	return new AggregateError([error, cleanupError], `${errorText(error)}; cleanup failed: ${errorText(cleanupError)}`);
+}
+function sandboxRestricted(error: unknown): boolean {
+	if (error === null || typeof error !== "object") return false;
+	if ((error as { code?: unknown }).code === "EPERM") return true;
+	return /\bEPERM\b|no usable sandbox|sandboxing failed|operation not permitted/i.test(String(error));
 }
 async function closeResources(context: any, closeBrowser: () => Promise<void>): Promise<void> {
 	try { if (context) await context.close(); }
@@ -70,8 +69,7 @@ export class PlaywrightDriver implements CaptureDriver {
 		page.on("console", (message: any) => { if (message.type() === "error") this.consoleErrors.push(redactUrl(message.text())); });
 	}
 	async open(): Promise<void> {
-		const entry = this.spec.conditions.entry ?? "/";
-		if (typeof entry !== "string") throw new Error("conditions.entry must be a string");
+		const entry = (this.spec.conditions.entry ?? "/") as string;
 		const ready = object(this.spec.server.ready, "server.ready");
 		const timeout = (typeof ready.timeout === "number" && ready.timeout > 0 ? ready.timeout : 60) * 1000;
 		const navigate = async () => {
@@ -155,8 +153,9 @@ export async function createDriver(options: { root: string; spec: CaptureSpec; b
 	let browser: any;
 	try { browser = await pw.chromium.launch({ chromiumSandbox: true }); }
 	catch (error) {
-		if (!/\bEPERM\b/i.test(String(error))) throw error;
-		browser = await pw.chromium.launch({ chromiumSandbox: false, args: ["--no-sandbox"] });
+		if (!sandboxRestricted(error)) throw error;
+		try { browser = await pw.chromium.launch({ chromiumSandbox: false, args: ["--no-sandbox"] }); }
+		catch (fallbackError) { throw new AggregateError([error, fallbackError], `${errorText(error)}; sandbox fallback failed: ${errorText(fallbackError)}`); }
 	}
 	let context: any, closing: Promise<void> | undefined;
 	const closeBrowser = () => closing ??= browser.close();
@@ -164,14 +163,9 @@ export async function createDriver(options: { root: string; spec: CaptureSpec; b
 	options.signal?.addEventListener("abort", abort, { once: true });
 	try {
 		if (options.signal?.aborted) throw new Error("capture cancelled");
-		const conditions = spec.conditions, view = viewport(conditions.viewport);
-		if (conditions.theme !== undefined && conditions.theme !== "light" && conditions.theme !== "dark") throw new Error("conditions.theme must be light or dark");
-		if (conditions.locale !== undefined && typeof conditions.locale !== "string") throw new Error("conditions.locale must be a string");
-		if (conditions.permissions !== undefined && (!Array.isArray(conditions.permissions) || !conditions.permissions.every(p => typeof p === "string"))) throw new Error("conditions.permissions must be an array of strings");
-		const storage = object(conditions.storage, "conditions.storage");
-		if (!Object.values(storage).every(v => typeof v === "string")) throw new Error("conditions.storage values must be strings");
-		const themeStorage = object(conditions.theme_storage, "conditions.theme_storage");
-		if (themeStorage.key !== undefined && (typeof themeStorage.key !== "string" || !themeStorage.key || !conditions.theme)) throw new Error("theme_storage.key requires a theme and a non-empty key");
+		const conditions = spec.conditions, view = parseViewport(conditions.viewport);
+		const storage = (conditions.storage ?? {}) as Record<string, string>;
+		const themeStorage = (conditions.theme_storage ?? {}) as Record<string, unknown>;
 		context = await browser.newContext({ deviceScaleFactor: 1, ...(view ? { viewport: view } : {}), ...(conditions.locale ? { locale: conditions.locale } : {}), ...(conditions.theme ? { colorScheme: conditions.theme } : {}), ...(conditions.permissions ? { permissions: conditions.permissions } : {}) });
 		await context.addInitScript(({ storage, theme, themeKey }: any) => {
 			for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value as string);
@@ -180,9 +174,7 @@ export async function createDriver(options: { root: string; spec: CaptureSpec; b
 		}, { storage, theme: conditions.theme, themeKey: themeStorage.key });
 		const page = await context.newPage();
 		if (conditions.clock !== undefined) {
-			const time = new Date(conditions.clock as string);
-			if (Number.isNaN(time.valueOf())) throw new Error("conditions.clock must be a valid date");
-			await page.clock.install({ time });
+			await page.clock.install({ time: new Date(conditions.clock as string) });
 		}
 		const driver = new PlaywrightDriver(browser, context, page, spec, options.baseUrl, typeof options.outputDir === "string" ? resolve(root, options.outputDir) : options.outputDir, options.phase);
 		await driver.open();

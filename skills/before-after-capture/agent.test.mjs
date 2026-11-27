@@ -44,7 +44,7 @@ test("installed subagent harness discovers the worker and keeps late tools eligi
 		const agent = found.agents.find(item => item.name === "ui-worker");
 		assert.ok(agent, JSON.stringify(found.agentDiagnostics));
 		assert.equal(agent.filePath, join(root, "agents/ui-worker.md"));
-		assert.match(agent.systemPrompt, /feature-ledger orchestration assignment[\s\S]*worker-workflow\.md[\s\S]*instead of the standalone handoff[\s\S]*exactly one JSON object[\s\S]*`item_id`, `outcome`, `known_state`, `tests`, `commit`, `warnings` and `blocker`[\s\S]*no other text/);
+		assert.match(agent.systemPrompt, /feature-ledger orchestration assignment[\s\S]*worker-workflow\.md[\s\S]*instead of the standalone handoff[\s\S]*exactly one JSON object[\s\S]*Return contract of `references\/agents\/worker-workflow\.md`[\s\S]*no other text/);
 		assert.match(agent.systemPrompt, /runtime requires a separate acceptance report, follow its instructions as well/);
 		assert.match(agent.systemPrompt, /both fresh and resumed assignments; do not infer authorization to orchestrate/);
 		assert.match(agent.systemPrompt, /For standalone work[\s\S]*Implemented X\.[\s\S]*Changed files: Y\.[\s\S]*Validation: Z\.[\s\S]*Open risks\/questions: R\.[\s\S]*Recommended next step: N\./);

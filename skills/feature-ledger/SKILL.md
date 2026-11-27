@@ -18,6 +18,7 @@ Use the ledger tools for shared, resumable feature state. Reading state does not
 | `references/agents/worker-workflow.md` | The orchestrator directly assigns worker work and instructs the agent to read it. |
 | `references/agents/reviewer-workflow.md` | The orchestrator directly assigns review and instructs the agent to read it. |
 | `subagents/worker.md` | The orchestrator dispatches a worker. |
+| `subagents/ui-worker.md` | The orchestrator dispatches a `ui-worker`. |
 | `subagents/reviewer.md` | The orchestrator dispatches a reviewer. |
 
 ## Choose a route
@@ -25,7 +26,7 @@ Use the ledger tools for shared, resumable feature state. Reading state does not
 - Inspect: use `ledger_get_feature` for an ID, or `ledger_orchestrate` with `action: list` or `next`; report results without claiming work.
 - Author: read `references/writing-flow.md`, then use `ledger_check`.
 - Direct work: read `references/implementation-flow.md`; no delegation is required.
-- Orchestrate: only on a direct user request, read `references/agents/orchestrator-workflow.md` and delegate sequentially. The parent neither implements nor reviews nor runs validation.
+- Orchestrate: only on a direct user request, read `references/agents/orchestrator-workflow.md` and delegate sequentially. Its limits, including the rule that routes a UI item to `ui-worker`, are stated there.
 
 Every tool accepts optional `path`: explicit argument, then `PI_LEDGER_PATH`, then the first line of `plan/ledger.path` in the session root, then `plan/ledger.yaml`. Relative paths resolve against the original session root; any extension is accepted. An orchestrator pins the user-selected path for all calls.
 
@@ -45,4 +46,4 @@ A reviewer supplies the commit message for a review submission. It is required, 
 
 Claims fence stale sequential submissions; they are not access-control secrets or locks. Ledger writes are last-writer-wins: parallel writers and parallel work in a shared workspace are unsupported. For a stopped run, a parent may release only after establishing that run has stopped, using its current identity and token; otherwise stop and report. Never retry blindly after an uncertain commit or ledger write.
 
-If a required ledger or delegation tool is unavailable, stop and report which tool and role are missing; do not substitute a repository-specific script. Bundled pi-subagents worker/reviewer tool access and reviewer write permission are an external dependency being addressed on a separate branch; this skill does not configure overrides.
+If a required ledger or delegation tool is unavailable, stop and report which tool and role are missing; do not substitute a repository-specific script. Bundled pi-subagents worker/reviewer tool access and reviewer write permission are an external dependency being addressed on a separate branch; this skill does not configure overrides. The `ui-worker` is an external dependency: the working project must define it with the capture tools and the feature-ledger tools.

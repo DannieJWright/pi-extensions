@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { addablePaths, badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, nextFindingId, orchestrateList, orchestrateNext, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, startReview, startWork, submitReview, submitWork } from "./ledger.ts";
+import { addablePaths, badValueProblem, checkLedger, ensureParent, isAddableEntry, isAddableStatus, isInside, missingInputWarning, missingPlanProblem, missingWorkspaceProblem, generateClaimToken, nextFindingId, orchestrateList, orchestrateNext, outsideRepoProblem, parseLedger, parsePorcelain, planReference, problemTarget, prefixFromRoot, resolveLedgerPath, resolveRepoRoot, resolveWorkspace, serializeLedger, releaseClaim, startReview, startWork, submitReview, submitWork } from "./ledger.ts";
 import { effectiveReviewConfig, type Finding } from "./ledger.ts";
 import featureLedger from "./index.ts";
 import { createFakeApi, createFakeContext, invoke, exec, setupRepo } from "./test-harness.ts";
@@ -920,6 +920,44 @@ test("a per-item workspace and branch parse and round-trip", () => {
 	assert.ok(!serializeLedger(plain.ledger!).includes("      workspace:"));
 });
 
+test("an item route parses, round-trips, lists, and rejects invalid values", () => {
+	const plainText = FIXTURE.replace("{BRANCH}", "feature-x");
+	const withRoute = (line: string) => plainText.replace("      short_goal: Do the thing.\n", `      short_goal: Do the thing.\n${line}`);
+	const parsed = parseLedger(withRoute("      route: ui\n"));
+	assert.deepEqual(parsed.problems, []);
+	assert.equal(parsed.ledger!.features[0].route, "ui");
+	const written = serializeLedger(parsed.ledger!);
+	assert.ok(written.includes("      route: ui\n"));
+	assert.deepEqual(parseLedger(written).ledger, parsed.ledger);
+	assert.equal(orchestrateList(parsed.ledger!).items[0].route, "ui");
+	assert.equal(orchestrateNext(parsed.ledger!).next?.route, "ui");
+	const plain = parseLedger(plainText);
+	assert.deepEqual(checkLedger(plainText), []);
+	assert.ok(!("route" in orchestrateList(plain.ledger!).items[0]));
+	assert.ok(!serializeLedger(plain.ledger!).includes("route"));
+	for (const [line, shown] of [["      route: [ui, ui]\n", "ui,ui"], ["      route: other\n", "other"], ["      route: ''\n", ""], ["      route: 3\n", "3"]]) {
+		const bad = parseLedger(withRoute(line));
+		assert.deepEqual(bad.problems, [`features[0] (alpha): route must be ui, got ${shown}`]);
+		assert.equal(bad.ledger!.features[0].route, undefined);
+		assert.deepEqual(checkLedger(withRoute(line)), [`features[0] (alpha): route must be ui, got ${shown}`]);
+	}
+});
+
+test("the tool reports an invalid route with the same problem line as the model check", async () => {
+	const bad = FIXTURE.replace("{BRANCH}", "feature-x").replace("      short_goal: Do the thing.\n", "      short_goal: Do the thing.\n      route: other\n");
+	const { dir, cleanup } = await setupRepo(bad);
+	const api = createFakeApi();
+	featureLedger(api);
+	try {
+		// The check reads files.in entries, so the fixture's entry must exist.
+		await ensureParent(join(dir, "src/a.ts"));
+		await writeFile(join(dir, "src/a.ts"), "x\n");
+		const result = JSON.parse((await invoke(api.tools.ledger_check, {}, createFakeContext(dir))).content[0].text);
+		assert.equal(result.ok, false);
+		assert.deepEqual(result.problems, ["features[0] (alpha): route must be ui, got other"]);
+	} finally { await cleanup(); }
+});
+
 test("resolveRepoRoot reads the repository from the workspace, and gives nothing outside one", async () => {
 	const { dir, cleanup } = await setupRepo(FIXTURE);
 	try {
@@ -1460,4 +1498,55 @@ test("the out-of-repo warning reads from the session root, not from the reposito
 		assert.ok(!result.isError, result.content[0].text);
 		assert.match(result.content[0].text, /are not committed:\n- \.\./);
 	} finally { await rm(dir, { recursive: true }); }
+});
+
+test("claim tokens have the claim- shape and are not secret-shaped", async () => {
+	const fixture = itemLedger(["      review: true"]).replace("feature-x", "{BRANCH}");
+	const { dir, branch, path, cleanup } = await setupRepo(fixture);
+	try {
+		const shape = (token: string) => {
+			assert.match(token, /^claim-[0-9a-z]{6}$/);
+			assert.ok(token.length <= 16);
+			assert.doesNotMatch(token, /[0-9a-f]{8}/i);
+			assert.doesNotMatch(token, /[0-9a-f]{8}-[0-9a-f]{4}/i);
+		};
+		const started = await startWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker" }));
+		shape(started.item.assignment!.claim_token);
+		await writeFile(join(dir, "work.txt"), "work\n");
+		await submitWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker", claimToken: started.item.assignment!.claim_token, commitMessage: "feat: alpha", summary: "Done.", limitations: [], logDir: dir }));
+		const reviewed = await startReview(itemOpts(dir, path, "alpha", { branch, agentId: "reviewer" }));
+		shape(reviewed.item.assignment!.claim_token);
+		for (let i = 0; i < 50; i++) shape(generateClaimToken());
+	} finally { await cleanup(); }
+});
+
+test("startWork, releaseClaim, startWork issues a different token and rejects the stale pair", async () => {
+	const fixture = itemLedger([]).replace("feature-x", "{BRANCH}");
+	const { dir, branch, path, cleanup } = await setupRepo(fixture);
+	try {
+		const first = await startWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker" }));
+		const staleToken = first.item.assignment!.claim_token;
+		const ledger = parseLedger(await readFile(path, "utf8")).ledger!;
+		await releaseClaim(ledger, path, "alpha", "worker", staleToken);
+		const second = await startWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker" }));
+		assert.notEqual(second.item.assignment!.claim_token, staleToken);
+		await writeFile(join(dir, "work.txt"), "work\n");
+		const stale = await submitWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker", claimToken: staleToken, commitMessage: "feat: alpha", summary: "Done.", limitations: [], logDir: dir })).catch((error) => error as Error);
+		assert.match(String((stale as Error).message), /no matching worker claim/);
+	} finally { await cleanup(); }
+});
+
+test("a process-local counter is rejected: separate generators repeat the sequence and a stale holder is accepted", async () => {
+	const fixture = itemLedger([]).replace("feature-x", "{BRANCH}");
+	const { dir, branch, path, cleanup } = await setupRepo(fixture);
+	try {
+		const counter = () => { let n = 0; return () => `claim-${String(++n).padStart(6, "0")}`; };
+		const first = await startWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker", newClaimToken: counter() }));
+		const staleToken = first.item.assignment!.claim_token;
+		const ledger = parseLedger(await readFile(path, "utf8")).ledger!;
+		await releaseClaim(ledger, path, "alpha", "worker", staleToken);
+		const second = await startWork(itemOpts(dir, path, "alpha", { branch, agentId: "worker", newClaimToken: counter() }));
+		// A fresh counter repeats its sequence, so the released holder's pair matches the new claim.
+		assert.equal(second.item.assignment!.claim_token, staleToken);
+	} finally { await cleanup(); }
 });
