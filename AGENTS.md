@@ -35,6 +35,18 @@ Direct ledger operations access their ledger and workspace paths without ordinar
 features, not defects solely on that basis; remain alert to other security issues and use trusted
 ledger paths, workspaces, and validation scripts.
 
+## Commit messages
+
+Write commit messages in Conventional Commits syntax: `<type>(<scope>): <description>`.
+
+- Allowed types: feat, fix, docs, refactor, test, chore, build, ci, revert. Mark a breaking change with `!`
+  after the type or scope.
+- Use a scope when the change is confined to one extension or skill, lowercase, matching its directory name
+  (`feat(feature-ledger):`, `fix(cwd-guard):`). Omit it for cross-cutting changes.
+- Write the description in imperative mood, lowercase, without a trailing period, within 72 characters.
+- Add a body only where the reason is not clear from the subject; wrap it near 100 characters. Put issue
+  references in the footer, not the subject. Do not author PR numbers; GitHub adds them on merge.
+
 ## Content taken from other repositories
 
 When code, prompt text, or any other content comes from another repository, add or update its entry in

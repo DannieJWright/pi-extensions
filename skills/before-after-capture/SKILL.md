@@ -18,6 +18,8 @@ The spec has `feature`, `subphase`, `description`, `server`, `conditions`, and `
 
 Pin the viewport, clock, locale, theme, and deterministic fixture data. Do not use real time, random data, or network calls for fixture data. Use the same spec and conditions for both phases. Select the same important elements in both views. The steps must produce the state that changes, such as hover, focus, or a key press. Do not assume the state. Wait for the target region to render before the screenshot. Select stable test IDs or roles and names.
 
+Pin `conditions.theme` to `light` or `dark`. For a project-named theme, set `theme_storage.key` to the key the app reads instead. A launch blocked by the OS sandbox retries once without Chromium's sandbox, and nothing records which mode ran, so take no extra step.
+
 Example for a running server (replace the values with the project's values):
 
 ```yaml

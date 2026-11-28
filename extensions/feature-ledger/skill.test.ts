@@ -4,7 +4,10 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { compile } from "@earendil-works/pi-schema";
 import { parseYaml } from "../../lib/yaml.ts";
+import featureLedger from "./index.ts";
+import { createFakeApi } from "./test-harness.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../skills/feature-ledger");
 const read = (path: string) => readFileSync(join(root, path), "utf8");
@@ -38,11 +41,12 @@ test("feature-ledger skill frontmatter, referenced resources and template variab
 			assert.ok(bundled.includes(ref), `${path} links to missing ${ref}`);
 		}
 	}
-	for (const role of ["worker", "reviewer"]) {
+	for (const role of ["worker", "ui-worker", "reviewer"]) {
 		const template = read(`subagents/${role}.md`);
 		for (const variable of ["ITEM_ID", "LEDGER_PATH", "SESSION_ROOT", "AGENT_ID"]) assert.ok(template.includes(`(${"`"}${variable}${"`"})`));
-		for (const field of ["item_id", "outcome", "known_state", "tests", "commit", "warnings", "blocker"]) assert.ok((role === "worker" ? worker : reviewer).includes(`\`${field}\``));
 	}
+	// The fields belong to the owner document; every template points to it.
+	for (const field of ["item_id", "outcome", "known_state", "tests", "commit", "warnings", "blocker"]) assert.ok(worker.includes(`\`${field}\``));
 });
 
 test("trigger phrases and negative scope are represented in the description", () => {
@@ -78,4 +82,16 @@ test("Given unavailable tools or an interrupted run, when recovery is considered
 	assert.match(orchestrator, /inability to establish this means stop and report, not release/);
 	assert.match(orchestrator, /verify(?:ing)? those match the stopped run/i);
 	assert.match(orchestrator, /inspect Git HEAD, index and ledger state/);
+});
+
+test("Given the reviewer workflow example call, when validated, then it matches the real ledger_review schema", () => {
+	const section = /\n## Example call\n[\s\S]*?```json\n([\s\S]*?)\n```/.exec(reviewer);
+	assert.ok(section, "Example call heading with a fenced json block");
+	assert.equal(reviewer.split("```json").length - 1, 1, "one json example");
+	const example = JSON.parse(section[1]);
+	const api = createFakeApi();
+	featureLedger(api);
+	const schema = compile(api.tools.ledger_review.parameters);
+	assert.ok(schema.check(example));
+	assert.ok(!schema.check({ ...example, new_findings: [{ ...example.new_findings[0], severity: "critical" }] }));
 });

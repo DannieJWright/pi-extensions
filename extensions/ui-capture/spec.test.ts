@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
-import { parseSpec, substitutePort } from "./spec.ts";
+import { parseSpec, parseViewport, substitutePort, validateConditions } from "./spec.ts";
 
 const launch = readFileSync(new URL("./fixtures/launch.yaml", import.meta.url), "utf8");
 const url = launch.replace(/server:\n[\s\S]*?conditions:/, `server:\n  url: http://127.0.0.1:3002\n  ready:\n    path: /agent\n    selector: 'section[aria-label="Sessions panel"]'\n    not_text: Loading sessions\n    timeout: 60\nconditions:`);
@@ -47,4 +47,32 @@ test("port substitutions affect only start and env, not the spec hash", () => {
 	assert.equal(server.start, "just run --port 4312"); assert.deepEqual(server.env, { PORT: "4312" });
 	assert.deepEqual(spec.server.env, { PORT: "{port}" });
 	assert.equal(parseSpec(launch.replace("just run --detached", "just run --port {port}")).hash, spec.hash);
+});
+
+const withConditions = (conditions: string) => parseSpec(launch.replace(/conditions:\n(  .*\n)+/, `conditions: ${conditions}\n`));
+test("validateConditions accepts valid values, unknown keys and leaves the parsed conditions raw", () => {
+	const spec = withConditions("{theme: dark, locale: en, permissions: [clipboard-write], storage: {a: b}, theme_storage: {key: t}, viewport: 300x200, clock: '2026-01-01T00:00:00Z', entry: /app, labels: [x], base_url: 7, fixture: null}");
+	assert.doesNotThrow(() => validateConditions(spec.conditions));
+	assert.equal(spec.conditions.viewport, "300x200");
+	assert.doesNotThrow(() => validateConditions({}));
+	assert.doesNotThrow(() => validateConditions({ clock: 1767225600000, entry: null }));
+	assert.deepEqual(parseViewport("300x200"), { width: 300, height: 200 });
+	assert.equal(parseViewport(undefined), undefined);
+});
+test("validateConditions rejects each invalid condition with the driver message", () => {
+	const cases: Array<[Record<string, unknown>, RegExp]> = [
+		[{ theme: "default" }, /^conditions\.theme must be light or dark$/], [{ theme: null }, /theme must be light or dark/],
+		[{ locale: 5 }, /^conditions\.locale must be a string$/],
+		[{ permissions: "x" }, /^conditions\.permissions must be an array of strings$/], [{ permissions: [1] }, /permissions must be an array of strings/],
+		[{ storage: { a: 1 } }, /^conditions\.storage values must be strings$/], [{ storage: [] }, /^conditions\.storage must be a mapping$/], [{ storage: null }, /storage must be a mapping/],
+		[{ theme_storage: { key: "t" } }, /^theme_storage\.key requires a theme and a non-empty key$/], [{ theme: "dark", theme_storage: { key: "" } }, /requires a theme/], [{ theme: "dark", theme_storage: "x" }, /theme_storage must be a mapping/],
+		[{ viewport: "300" }, /^conditions\.viewport must be WIDTHxHEIGHT$/], [{ viewport: "0x5" }, /WIDTHxHEIGHT/], [{ viewport: 300 }, /WIDTHxHEIGHT/],
+		[{ entry: 3 }, /^conditions\.entry must be a string$/],
+		...[true, null, [], {}, "", "not a date", Number.NaN, Infinity].map((clock): [Record<string, unknown>, RegExp] => [{ clock }, /^conditions\.clock must be a valid date$/]),
+	];
+	for (const [conditions, message] of cases) assert.throws(() => validateConditions(conditions), { message }, JSON.stringify(conditions));
+});
+test("parseSpec keeps conditions raw and does not validate them", () => {
+	const spec = withConditions("{theme: default}");
+	assert.equal(spec.conditions.theme, "default");
 });

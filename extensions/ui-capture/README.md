@@ -42,7 +42,26 @@ diff:
 
 Exactly one of `url` and `start` is required. **Automatic host startup via `start` is currently unavailable on Linux and macOS**, including foreground and implicitly detached launchers: the previous process-group supervisor cannot contain a command that creates a new session. Until a safe containment backend exists, start the server yourself and use `url`; URL capture works on both platforms and never stops the external server. `ready.path` is an HTTP health check; `ready.selector` and `ready.not_text` are browser hydration checks. `ready.timeout` is seconds. Foreign servers and locks are never adopted or deleted.
 
-Conditions also support `clock`, `storage`, `theme_storage`, `permissions`, and a recorded `fixture`. Steps support `goto`, `fill`, `press`, `hover`, `click`, `scroll_to`, `wait_for`, `assert`, `screenshot`, `focus`, `read`, `measure`, and `eval`. `press` supports `repeat` or `until_stable`; reads and measurements require names. Screenshot options include `name`, `target`, `padding`, and `full_page`. When there are multiple screenshots, `diff.screenshot` selects the named screenshot. Diff regions are selectors or `[x, y, width, height]` in selected screenshot coordinates. The transparent diff mask marks changed pixels in red in before-image coordinates; moved region bounds are reported.
+Conditions also support `clock`, `storage`, `theme_storage`, `permissions`, and a recorded `fixture`; see [Condition values](#condition-values). Steps support `goto`, `fill`, `press`, `hover`, `click`, `scroll_to`, `wait_for`, `assert`, `screenshot`, `focus`, `read`, `measure`, and `eval`. `press` supports `repeat` or `until_stable`; reads and measurements require names. Screenshot options include `name`, `target`, `padding`, and `full_page`. When there are multiple screenshots, `diff.screenshot` selects the named screenshot. Diff regions are selectors or `[x, y, width, height]` in selected screenshot coordinates. The transparent diff mask marks changed pixels in red in before-image coordinates; moved region bounds are reported.
+
+## Condition values
+
+This section is the single list of condition values. `capture_run` and `capture_check` validate `conditions` before they take the artifact lock or launch a browser, so an invalid value fails immediately with a `conditions.<name>` message. Unknown keys are ignored.
+
+- `theme`: `light` or `dark`. The driver passes it to Playwright as `colorScheme`; it also stores it when `theme_storage` names a key.
+- `theme_storage`: a mapping. Its `key` names the `localStorage` entry that receives the `theme` value before the page loads, for apps that read their theme from storage. The key must be a non-empty string and requires `theme`.
+- Project-named themes (any name other than `light` or `dark`) are not applied by the driver. The app applies them through the `theme_storage` key entry, through `storage`, or through its own state set by the fixture.
+- `clock`: a non-empty date string or a finite number that `new Date(...)` parses to a valid date. Playwright installs it as the page clock.
+- `viewport`: `WIDTHxHEIGHT` in positive integer pixels, for example `1400x1000`.
+- `locale`: a string. `permissions`: an array of strings. `storage`: a mapping whose values are all strings, written to `localStorage` before the page loads. `entry`: a string path.
+
+## Chromium sandbox fallback
+
+The driver launches Chromium with its sandbox enabled. If that launch fails with an error object whose code or message indicates a sandbox restriction (an `EPERM` code or message, `No usable sandbox!`, `sandboxing failed`, or `operation not permitted`), it retries once with the sandbox disabled (`--no-sandbox`). A thrown value that is not an object is reported as it is, without a retry. This is the case when AppArmor sets `kernel.apparmor_restrict_unprivileged_userns=1`. If the retry also fails, the error reports both failures.
+
+The match is broad on purpose, and nothing records which mode was used. Matching text from another cause, such as a permission error unrelated to the sandbox, silently takes the no-sandbox launch. The sandbox is then off for that browser.
+
+Possible follow-up: run capture in a Docker container so Chromium keeps its sandbox without this fallback. Nothing implements it.
 
 ## Host command trust
 

@@ -74,6 +74,8 @@ ledger:
       # branch is a label the author writes. Role start compares it with the branch of the
       # item's repository and errors on a mismatch.
       branch: chat-ui
+      # route: ui marks an item with a visible surface; omit it for the normal worker.
+      route: ui
       acceptance_criteria:
         - The actions appear on hover and on keyboard focus.
         - Each action is reachable by role with its own name.

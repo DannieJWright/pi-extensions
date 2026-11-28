@@ -20,7 +20,7 @@ const answers = { visible: true, conditions_match: true, only_difference_is_the_
 const codec: ImageCodec = { async decode(data) { return { width: 1, height: 1, data: Uint8Array.from([data[0], 0, 0, 255]) }; }, async encode(image) { return Buffer.from(image.data); } };
 
 function fake() {
-	const calls: string[] = []; let fail = false, color = 1;
+	const calls: string[] = []; let fail = false, color = 1, launches = 0;
 	const runtime = { locked: async (_key: string, fn: () => Promise<unknown>) => fn(), now: () => Date.now(), probe: async (url: string) => { calls.push(`probe ${url}`); return { healthy: true, listener: true }; } } as ServerRuntime;
 	const page = {
 		on() {}, context: () => ({ browser: () => browser }), goto: async (url: string) => { calls.push(`goto ${url}`); },
@@ -31,8 +31,8 @@ function fake() {
 	};
 	const context = { addInitScript: async () => {}, newPage: async () => page, close: async () => { calls.push("context close"); } };
 	const browser = { newContext: async () => context, close: async () => { calls.push("browser close"); } };
-	const playwright = { chromium: { launch: async () => browser } };
-	return { calls, runtime, playwright, page, browser, context, fail: () => { fail = true; }, nextColor: () => { color++; } };
+	const playwright = { chromium: { launch: async () => { launches++; return browser; } } };
+	return { calls, runtime, playwright, page, browser, context, launches: () => launches, fail: () => { fail = true; }, nextColor: () => { color++; } };
 }
 async function fixture(fn: (dir: string, spec: string) => Promise<void>) {
 	const dir = await mkdtemp(join(tmpdir(), "capture-tools-")); const spec = join(dir, "spec.yaml");
@@ -657,4 +657,41 @@ test("a screenshot error embedding a credentialed URL is redacted in the outcome
 	const raw = await readFile(join(folder, "sidecar.json"), "utf8");
 	assert.doesNotMatch(raw, /s3cret/);
 	assert.equal(JSON.parse(raw).phases.before.outcomes[0].error, "failed at http://localhost:3000/page");
+}));
+
+async function exists(path: string) { try { await readFile(path); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EISDIR"; } }
+const badSpec = (conditions: string) => text.replace("conditions: {entry: /app, viewport: 100x100}", `conditions: ${conditions}`);
+test("an invalid condition rejects capture_run before, after and capture_check identically with no launch or artifacts", async () => fixture(async (dir, spec) => {
+	await writeFile(spec, badSpec("{theme: default}"));
+	const f = fake();
+	const service = new CaptureService({ runtime: f.runtime, allowedCommands: [], artifacts: dir, codec: () => codec, createDriver: options => createDriver({ ...options, playwright: f.playwright }) });
+	const attempts: Array<() => Promise<unknown>> = [() => service.run(process.cwd(), spec, "before"), () => service.run(process.cwd(), spec, "after"), () => service.check(process.cwd(), spec, answers)];
+	const messages: string[] = [];
+	for (const attempt of attempts) await attempt().then(() => assert.fail("expected rejection"), (error: Error) => messages.push(error.message));
+	assert.deepEqual(messages, Array(3).fill("conditions.theme must be light or dark"));
+	assert.equal(f.launches(), 0); assert.deepEqual(f.calls, []);
+	assert.equal(await exists(join(dir, "tools")), false);
+}));
+test("a valid earlier phase survives a later run rejected for a bad condition", async () => fixture(async (dir, spec) => {
+	const f = fake();
+	const service = new CaptureService({ runtime: f.runtime, allowedCommands: [], artifacts: dir, codec: () => codec, createDriver: options => createDriver({ ...options, playwright: f.playwright }) });
+	assert.equal((await service.run(process.cwd(), spec, "before")).ok, true);
+	const sidecarPath = join(dir, "tools", "1", "sidecar.json"), before = await readFile(sidecarPath, "utf8");
+	await writeFile(spec, badSpec("{entry: /app, viewport: 100x100, clock: nope}"));
+	await assert.rejects(service.run(process.cwd(), spec, "after"), /^Error: conditions\.clock must be a valid date$/);
+	assert.equal(await readFile(sidecarPath, "utf8"), before);
+	assert.equal(f.launches(), 1);
+	assert.equal(await exists(join(dir, "tools", "1", "after-full.png")), false);
+}));
+test("capture_server start, stop, status and logs ignore an invalid condition", async () => fixture(async (dir, spec) => {
+	await writeFile(spec, badSpec("{theme: default}"));
+	const f = fake();
+	const service = new CaptureService({ runtime: f.runtime, allowedCommands: [], artifacts: dir, codec: () => codec, createDriver: options => createDriver({ ...options, playwright: f.playwright }) });
+	// An external url has no ownership record, so none of these four actions can reject on a condition.
+	assert.equal(((await service.server(process.cwd(), "start", spec)) as { alive: boolean }).alive, true);
+	assert.equal(((await service.server(process.cwd(), "status", spec)) as { alive: boolean }).alive, true);
+	assert.deepEqual(await service.server(process.cwd(), "stop", spec), { stopped: false });
+	assert.deepEqual(await service.server(process.cwd(), "logs", spec), { logs: null });
+	assert.equal(f.launches(), 0);
+	await assert.rejects(service.run(process.cwd(), spec, "before"), /conditions\.theme must be light or dark/);
 }));

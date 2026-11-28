@@ -1,0 +1,500 @@
+ledger:
+  description: "Before/after capture tooling and feature-ledger skill fixes from a live session run: capture driver sandbox fallback, one condition gate, argument shapes, claim token shape, role routing, and orchestrator scope. Source plan: plan/2026-11-27_capture-and-ledger-fixes.md."
+  workspace: .
+  branch: fix-snapshot-permission-fixes
+  max_failed_reviews: 5
+  validation_scripts:
+    - just test
+  features:
+    - id: ui-capture-sandbox-fallback
+      status: done
+      goal: "Decision 1 and section A of plan/2026-11-27_capture-and-ledger-fixes.md. Replace the single-pattern test in the retry block of createDriver (extensions/ui-capture/driver.ts, retry at about :156-160, pattern at :158) with a helper that matches /\\bEPERM\\b/i on the stringified error, an object error with code === \"EPERM\" (read behind an object check), and /no usable sandbox|sandboxing failed|operation not permitted/i. Keep the fallback launch options. Give the second launch a handler that throws a combined error built with the existing private errorText (driver.ts:47, which applies redactUrl), in the style of combineCleanupErrors (driver.ts:48-50). The plan cites driver.ts:51 for errorText; the function is at :47."
+      short_goal: "The capture driver retries Chromium launch without its sandbox for every sandbox-restricted host error, and reports both errors when the retry also fails."
+      review: true
+      failed_reviews: 0
+      findings: []
+      acceptance_criteria:
+        - "The driver retries once with { chromiumSandbox: false, args: [\"--no-sandbox\"] } when the first launch error matches /\\bEPERM\\b/i, matches /no usable sandbox|sandboxing failed|operation not permitted/i, or is an object with code === \"EPERM\" whose message lacks the word."
+        - "A null, undefined or other non-object rejection does not throw a TypeError; the original failure is rethrown without a retry."
+        - "A value that stringifies to \"[object Object]\" with no code, and an \"Executable doesn't exist\" error, do not retry: launch is called exactly once."
+        - Every retry path calls launch exactly twice.
+        - "When the retry also fails, the thrown message is exactly `${errorText(first)}; sandbox fallback failed: ${errorText(second)}`, with URLs redacted through errorText."
+        - "When the first launch fails and the second succeeds, closing the driver closes the surviving context and browser (this replaces the vacuous browser-leak case)."
+        - The existing EPERM-only test still passes unchanged.
+        - "No spec field, environment variable or sidecar field records which sandbox mode was used."
+        - No third copy of errorText is added.
+      constraints:
+        - No new dependencies.
+        - "Tests use the fake Playwright only; no real browser and no access to HOME."
+        - "Tests state which cases guard against over-broad matching (\"[object Object]\", \"Executable doesn't exist\" pass on pre-fix code) and which case fails before the change (code === \"EPERM\" with a message lacking the word)."
+        - "Drop the redundant lowercase-text case; String(error) already covers it."
+      files:
+        in:
+          - extensions/ui-capture/driver.ts
+          - extensions/ui-capture/driver.test.ts
+        out:
+          - extensions/ui-capture/driver.test.ts
+          - extensions/ui-capture/driver.ts
+      tests:
+        - extensions/ui-capture/driver.test.ts
+      limitations: []
+      summary: "Added sandboxRestricted helper (EPERM text, code EPERM on objects, sandbox messages); null/undefined rethrown; failed fallback throws combined errorText message; tests added."
+      commits:
+        start: d5b6617e176988885721bd0c9110660ec88a3ac6
+        end: aa6a7088f5fa003016c7dd2c62138dc388d351fb
+        submissions:
+          - aa6a7088f5fa003016c7dd2c62138dc388d351fb
+    - id: ui-capture-condition-gate
+      status: done
+      goal: "Decision 2 and section B of plan/2026-11-27_capture-and-ledger-fixes.md. parseSpec stays structural. Add validateConditions(conditions: Record<string, unknown>): void to extensions/ui-capture/spec.ts; it throws Error, does not normalize values and ignores unknown keys (tests use labels, base_url and fixture). Call it in CaptureService.run and CaptureService.check (extensions/ui-capture/capture.ts, run() at about :78 with input and directory in one statement at :81; check() at about :73-75) after input() and before directory() and savePhase. Do not call it from input() or parseSpec, because input() also serves server() start|stop|status|logs; capture_server start stays ungated as well. Remove the inline condition checks from the driver (driver.ts:73-74 entry in PlaywrightDriver.open, :167-174, and the clock check at :182-186) and move viewport parsing to one exported parseViewport in spec.ts that both validateConditions and createDriver use. smoke.test.ts and concurrency-fixture.ts go through CaptureService.run, so the new gate covers them with no edit."
+      short_goal: "Validate capture condition values once, through an exported validateConditions that capture_run and capture_check call before any launch, artifact directory or sidecar write."
+      review: true
+      failed_reviews: 0
+      findings: []
+      acceptance_criteria:
+        - "spec.ts exports validateConditions, which rejects invalid theme (including `default`), locale, permissions, storage, theme_storage, clock, entry and viewport values, and ignores unknown keys."
+        - "Rejection messages are kept verbatim from the driver: `conditions.theme must be light or dark`, `conditions.locale must be a string`, `conditions.permissions must be an array of strings`, `conditions.storage values must be strings`, `conditions.storage must be a mapping`, `theme_storage.key requires a theme and a non-empty key`, `conditions.viewport must be WIDTHxHEIGHT`, `conditions.entry must be a string`, `conditions.clock must be a valid date`."
+        - "Clock rule: a non-empty string that Date parses, or a finite number (epoch milliseconds), is accepted; boolean, null, array, object, empty string and an unparseable value are rejected. The driver keeps new Date(clock) without normalization."
+        - "CaptureService.run and CaptureService.check call validateConditions after input() and before directory() and savePhase; input() and parseSpec do not call it."
+        - "capture_server with start, stop, status and logs still succeeds on a spec with an invalid condition."
+        - "For `theme default`, capture_run before, capture_run after and capture_check reject with the identical message, launch is called zero times, and no artifact directory, sidecar or image exists afterward."
+        - "A valid earlier phase survives a later run rejected for a bad condition, because validation precedes savePhase."
+        - "createDriver no longer contains condition checks; viewport parsing lives in one shared function."
+        - "parseSpec output is unchanged for existing specs; conditions stay raw and spec.hash is identical."
+        - The before-after-capture SKILL.md example spec passes parseSpec and validateConditions.
+      constraints:
+        - "Do not normalize condition values onto the parsed spec; spec_hash and stored sidecar conditions stay raw."
+        - Do not edit smoke.test.ts or concurrency-fixture.ts.
+        - "A hand-built CaptureSpec bypasses validation; condition tests go through parseSpec plus validateConditions."
+        - "Tests use temporary directories, the fake runtime and the fake Playwright only."
+        - Theme stays restricted to light and dark.
+      files:
+        in:
+          - extensions/ui-capture/spec.ts
+          - extensions/ui-capture/capture.ts
+          - extensions/ui-capture/driver.ts
+          - extensions/ui-capture/spec.test.ts
+          - extensions/ui-capture/tools.test.ts
+          - extensions/ui-capture/driver.test.ts
+          - skills/before-after-capture/skill.test.mjs
+        out:
+          - extensions/ui-capture/capture.ts
+          - extensions/ui-capture/driver.test.ts
+          - extensions/ui-capture/driver.ts
+          - extensions/ui-capture/spec.test.ts
+          - extensions/ui-capture/spec.ts
+          - extensions/ui-capture/tools.test.ts
+          - skills/before-after-capture/skill.test.mjs
+      tests:
+        - extensions/ui-capture/spec.test.ts
+        - extensions/ui-capture/tools.test.ts
+        - extensions/ui-capture/driver.test.ts
+        - skills/before-after-capture/skill.test.mjs
+      limitations: []
+      summary: "Added validateConditions and parseViewport in spec.ts, called from CaptureService.run and check after input() and before directory()/savePhase; removed driver condition checks; added spec, tools, driver and skill tests."
+      commits:
+        start: afc9aa4af15d81ceaa85646469b3a0353c4215de
+        end: bca496fb8674997f0c8232abb4f023502d801250
+        submissions:
+          - bca496fb8674997f0c8232abb4f023502d801250
+    - id: ui-capture-docs
+      status: done
+      goal: "Documentation parts of decisions 1-2 and sections A-B of plan/2026-11-27_capture-and-ledger-fixes.md. The extension README is the single source of the condition value list; the skill file points to it. Documentation only: verified by reading, with the existing tests run as a regression."
+      short_goal: "Document the automatic sandbox fallback and the condition value list in the ui-capture README, and point the before-after-capture skill at it without a second value list."
+      acceptance_criteria:
+        - "extensions/ui-capture/README.md has a condition value section: theme is `light` or `dark` (Playwright colorScheme), theme_storage is explained, project-named themes are applied by the app through theme_storage.key or app state (not by the driver), the clock rule, the viewport form WIDTHxHEIGHT, and that capture_run and capture_check validate conditions before launch."
+        - "The README states the sandbox fallback and its broad-match trade-off (nothing records which mode was used, so matching text from another cause silently takes the no-sandbox launch)."
+        - "The README records Docker containerization as a possible follow-up; the skill file does not."
+        - "skills/before-after-capture/SKILL.md has one short paragraph: when AppArmor sets restrict_unprivileged_userns=1 and Chromium reports `No usable sandbox!`, the driver falls back automatically; the agent takes no extra step."
+        - "SKILL.md tells the agent to pin the theme to a value the README lists, and does not list light or dark as the allowed values (the example spec may keep `theme dark`)."
+        - "SKILL.md names no command, recipe or script from this repository."
+      constraints:
+        - AGENTS.md skill-file rules apply.
+        - Do not restate the value list in SKILL.md.
+      files:
+        in:
+          - extensions/ui-capture/README.md
+          - skills/before-after-capture/SKILL.md
+        out:
+          - extensions/ui-capture/README.md
+          - skills/before-after-capture/SKILL.md
+      tests:
+        - skills/before-after-capture/skill.test.mjs
+      limitations:
+        - "Post-review change (commit 45eebc1): skills/before-after-capture/SKILL.md states light and dark inline instead of pointing at extensions/ui-capture/README.md, because an agent working in another project does not have this repository's files. Criterion 5 no longer matches HEAD."
+      summary: "README gains Condition values and Chromium sandbox fallback sections (with broad-match trade-off and Docker follow-up); SKILL.md gets one paragraph pointing at the README and describing the automatic fallback."
+      commits:
+        start: 9ff28a3799e8720a7bc30cc0e451045dd7bba92a
+        end: 9944f981777f390aed03dd33ab740759419c51a5
+        submissions:
+          - 9944f981777f390aed03dd33ab740759419c51a5
+    - id: ledger-gate-shape-messages
+      status: done
+      goal: "Decision 3 and section C of plan/2026-11-27_capture-and-ledger-fixes.md, code part. extensions/feature-ledger/ledger.ts:841 throws \"new_findings must be a list\" and :843 names neither shape nor received value. Route both through the existing badShapeProblem (ledger.ts:175-177), which already gives field, expected shape and a value preview, and keep badShapeProblem unchanged. Pi's validateToolArguments text is out of scope, and a bare string for close_findings or limitations never rejects because Pi coerces it. The limitations gate at index.ts:141 already reads correctly and stays."
+      short_goal: Make the new_findings gate messages state the expected shape and the received value through badShapeProblem.
+      review: true
+      failed_reviews: 1
+      findings:
+        - id: finding-bc78f12b-af33-423a-ab22-c3dcc5ad0cda
+          status: closed
+          severity: minor
+          details: "extensions/feature-ledger/ledger.ts:843 now throws badShapeProblem(`new_findings[${index}]`, `an object with non-empty details and rationale, severity ${FINDING_SEVERITIES.join(\", \")}, and optional required_checks`, finding). required_checks is not optional: the tool schema at extensions/feature-ledger/index.ts:78 lists it in `required: [\"details\", \"rationale\", \"severity\", \"required_checks\"]`, ledger.ts:844 rejects a finding whose required_checks is undefined (`!Array.isArray(finding.required_checks)`), NewFinding (ledger.ts:756) picks it as a required field, and the README (README.md:31) lists it among the finding object fields. An agent whose finding has a bad severity and no required_checks is told required_checks is optional, omits it, and fails again at :844. Smallest fix: change the expected text to name required_checks as required, e.g. `an object with non-empty details and rationale, severity critical, major, minor, nit and a required_checks list` (keep it terse), and update the regex at extensions/feature-ledger/reviewer.test.ts:438 accordingly."
+          rationale: "Acceptance criterion 2 requires the :843 message to name the required fields; it currently misstates one of them as optional, contradicting the schema and the :844 check, so the message misleads the caller it is meant to correct."
+          required_checks:
+            - "Read extensions/feature-ledger/ledger.ts:843 and confirm the expected-shape text names required_checks as required (no word 'optional') alongside details, rationale and the allowed severities."
+            - "Confirm the new_findings[0] assertion in extensions/feature-ledger/reviewer.test.ts matches the updated text and that badShapeProblem (ledger.ts:175-177) is unchanged."
+            - "Run just test (via just_test) and confirm feature-ledger test passes with fail=0."
+          first_found_iteration: 0
+      acceptance_criteria:
+        - "The ledger.ts:841 message names new_findings, the expected shape (a list of finding objects) and a preview of the received value."
+        - "The ledger.ts:843 message names new_findings[n], the required fields, the allowed severities and a preview of the received value."
+        - "badShapeProblem keeps its current text, and the existing assertions on it still pass (reviewer.test.ts about :425, :429, :432; worker.test.ts about :377-380)."
+        - A rejected submit leaves the ledger file and the claim unchanged.
+        - lib/args.ts behaviour is unchanged.
+      constraints:
+        - "Keep gate messages terse; do not mirror documentation wording."
+        - "Tests reach ledger.ts:841 through callUnvalidated (reviewer.test.ts:26) or a direct submitReview call, because Pi's validator rejects a non-array earlier."
+        - "Valid bracketed JSON strings still decode (covered at reviewer.test.ts:451 and :475, worker.test.ts:386)."
+      files:
+        in:
+          - extensions/feature-ledger/ledger.ts
+          - extensions/feature-ledger/reviewer.test.ts
+        out:
+          - extensions/feature-ledger/ledger.ts
+          - extensions/feature-ledger/reviewer.test.ts
+      tests:
+        - extensions/feature-ledger/reviewer.test.ts
+      limitations: []
+      summary: "The new_findings[n] shape message now names required_checks as a required list instead of optional; reviewer test assertion updated."
+      commits:
+        start: 9944f981777f390aed03dd33ab740759419c51a5
+        end: 3b28e42d90ddacee4774c3266a1050201dc2817d
+        submissions:
+          - 57e379ab603dc7f3ba53de003a90b856ff6a8a61
+          - 3b28e42d90ddacee4774c3266a1050201dc2817d
+    - id: return-contract-single-source
+      status: done
+      goal: "Section C of plan/2026-11-27_capture-and-ledger-fixes.md, return-contract part. Copies today are skills/feature-ledger/references/agents/worker-workflow.md:13 (owner), reviewer-workflow.md:12, orchestrator-workflow.md:13, skills/feature-ledger/subagents/worker.md:21 and subagents/reviewer.md:21. A sixth copy is agents/ui-worker.md:38. The user decided that no file other than the owner lists the fields, so agents/ui-worker.md also gets a pointer. That agent loads the feature-ledger skill, so it can read the owner. Retarget the prose pins that pointering breaks in the same item, including the ui-worker pins in skills/before-after-capture/agent.test.mjs:47 and orchestrator.test.mjs:27-33. Documentation plus pins; prose is verified by reading."
+      short_goal: "Make the worker-workflow Return contract the only full definition of the seven-field delegate return object, and turn the other copies into pointers."
+      acceptance_criteria:
+        - "worker-workflow.md keeps its \"## Return contract\" section with all seven fields and the \"Use `none`\" marker."
+        - "reviewer-workflow.md, orchestrator-workflow.md, subagents/worker.md and subagents/reviewer.md point to the owner instead of listing the fields."
+        - "reviewer-workflow.md states only reviewer-specific value rules (for example a ledger commit that may be `none`)."
+        - orchestrator-workflow.md step 3 keeps its validation rules without the field list.
+        - "agents/ui-worker.md:38 points to the worker-workflow Return contract instead of listing the fields. It keeps the rest of that paragraph (exactly one JSON object, no other text, separate acceptance report, submitted/blocked/failed rules, fresh and resumed assignments, no inferred authorization to orchestrate) and the standalone shape at :40-46."
+        - No file other than worker-workflow.md lists all seven field names as the return contract.
+        - implementation-flow.md gains no copy of the contract.
+        - "extensions/feature-ledger/skill.test.ts (about :44) checks the field names in the owner only. orchestrator.test.mjs (about :27-33) checks that agents/ui-worker.md and the orchestrator workflow point to the owner, not that they name each field. skills/before-after-capture/agent.test.mjs:47 checks the pointer in agent.systemPrompt, not the field list; its :48-50 pins and the handoffExample read of the owner (:15-21) stay."
+      constraints:
+        - "AGENTS.md skill-file rules apply; no recipe or script from this repository in skill files."
+        - "Keep the subagent templates' copy-the-claim-token-verbatim line."
+      files:
+        in:
+          - skills/feature-ledger/references/agents/worker-workflow.md
+          - skills/feature-ledger/references/agents/reviewer-workflow.md
+          - skills/feature-ledger/references/agents/orchestrator-workflow.md
+          - skills/feature-ledger/subagents/worker.md
+          - skills/feature-ledger/subagents/reviewer.md
+          - skills/feature-ledger/orchestrator.test.mjs
+          - extensions/feature-ledger/skill.test.ts
+          - agents/ui-worker.md
+          - skills/before-after-capture/agent.test.mjs
+        out:
+          - agents/ui-worker.md
+          - extensions/feature-ledger/skill.test.ts
+          - skills/before-after-capture/agent.test.mjs
+          - skills/feature-ledger/orchestrator.test.mjs
+          - skills/feature-ledger/references/agents/orchestrator-workflow.md
+          - skills/feature-ledger/references/agents/reviewer-workflow.md
+          - skills/feature-ledger/subagents/reviewer.md
+          - skills/feature-ledger/subagents/worker.md
+      tests:
+        - skills/feature-ledger/orchestrator.test.mjs
+        - extensions/feature-ledger/skill.test.ts
+        - skills/before-after-capture/agent.test.mjs
+      limitations: []
+      summary: "Return contract owned by worker-workflow.md; reviewer/orchestrator workflows, subagent templates and ui-worker point to it; pins retargeted."
+      commits:
+        start: 3ea8e5baea2aa3ff5b793b7303bad2825c6d583c
+        end: 369993af69965672270151b3c964e59f78a38a34
+        submissions:
+          - 369993af69965672270151b3c964e59f78a38a34
+    - id: finding-shape-docs
+      status: done
+      goal: "Section C of plan/2026-11-27_capture-and-ledger-fixes.md, finding-shape part. reviewer-workflow.md does not hold a finding shape today; add it there. The field list in references/writing-flow.md describes the stored ledger shape and stays. implementation-flow.md:13 is reduced to tool and parameter names plus a pointer. subagents/reviewer.md gets a one-line reference. The schema test in extensions/feature-ledger/skill.test.ts imports featureLedger (./index.ts), createFakeApi (./test-harness.ts) and compile (@earendil-works/pi-schema), as reviewer.test.ts:6-9 does. This cross-boundary test dependency is accepted explicitly."
+      short_goal: "Define the finding object and the close_findings form once in reviewer-workflow.md, with an example call checked against the real ledger_review schema."
+      acceptance_criteria:
+        - "reviewer-workflow.md defines the finding object once with field types (details, rationale, severity from blocker, major, minor, nit, required_checks as a list of check instructions) and the close_findings form."
+        - "It has one literal example call in a fenced json block under an \"Example call\" heading."
+        - "implementation-flow.md:13 points to that definition instead of describing the shape."
+        - "subagents/reviewer.md carries a one-line reference to the definition, not a copy."
+        - skill.test.ts extracts the fenced json block and validates it against the real ledger_review parameter schema.
+        - SKILL.md gains no copy of the shape.
+      constraints:
+        - The test uses the fake API only and reads no user state.
+        - AGENTS.md skill-file rules apply.
+      files:
+        in:
+          - skills/feature-ledger/references/agents/reviewer-workflow.md
+          - skills/feature-ledger/references/implementation-flow.md
+          - skills/feature-ledger/subagents/reviewer.md
+          - extensions/feature-ledger/skill.test.ts
+        out:
+          - extensions/feature-ledger/skill.test.ts
+          - skills/feature-ledger/references/agents/reviewer-workflow.md
+          - skills/feature-ledger/references/implementation-flow.md
+          - skills/feature-ledger/subagents/reviewer.md
+      tests:
+        - extensions/feature-ledger/skill.test.ts
+      limitations:
+        - "Post-review change (commit 45eebc1): the severity list in references/writing-flow.md is replaced by a pointer to Finding shape in references/agents/reviewer-workflow.md, so the field types live in one owner document. This goes beyond criterion 3, which covered implementation-flow.md only."
+      summary: "Added Finding shape and Example call to reviewer-workflow.md; implementation-flow.md and subagents/reviewer.md point to it; skill.test.ts validates the example against the real ledger_review schema. just test passed (feature-ledger 122, skills 6)."
+      commits:
+        start: 369993af69965672270151b3c964e59f78a38a34
+        end: a46e946f392530620d893ad74572673d423ce204
+        submissions:
+          - a46e946f392530620d893ad74572673d423ce204
+    - id: claim-token-shape
+      status: done
+      goal: "Decision 4 and section D of plan/2026-11-27_capture-and-ledger-fixes.md. Replace randomUUID() in startWork (extensions/feature-ledger/ledger.ts:651) and startReview (:772) with an exported generateClaimToken() that returns \"claim-\" plus 6 base36 characters from crypto.randomInt(36 ** 6), zero-padded. Add an optional newClaimToken?: () => string field on the startWork and startReview opts (:627, :759), defaulting to generateClaimToken. The tool boundary (index.ts:280, :309) spreads opts and needs no change. The token has no timestamp, so tests need no clock; this replaces the plan's frozen-clock wording."
+      short_goal: "Replace the UUID claim token with a \"claim-\" prefix plus a short random base36 suffix, produced by a generator that tests can inject."
+      review: true
+      failed_reviews: 0
+      findings: []
+      acceptance_criteria:
+        - "Tokens from startWork and startReview match /^claim-[0-9a-z]{6}$/, are at most 16 characters, contain no run of 8 or more hex characters and no UUID."
+        - "startWork and startReview accept newClaimToken; the tool boundary uses the default generator."
+        - "A direct startWork -> releaseClaim -> startWork test with the production default generator shows the two tokens differ and that the stale agent_id + token pair is rejected on submit."
+        - "A test with two separate generator instances that return the same sequence shows why a process-local counter is rejected (a stale holder would be accepted)."
+        - "The exact-equality checks in releaseClaim (:474), submitWork (:673) and submitReview (:832) are unchanged."
+        - "Existing round-trip and notEqual token tests (worker.test.ts:67, :144; reviewer.test.ts:76, :97; orchestration.test.ts:128) still pass."
+        - "extensions/feature-ledger/README.md gains a sentence after the :39 phrase \"not locks or access-control secrets\" that states tokens are opaque `claim-` identifiers, deliberately not secret-shaped, not guaranteed collision-free, and unique within one ledger only, with no retry on collision."
+      constraints:
+        - "No process-local counter, no timestamp-only token, and no assignment ID inside the token."
+        - Do not rename the existing claimToken submit option.
+        - "finding-<uuid> IDs and nextFindingId are unchanged."
+        - "The skill file gains no token rationale; the subagent templates keep their copy-the-token-verbatim line."
+      files:
+        in:
+          - extensions/feature-ledger/ledger.ts
+          - extensions/feature-ledger/ledger.test.ts
+          - extensions/feature-ledger/README.md
+        out:
+          - extensions/feature-ledger/README.md
+          - extensions/feature-ledger/ledger.test.ts
+          - extensions/feature-ledger/ledger.ts
+      tests:
+        - extensions/feature-ledger/ledger.test.ts
+        - extensions/feature-ledger/worker.test.ts
+        - extensions/feature-ledger/reviewer.test.ts
+        - extensions/feature-ledger/orchestration.test.ts
+      limitations: []
+      summary: "Added generateClaimToken (claim- + 6 base36 via randomInt), newClaimToken opt on startWork/startReview, tests, README sentence."
+      commits:
+        start: a46e946f392530620d893ad74572673d423ce204
+        end: c43545d49068c588d524cd2646b206be026c6c42
+        submissions:
+          - c43545d49068c588d524cd2646b206be026c6c42
+    - id: route-field-model
+      status: done
+      goal: "Decision 5 and section E of plan/2026-11-27_capture-and-ledger-fixes.md, code part. In extensions/feature-ledger/ledger.ts add route?: \"ui\" to LedgerItem (:40-58, beside workspace and branch at :44-45), a conditional spread in the parser projection like workspace and branch (:346-347), \"route\" in ITEM_KEYS (:486), and a conditional spread in the orchestrateList projection (:440-446). orchestrateNext (:464) spreads the list item, so next, assigned and capped carry route with no edit. Validate in parseLedger beside the workspace and branch problems (:339-340) with a new ITEM_ROUTES = [\"ui\"] as const and allowedValues. No tool parameter schema needs route."
+      short_goal: "Add the optional item field route, with the one value ui, to the ledger model, parser, serializer and list projection."
+      review: true
+      failed_reviews: 0
+      findings: []
+      acceptance_criteria:
+        - "`route: ui` parses, round-trips through a write, and appears in ledger_get_feature output."
+        - "A ledger without route still passes ledger_check, and a write adds no route line to it."
+        - "A non-string, list (for example [ui, ui]), empty or unknown route value gives one problem in the existing problem-line format for item fields, `features[n] (id): route must be ui, got <value>`, built with allowedValues(ITEM_ROUTES) like the status message at ledger.ts:334 (not badValueProblem, which says \"non-empty string\"), and the value is not kept on the item."
+        - "\"route\" sits in ITEM_KEYS right after \"branch\", so it serializes beside workspace and branch."
+        - ledger_check and check.ts fail on an invalid route value.
+        - "orchestrate list items carry route only when it is set (no route undefined key); next, assigned and capped carry it too."
+        - "ASSIGNMENT_ROLES (ledger.ts:20) and the assignment ID rule are unchanged."
+      constraints:
+        - Do not write a default route into existing ledgers.
+        - "A duplicate YAML key is already a parse error (lib/yaml.ts:38); test the list form instead."
+        - Tests use temporary directories and control HOME and PI_LEDGER_PATH.
+      files:
+        in:
+          - extensions/feature-ledger/ledger.ts
+          - extensions/feature-ledger/ledger.test.ts
+        out:
+          - extensions/feature-ledger/ledger.test.ts
+          - extensions/feature-ledger/ledger.ts
+      tests:
+        - extensions/feature-ledger/ledger.test.ts
+      limitations: []
+      summary: "Added optional item route (ui) to model, parser validation, ITEM_KEYS after branch, and list projection; tests added."
+      commits:
+        start: 3d50d0d4020f21401de4c9948d23e41ff7d3b910
+        end: 2c761fc82f44cc4008a65c48c6968bc6feff3947
+        submissions:
+          - 2c761fc82f44cc4008a65c48c6968bc6feff3947
+    - id: route-schema-and-reference
+      status: done
+      goal: "Section E of plan/2026-11-27_capture-and-ledger-fixes.md, schema part. skills/feature-ledger/references/writing-flow.md owns the field schema and the authoring rule; the orchestrator workflow owns the routing rule (item route-orchestrator-rule). The reference ledger skills/feature-ledger/references/ledger.yaml gains `route: ui` on one existing item with a visible surface, the todo item copy-block-actions (about :65), without adding or removing items. The reference-ledger tests and the default feature-ledger check parse it; extensions/feature-ledger/ledger.test.ts:62-75 asserts the item count and features[0], so the first item must not change."
+      short_goal: Define the route field once in the writing flow and show it in the reference ledger.
+      acceptance_criteria:
+        - "writing-flow.md states the field, its one value ui, that absent means the normal worker, and to set ui when the item has a visible surface."
+        - "writing-flow.md does not restate the routing rule; it points to the orchestrator workflow."
+        - "references/ledger.yaml has route ui on the copy-block-actions item only, keeps the same items, and still parses and passes ledger_check."
+        - "extensions/feature-ledger/ledger.test.ts assertions at about :62-75 hold unchanged."
+      constraints:
+        - AGENTS.md skill-file rules apply.
+      files:
+        in:
+          - skills/feature-ledger/references/writing-flow.md
+          - skills/feature-ledger/references/ledger.yaml
+        out:
+          - skills/feature-ledger/references/ledger.yaml
+          - skills/feature-ledger/references/writing-flow.md
+      tests:
+        - extensions/feature-ledger/ledger.test.ts
+      limitations: []
+      summary: "Added route (ui) to writing-flow.md schema list, pointing to the orchestrator workflow; set route: ui on copy-block-actions in the reference ledger."
+      commits:
+        start: e5cbd5e14a82b5c32633efcee5a3f4e40419e55d
+        end: dabc6cf322cfaf29045ea5b9a522a74b173dee04
+        submissions:
+          - dabc6cf322cfaf29045ea5b9a522a74b173dee04
+    - id: ui-worker-dispatch-template
+      status: done
+      goal: "Section E of plan/2026-11-27_capture-and-ledger-fixes.md, ui-worker part. The role definition agents/ui-worker.md exists; the dispatch template skills/feature-ledger/subagents/ui-worker.md does not. The template carries only the dispatch variables and prompt; agents/ui-worker.md carries role behaviour. Neither restates the other."
+      short_goal: "Add the ui-worker dispatch template, register it in the skill resource table, and split ownership between the template and the agent definition."
+      acceptance_criteria:
+        - "skills/feature-ledger/subagents/ui-worker.md exists with the same four variables as subagents/worker.md (ITEM_ID, LEDGER_PATH, SESSION_ROOT, AGENT_ID) and points to the worker-workflow Return contract."
+        - "The SKILL.md resource table has a row naming `subagents/ui-worker.md`."
+        - "SKILL.md gets one more sentence, appended to the paragraph at about :48. The sentence says that ui-worker is an external dependency the working project must define with the capture tools and the feature-ledger tools, with no repository path and no copied tool list."
+        - "agents/ui-worker.md states the spec path and artifact directory, both phases before capture_check, the sidecar path in the summary, and that capture tools come from its own extension list."
+        - "In the handoff paragraph (agents/ui-worker.md about :38), the parenthetical \"(sent through `subagents/worker.md`)\" names `subagents/ui-worker.md` instead. The rest of that paragraph, including the Return contract pointer from item return-contract-single-source, and the standalone shape (about :40-46) stay unchanged."
+        - "orchestrator.test.mjs checks the template exists and carries the four variables compared against subagents/worker.md, checks the table row with a row-anchored pattern, and names which file each assertion reads (a separate constant for the template beside the existing agents/ui-worker.md read)."
+        - "extensions/feature-ledger/skill.test.ts (about :37-40, which loops over worker and reviewer) covers the ui-worker template as well."
+      constraints:
+        - AGENTS.md skill-file rules apply.
+        - skills/before-after-capture/agent.test.mjs still passes and still skips when the package is absent.
+      files:
+        in:
+          - skills/feature-ledger/subagents/ui-worker.md
+          - skills/feature-ledger/subagents/worker.md
+          - skills/feature-ledger/SKILL.md
+          - agents/ui-worker.md
+          - skills/feature-ledger/orchestrator.test.mjs
+          - extensions/feature-ledger/skill.test.ts
+        out:
+          - agents/ui-worker.md
+          - extensions/feature-ledger/skill.test.ts
+          - skills/feature-ledger/SKILL.md
+          - skills/feature-ledger/orchestrator.test.mjs
+          - skills/feature-ledger/subagents/ui-worker.md
+      tests:
+        - skills/feature-ledger/orchestrator.test.mjs
+        - extensions/feature-ledger/skill.test.ts
+        - skills/before-after-capture/agent.test.mjs
+      limitations: []
+      summary: "Added subagents/ui-worker.md, SKILL.md table row and external-dependency sentence, capture paragraph in agents/ui-worker.md, handoff pointer to the new template, and tests."
+      commits:
+        start: dabc6cf322cfaf29045ea5b9a522a74b173dee04
+        end: d2f0db35407e95f043a3f0f1de83153c062068ad
+        submissions:
+          - d2f0db35407e95f043a3f0f1de83153c062068ad
+    - id: route-orchestrator-rule
+      status: done
+      goal: "Section E of plan/2026-11-27_capture-and-ledger-fixes.md, routing-rule part. The rule lives in skills/feature-ledger/references/agents/orchestrator-workflow.md (step 2, about :12). Precedence: route wins; the legacy exact phrase is removed now with one deprecation line for ledgers authored in other projects. Correct :12, which calls <id>-<n>-ui-worker an assignment ID. implementation-flow.md:10, extensions/feature-ledger/README.md:28 and SKILL.md point to the rule instead of restating it."
+      short_goal: "State the routing rule once in the orchestrator workflow, with route deciding the agent and the legacy phrase removed, and point the other documents to it."
+      acceptance_criteria:
+        - "The orchestrator workflow selects ui-worker when route is ui and the normal worker otherwise, and has one deprecation line for the removed exact phrase."
+        - "It states that agent_id may end in -ui-worker while assignment.id stays -worker, and that no new role exists."
+        - It states that a UI item is done only after capture_check verifies the pair.
+        - "It states that when the working project defines no ui-worker, the parent stops and reports the missing role instead of falling back to a worker without capture tools."
+        - It tells the orchestrator to read subagents/ui-worker.md for a UI item.
+        - "implementation-flow.md:10 and extensions/feature-ledger/README.md:28 point to the rule and no longer name the exact phrase."
+        - "SKILL.md gains one sentence near the Orchestrate line (about :28) that points to the orchestrator workflow for the ui-worker route."
+        - "The text near implementation-flow.md:15 (both starts return the full item) is unchanged."
+        - "orchestrator.test.mjs prose pins at about :16 and :19 are rewritten, plus one pin for the stop-and-report rule that states it is the rule's only guard."
+      constraints:
+        - "AGENTS.md skill-file rules apply; skill text names tools only."
+        - "The stop-and-report pin goes in orchestrator.test.mjs, not skills/before-after-capture/agent.test.mjs."
+        - "Keep the phrases pinned by extensions/feature-ledger/skill.test.ts (about :63-73)."
+      files:
+        in:
+          - skills/feature-ledger/references/agents/orchestrator-workflow.md
+          - skills/feature-ledger/references/implementation-flow.md
+          - extensions/feature-ledger/README.md
+          - skills/feature-ledger/SKILL.md
+          - skills/feature-ledger/orchestrator.test.mjs
+        out:
+          - extensions/feature-ledger/README.md
+          - skills/feature-ledger/SKILL.md
+          - skills/feature-ledger/orchestrator.test.mjs
+          - skills/feature-ledger/references/agents/orchestrator-workflow.md
+          - skills/feature-ledger/references/implementation-flow.md
+      tests:
+        - skills/feature-ledger/orchestrator.test.mjs
+        - extensions/feature-ledger/skill.test.ts
+      limitations:
+        - "Post-review change (commit 45eebc1): the deprecation sentence moved to references/writing-flow.md, where authors read it. The routing rule keeps a pointer there. Step 2 was split into four bullets and the phrase 'and no new role exists' removed as filler. orchestrator.test.mjs now asserts the exact phrase lives in writing-flow.md and that the routing rule does not restate it."
+        - "Post-review change (commit 45eebc1): the assignment ID formula stays here only; references/implementation-flow.md and extensions/feature-ledger/README.md point to it instead of restating it."
+      summary: "Orchestrator workflow now routes on route:ui, deprecates the exact phrase, states the agent_id/assignment.id, capture_check and missing-ui-worker stop rules; other docs point to it; tests rewritten plus a stop-and-report pin. just test passed."
+      commits:
+        start: d2f0db35407e95f043a3f0f1de83153c062068ad
+        end: f73f7818ae8a2467b7c97d729cccb7e5a776daca
+        submissions:
+          - f73f7818ae8a2467b7c97d729cccb7e5a776daca
+    - id: ui-worker-permission-note
+      status: done
+      goal: "Section E of plan/2026-11-27_capture-and-ledger-fixes.md, permission-sample part. Add a comment near the subagents agents block of configs/permissions.example.src.jsonc (about :273-329). Do not restate merge or inheritance rules; the generator README is the single source. Comment only: verified by reading."
+      short_goal: Note in the example permission source that a project needs a ui-worker entry with the capture tools allowed.
+      acceptance_criteria:
+        - "A comment in configs/permissions.example.src.jsonc says a project that routes UI items needs a ui-worker agent entry with capture_* tools allowed."
+        - The comment restates no merge-keyword or inheritance rule.
+        - "Generated output is unchanged, and extensions/permission-mode-generator/sample-integration.test.ts passes unchanged."
+      constraints:
+        - Do not edit the committed sample fixture.
+      files:
+        in:
+          - configs/permissions.example.src.jsonc
+        out:
+          - configs/permissions.example.src.jsonc
+      tests:
+        - extensions/permission-mode-generator/sample-integration.test.ts
+      limitations: []
+      summary: "Added a comment in configs/permissions.example.src.jsonc that a project routing UI items needs a ui-worker agent entry with capture_* tools allowed."
+      commits:
+        start: f73f7818ae8a2467b7c97d729cccb7e5a776daca
+        end: c56a329bc2a0fe7055bff8e6e210daeac4460602
+        submissions:
+          - c56a329bc2a0fe7055bff8e6e210daeac4460602
+    - id: orchestrator-test-scope
+      status: done
+      goal: "Decision 6 and section F of plan/2026-11-27_capture-and-ledger-fixes.md. The workflow already says not to run validation (orchestrator-workflow.md:3) and to stop when tests are absent or unknown (step 3); SKILL.md:28 says the parent does not run validation. Add the missing rules to skills/feature-ledger/references/agents/orchestrator-workflow.md and the same line once in SKILL.md. No AGENTS.md copy."
+      short_goal: "The orchestrator accepts test results only from submit-tool validation and delegate reports, and never runs project test suites itself."
+      acceptance_criteria:
+        - "The orchestrator workflow states that test results are accepted only from validation run by the submit tool and from the delegate's reported tests."
+        - "It states that the parent never runs project test suites itself, and that accepting a report is not re-running it."
+        - It states to stop and report when tests are unknown instead of verifying them.
+        - "SKILL.md carries the same rule once, near the Orchestrate route (about :28)."
+        - AGENTS.md is unchanged.
+        - "orchestrator.test.mjs has exactly one prose pin per new rule, and each states that it is the rule's only guard."
+      constraints:
+        - AGENTS.md skill-file rules apply.
+        - "Keep the phrases pinned by extensions/feature-ledger/skill.test.ts (about :63-73)."
+      files:
+        in:
+          - skills/feature-ledger/references/agents/orchestrator-workflow.md
+          - skills/feature-ledger/SKILL.md
+          - skills/feature-ledger/orchestrator.test.mjs
+        out:
+          - skills/feature-ledger/SKILL.md
+          - skills/feature-ledger/orchestrator.test.mjs
+          - skills/feature-ledger/references/agents/orchestrator-workflow.md
+      tests:
+        - skills/feature-ledger/orchestrator.test.mjs
+        - extensions/feature-ledger/skill.test.ts
+      limitations:
+        - "Post-review change (commit 45eebc1): 'This stop is the rule's only guard' dropped. The same paragraph carries the capture_check completion guard, and other documents state their own stop-and-report rules, so the claim was false. SKILL.md now points to the orchestrator workflow for the rule; the test asserts the rule appears once in the workflow and that SKILL.md points there."
+      summary: "Added orchestrator rules: accept tests only from submit-tool validation and delegate reports, never run project test suites, stop on unknown tests. Same rule once in SKILL.md. Four single prose pins in orchestrator.test.mjs."
+      commits:
+        start: c56a329bc2a0fe7055bff8e6e210daeac4460602
+        end: 6e5b8335fea37ab090f1c0471a48cdab79a548b9
+        submissions:
+          - 6e5b8335fea37ab090f1c0471a48cdab79a548b9

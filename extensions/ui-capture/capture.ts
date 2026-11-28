@@ -8,7 +8,7 @@ import { combineCleanupErrors, createDriver, gitRoot } from "./driver.ts";
 import { CaptureServer, type Identity, type ServerRuntime } from "./server.ts";
 import { HostServerRuntime } from "./server-runtime.ts";
 import { buildPhase, checkPair, ignoredOutputWarning, publishSidecar, savePhase, validateCurrentPair, type PhaseName } from "./sidecar.ts";
-import { parseSpec, type CaptureSpec } from "./spec.ts";
+import { parseSpec, validateConditions, type CaptureSpec } from "./spec.ts";
 import { runSteps, type CaptureDriver, type StepsResult } from "./steps.ts";
 import { redactUrl } from "./redact.ts";
 import { readAllowedCommands } from "./trust.ts";
@@ -72,13 +72,16 @@ export class CaptureService {
 	private async directory(input: Input) { return openArtifactDirectory(input.root, input.spec, this.deps.artifacts ?? process.env.UI_CAPTURE_ARTIFACTS ?? "artifacts"); }
 	async check(cwd: string, specPath: string, answers: unknown, force = false) {
 		const input = await this.input(cwd, specPath);
+		validateConditions(input.spec.conditions);
 		const directory = await this.directory(input);
 		try { return await checkPair(directory, input.text, answers, force); } finally { await directory.close(); }
 	}
 	async run(cwd: string, specPath: string, phase: PhaseName, label?: string, signal?: AbortSignal, packageDirectory?: string) {
 		if (phase !== "before" && phase !== "after") throw new Error("phase must be before or after");
 		if (packageDirectory !== undefined && !packageDirectory) throw new Error("packageDirectory must be a non-empty path");
-		const input = await this.input(cwd, specPath), directory = await this.directory(input), dir = directory;
+		const input = await this.input(cwd, specPath);
+		validateConditions(input.spec.conditions);
+		const directory = await this.directory(input), dir = directory;
 		try {
 			const hash = (await git("git", ["rev-parse", "--short", "HEAD"], { cwd: input.root })).stdout.trim();
 			const dirty = await projectDirty(input.root, directory.lockPath);

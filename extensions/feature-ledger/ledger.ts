@@ -2,7 +2,7 @@
 // The tools in index.ts call these; the logic is kept here so it is testable
 // without a Pi session.
 
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { lstat, type Stats } from "node:fs/promises";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +13,8 @@ import { parseYaml, serializeYaml } from "../../lib/yaml.ts";
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type Exec = (command: string, args: string[], cwd: string) => Promise<ExecResult>;
 
+export const ITEM_ROUTES = ["ui"] as const;
+export type ItemRoute = (typeof ITEM_ROUTES)[number];
 export const STATUSES = ["todo", "in-progress", "review", "done"] as const;
 export type ItemStatus = (typeof STATUSES)[number];
 export const FINDING_STATUSES = ["open", "closed"] as const;
@@ -44,6 +46,7 @@ export interface LedgerItem {
 	short_goal: string;
 	workspace?: string;
 	branch?: string;
+	route?: ItemRoute;
 	review?: boolean;
 	max_failed_reviews?: number;
 	failed_reviews?: number;
@@ -338,6 +341,9 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 		// make the item fall back to the session root with no problem line.
 		if (item.workspace !== undefined && (typeof item.workspace !== "string" || item.workspace === "")) problems.push(badValueProblem(at("workspace"), item.workspace));
 		if (item.branch !== undefined && (typeof item.branch !== "string" || item.branch === "")) problems.push(badValueProblem(at("branch"), item.branch));
+		// One lookup for the value, so the report and the projection cannot disagree about what is allowed.
+		const route = item.route === undefined ? undefined : ITEM_ROUTES.find(value => value === item.route);
+		if (item.route !== undefined && route === undefined) problems.push(`${at("route")} must be ${allowedValues(ITEM_ROUTES)}, got ${String(item.route)}`);
 		items.push({
 			id: item.id,
 			status: (STATUSES.includes(item.status as ItemStatus) ? item.status : "todo") as ItemStatus,
@@ -345,6 +351,7 @@ export function parseLedger(text: string): { ledger: Ledger | null; problems: st
 			short_goal: typeof item.short_goal === "string" ? item.short_goal : "",
 			...(typeof item.workspace === "string" && item.workspace !== "" ? { workspace: item.workspace } : {}),
 			...(typeof item.branch === "string" && item.branch !== "" ? { branch: item.branch } : {}),
+			...(route !== undefined ? { route } : {}),
 			...Object.fromEntries(["review", "max_failed_reviews", "failed_reviews", "assignment", "findings"].filter((key) => key in item).map((key) => [key, item[key]])),
 			acceptance_criteria: list(item.acceptance_criteria, at("acceptance_criteria"), problems),
 			constraints: list(item.constraints, at("constraints"), problems),
@@ -440,6 +447,7 @@ export function orchestrateList(ledger: Ledger) {
 		items: ledger.features.map((item) => ({
 			id: item.id, status: item.status, short_goal: requireShortGoal(item),
 			workspace: itemWorkspace(ledger, item), commits: item.commits,
+			...(item.route ? { route: item.route } : {}),
 			assignment: item.assignment ?? null,
 			failed_reviews: item.failed_reviews ?? 0,
 			config: effectiveReviewConfig(ledger, item),
@@ -483,7 +491,7 @@ export async function releaseClaim(ledger: Ledger, path: string, id: string, age
 	return item;
 }
 
-const ITEM_KEYS = ["id", "status", "goal", "short_goal", "workspace", "branch", "review", "max_failed_reviews", "failed_reviews", "assignment", "findings", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
+const ITEM_KEYS = ["id", "status", "goal", "short_goal", "workspace", "branch", "route", "review", "max_failed_reviews", "failed_reviews", "assignment", "findings", "acceptance_criteria", "constraints", "validation_scripts", "files", "tests", "limitations", "summary", "commits"];
 
 // No invariant check here. Every write path reaches this from a model the shared gate already accepted,
 // so re-checking at the last step would be the same rule stated twice with different wording.
@@ -624,7 +632,11 @@ function requireWorkerStartEligibility(ledger: Ledger, item: LedgerItem): void {
 	}
 }
 
-export async function startWork(opts: ItemContext & { agentId: string; artifactDir?: string }): Promise<{
+export function generateClaimToken(): string {
+	return `claim-${randomInt(36 ** 6).toString(36).padStart(6, "0")}`;
+}
+
+export async function startWork(opts: ItemContext & { agentId: string; artifactDir?: string; newClaimToken?: () => string }): Promise<{
 	item: LedgerItem;
 	config: { enabled: boolean; max_failed_reviews: number; validation_scripts: string[] };
 	pending_findings: Finding[];
@@ -648,7 +660,7 @@ export async function startWork(opts: ItemContext & { agentId: string; artifactD
 	const latest_diff = latest ? await latestDiff(opts, latest, budget, opts.artifactDir) : null;
 	item.status = "in-progress";
 	item.commits = { ...item.commits, start: base, expected: head };
-	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-worker`, role: "worker", agent_id: opts.agentId, claim_token: randomUUID() };
+	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-worker`, role: "worker", agent_id: opts.agentId, claim_token: (opts.newClaimToken ?? generateClaimToken)() };
 	try {
 		await ensureParent(opts.ledgerPath);
 		await writeFile(opts.ledgerPath, serializeLedger(opts.ledger));
@@ -756,7 +768,7 @@ export async function submitWork(opts: ItemContext & {
 export type NewFinding = Pick<Finding, "details" | "rationale" | "severity" | "required_checks">;
 
 // A review claim uses the same workspace and diff context as a worker claim.
-export async function startReview(opts: ItemContext & { agentId: string; artifactDir?: string }): ReturnType<typeof startWork> {
+export async function startReview(opts: ItemContext & { agentId: string; artifactDir?: string; newClaimToken?: () => string }): ReturnType<typeof startWork> {
 	const item = findItem(opts.ledger, opts.id, opts.ledgerPath);
 	if (!opts.agentId?.trim()) throw new Error("agent_id: must be a non-empty string");
 	if (item.status !== "review") throw new Error(`item ${item.id} is ${item.status}; reviewer start requires review`);
@@ -769,7 +781,7 @@ export async function startReview(opts: ItemContext & { agentId: string; artifac
 	const cumulative_diff = await workDiff(opts, item.commits.start, head, budget, opts.artifactDir);
 	const latest = item.commits.submissions?.at(-1);
 	const latest_diff = latest ? await latestDiff(opts, latest, budget, opts.artifactDir) : null;
-	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-reviewer`, role: "reviewer", agent_id: opts.agentId, claim_token: randomUUID() };
+	item.assignment = { id: `${item.id}-${item.failed_reviews ?? 0}-reviewer`, role: "reviewer", agent_id: opts.agentId, claim_token: (opts.newClaimToken ?? generateClaimToken)() };
 	try {
 		await ensureParent(opts.ledgerPath);
 		await writeFile(opts.ledgerPath, serializeLedger(opts.ledger));
@@ -838,9 +850,9 @@ export async function submitReview(opts: ItemContext & {
 	if (new Set(opts.closeFindings).size !== opts.closeFindings.length) throw new Error("close_findings contains duplicate IDs");
 	const findings = item.findings ?? [];
 	for (const id of opts.closeFindings) if (!findings.some((finding) => finding.id === id)) throw new Error(`unknown finding ID ${id}`);
-	if (!Array.isArray(opts.newFindings)) throw new Error("new_findings must be a list");
+	if (!Array.isArray(opts.newFindings)) throw new Error(badShapeProblem("new_findings", "a list of finding objects", opts.newFindings));
 	for (const [index, finding] of opts.newFindings.entries()) {
-		if (!isRecord(finding) || Object.keys(finding).some((key) => !["details", "rationale", "severity", "required_checks"].includes(key)) || typeof finding.details !== "string" || !finding.details.trim() || typeof finding.rationale !== "string" || !finding.rationale.trim() || !FINDING_SEVERITIES.includes(finding.severity as Finding["severity"])) throw new Error(`new_findings[${index}] requires non-empty details, rationale and a valid severity`);
+		if (!isRecord(finding) || Object.keys(finding).some((key) => !["details", "rationale", "severity", "required_checks"].includes(key)) || typeof finding.details !== "string" || !finding.details.trim() || typeof finding.rationale !== "string" || !finding.rationale.trim() || !FINDING_SEVERITIES.includes(finding.severity as Finding["severity"])) throw new Error(badShapeProblem(`new_findings[${index}]`, `an object with non-empty details and rationale, severity ${FINDING_SEVERITIES.join(", ")} and a required_checks list`, finding));
 		if (!Array.isArray(finding.required_checks) || finding.required_checks.some((check: unknown) => typeof check !== "string" || !check.trim())) throw new Error(badShapeProblem(`new_findings[${index}].required_checks`, "a list of non-empty strings", finding.required_checks));
 	}
 	const iteration = item.failed_reviews ?? 0;

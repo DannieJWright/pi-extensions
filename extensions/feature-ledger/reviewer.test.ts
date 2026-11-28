@@ -430,6 +430,12 @@ test("ledger_review shape errors: hard failures show Pi's line, late failures sh
 		assert.ok(!checks.content[0].text.includes(long));
 		const notList = await callUnvalidated(api, "ledger_review", dir, { ...args, new_findings: [{ ...finding("nit"), required_checks: "check one, check two" }] });
 		assert.match(notList.content[0].text, /required_checks must be a list of non-empty strings, got "check one, check two"/);
+		const notArray = await callUnvalidated(api, "ledger_review", dir, { ...args, new_findings: "just text" });
+		assert.ok(notArray.isError);
+		assert.match(notArray.content[0].text, /new_findings must be a list of finding objects, got "just text"/);
+		const badFinding = await callUnvalidated(api, "ledger_review", dir, { ...args, new_findings: [{ ...finding("nit"), severity: "huge" }] });
+		assert.ok(badFinding.isError);
+		assert.match(badFinding.content[0].text, /new_findings\[0\] must be an object with non-empty details and rationale, severity .*and a required_checks list, got \{"details":"Issue nit".*"severity":"huge"/);
 		assert.equal(await readFile(path, "utf8"), before);
 		assert.equal((await itemAt(path)).assignment?.claim_token, brief.item.assignment.claim_token);
 	} finally { await cleanup(); }

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createDriver, gitRoot, resolvePlaywright } from "./driver.ts";
+import { redactUrl as redact } from "./redact.ts";
 import type { CaptureSpec } from "./spec.ts";
 
 async function pkg(root: string, dir: string, name: string, source: string) {
@@ -149,4 +150,58 @@ test("screenshot bounds transform viewport, full page and padded target coordina
 	assert.deepEqual(f.calls.filter(c => c[0] === "screenshot")[2][1].clip, { x: 35, y: 55, width: 30, height: 20 });
 	await assert.rejects(d.screenshot({ target: "#none" }), /exactly one/); await d.close();
 	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+const launches = (f: ReturnType<typeof fake>) => f.calls.filter(c => c[0] === "launch");
+// Guards against over-broad matching: this case passes on the pre-change code too.
+test("launch failures without a sandbox signal do not retry: [object Object] and missing executable", async () => {
+	for (const failure of [{ detail: "x" }, new Error("Executable doesn't exist at /tmp/chromium")]) {
+		const f = fake(); f.failures.push(failure as Error);
+		await assert.rejects(createDriver(opts(f)));
+		assert.equal(launches(f).length, 1);
+	}
+});
+// Fails before the change: the object's code is EPERM but its text lacks the word.
+test("an object error with code EPERM and no EPERM text retries once without the sandbox", async () => {
+	const f = fake(); f.failures.push({ code: "EPERM", message: "denied" } as unknown as Error);
+	const driver = await createDriver(opts(f));
+	assert.equal(launches(f).length, 2);
+	assert.deepEqual(launches(f)[1][1], { chromiumSandbox: false, args: ["--no-sandbox"] });
+	await driver.close();
+});
+test("sandbox failure texts retry exactly once", async () => {
+	for (const text of ["No usable sandbox!", "Sandboxing failed", "Operation not permitted"]) {
+		const f = fake(); f.failures.push(new Error(text));
+		const driver = await createDriver(opts(f));
+		assert.equal(launches(f).length, 2);
+		await driver.close();
+	}
+});
+test("null and undefined launch rejections are rethrown without a retry or TypeError", async () => {
+	for (const failure of [null, undefined]) {
+		const f = fake(); f.failures.push(failure as unknown as Error);
+		await assert.rejects(createDriver(opts(f)), error => error === failure);
+		assert.equal(launches(f).length, 1);
+	}
+});
+test("a failed sandbox fallback reports both launch errors with URLs redacted", async () => {
+	const f = fake(); f.failures.push(new Error("first EPERM http://user:pw1@a.test/x"), new Error("second http://user:pw2@b.test/y"));
+	await assert.rejects(createDriver(opts(f)), (error: Error) => {
+		assert.equal(error.message, `${redact("first EPERM http://user:pw1@a.test/x")}; sandbox fallback failed: ${redact("second http://user:pw2@b.test/y")}`);
+		assert.doesNotMatch(error.message, /pw1|pw2/);
+		return true;
+	});
+	assert.equal(launches(f).length, 2);
+});
+test("after a fallback launch, closing the driver closes the context and browser", async () => {
+	const f = fake(); f.failures.push(new Error("EPERM"));
+	const driver = await createDriver(opts(f));
+	await driver.close();
+	assert.deepEqual(f.calls.slice(-2).map(c => c[0]), ["context.close", "browser.close"]);
+});
+test("a numeric clock is passed to the page as the same instant", async () => {
+	const f = fake();
+	const d = await createDriver(opts(f, spec({ conditions: { clock: 1767225600000 } })));
+	assert.equal(f.calls.find(c => c[0] === "clock")[1].time.toISOString(), "2026-01-01T00:00:00.000Z");
+	await d.close();
 });

@@ -6,7 +6,7 @@ Require the assigned item ID, pinned ledger path, original session root and agen
 
 Use the returned brief and pending findings. Implement in the workspace; verify all required finding checks as well as item tests and acceptance criteria. Follow the evidence and UI capture rules in `references/implementation-flow.md`. No intermediate commits. Keep unrelated work out of submission; if that is unsafe, stop.
 
-Call `ledger_work` with `action: submit`, the same ID, path, agent ID and token, a commit message, summary and any limitations. The tool runs validation and creates the work commit. On validation failure, read its log, fix and retry. On an uncertain Git or ledger write, stop and report, not retry. Inspect successful output, warnings and `files.out` for omissions. Report any uncommitted or uncertain item changes. Do not work on another item.
+Call `ledger_work` with `action: submit`, the same ID, path, agent ID and token, a commit message following the rules in `references/implementation-flow.md`, summary and any limitations. The tool runs validation and creates the work commit. On validation failure, read its log, fix and retry. On an uncertain Git or ledger write, stop and report, not retry. Inspect successful output, warnings and `files.out` for omissions. Report any uncommitted or uncertain item changes. Do not work on another item.
 
 ## Return contract
 
