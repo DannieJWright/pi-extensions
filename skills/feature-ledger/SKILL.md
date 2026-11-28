@@ -40,7 +40,7 @@ The failed-review limit governs starting work only. An item already claimed befo
 
 A finding `id` is generated as `finding-<uuid>` and cannot repeat an `id` already on the item. An `id` written by hand is accepted unchanged, so an authored slug in an example stays valid. Duplicate finding `id`s are checked per item within its own findings list.
 
-A reviewer supplies the commit message for a review submission. It is required, non-empty, and recorded unchanged so the project's commit conventions apply. Recommended form: `Review <item-id> round <iteration>` plus a short description.
+A reviewer supplies the commit message for a review submission. It is required and non-empty; write it following the commit rules in `references/implementation-flow.md`.
 
 ## Safety and unavailable tools
 
